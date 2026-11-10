@@ -1,0 +1,203 @@
+//! Guest memory map.
+//!
+//! The guest sees a handful of fixed service regions (code, stack, app data,
+//! platform table, heap) with the code region sized from the loaded image.
+//! [`GuestMem`] stores each region in a flat `Vec<u8>` and translates guest
+//! addresses on access; unmapped accesses are errors the machine can trace.
+
+use crate::consts::{
+    APP_DATA_BASE, APP_DATA_SIZE, CODE_MAX_SIZE, CODE_REGION_BASE, HEAP_BASE, HEAP_SIZE, PLAT_BASE,
+    PLAT_SIZE, STACK_BASE, STACK_SIZE,
+};
+use thiserror::Error;
+
+/// Guest memory errors.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum MemError {
+    #[error("unmapped guest address 0x{0:08X}")]
+    Unmapped(u32),
+}
+
+#[derive(Debug)]
+struct Region {
+    base: u32,
+    data: Vec<u8>,
+}
+
+/// Guest address space.
+#[derive(Debug)]
+pub struct GuestMem {
+    regions: Vec<Region>,
+}
+
+fn page_round(v: u32) -> u32 {
+    v.saturating_add(0xFFF) & !0xFFF
+}
+
+impl GuestMem {
+    /// Builds the memory map for an image of `image_size` bytes (code + bss).
+    pub fn new(image_size: u32) -> Self {
+        let code_size = page_round(image_size).min(CODE_MAX_SIZE);
+        let regions = vec![
+            Region {
+                base: CODE_REGION_BASE,
+                data: vec![0; code_size as usize],
+            },
+            Region {
+                base: STACK_BASE,
+                data: vec![0; STACK_SIZE as usize],
+            },
+            Region {
+                base: APP_DATA_BASE,
+                data: vec![0; APP_DATA_SIZE as usize],
+            },
+            Region {
+                base: PLAT_BASE,
+                data: vec![0; PLAT_SIZE as usize],
+            },
+            Region {
+                base: HEAP_BASE,
+                data: vec![0; HEAP_SIZE as usize],
+            },
+        ];
+        Self { regions }
+    }
+
+    fn region(&self, addr: u32, len: u32) -> Result<&Region, MemError> {
+        self.regions
+            .iter()
+            .find(|r| {
+                let off = addr.wrapping_sub(r.base);
+                off < r.data.len() as u32 && len <= r.data.len() as u32 - off
+            })
+            .ok_or(MemError::Unmapped(addr))
+    }
+
+    fn region_mut(&mut self, addr: u32, len: u32) -> Result<&mut Region, MemError> {
+        let found = self.regions.iter().position(|r| {
+            let off = addr.wrapping_sub(r.base);
+            off < r.data.len() as u32 && len <= r.data.len() as u32 - off
+        });
+        match found {
+            Some(i) => Ok(&mut self.regions[i]),
+            None => Err(MemError::Unmapped(addr)),
+        }
+    }
+
+    /// Bulk read from guest memory.
+    pub fn read(&self, addr: u32, buf: &mut [u8]) -> Result<(), MemError> {
+        let region = self.region(addr, buf.len() as u32)?;
+        let off = (addr - region.base) as usize;
+        buf.copy_from_slice(&region.data[off..off + buf.len()]);
+        Ok(())
+    }
+
+    /// Bulk write into guest memory.
+    pub fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), MemError> {
+        let len = data.len() as u32;
+        let region = self.region_mut(addr, len)?;
+        let off = (addr - region.base) as usize;
+        region.data[off..off + data.len()].copy_from_slice(data);
+        Ok(())
+    }
+
+    /// Reads a little-endian `u32`.
+    pub fn read_u32(&self, addr: u32) -> Result<u32, MemError> {
+        let mut b = [0u8; 4];
+        self.read(addr, &mut b)?;
+        Ok(u32::from_le_bytes(b))
+    }
+
+    /// Writes a little-endian `u32`.
+    pub fn write_u32(&mut self, addr: u32, v: u32) -> Result<(), MemError> {
+        self.write(addr, &v.to_le_bytes())
+    }
+
+    /// Reads a little-endian `u16`.
+    pub fn read_u16(&self, addr: u32) -> Result<u16, MemError> {
+        let mut b = [0u8; 2];
+        self.read(addr, &mut b)?;
+        Ok(u16::from_le_bytes(b))
+    }
+
+    /// Writes a little-endian `u16`.
+    pub fn write_u16(&mut self, addr: u32, v: u16) -> Result<(), MemError> {
+        self.write(addr, &v.to_le_bytes())
+    }
+
+    /// Reads a single byte.
+    pub fn read_u8(&self, addr: u32) -> Result<u8, MemError> {
+        let region = self.region(addr, 1)?;
+        Ok(region.data[(addr - region.base) as usize])
+    }
+
+    /// Writes a single byte.
+    pub fn write_u8(&mut self, addr: u32, v: u8) -> Result<(), MemError> {
+        let region = self.region_mut(addr, 1)?;
+        region.data[(addr - region.base) as usize] = v;
+        Ok(())
+    }
+
+    /// Returns a direct pointer to `len` bytes of guest memory, when the
+    /// span lies within a single region. Callers must keep borrow discipline.
+    pub fn slice_mut(&mut self, addr: u32, len: u32) -> Result<&mut [u8], MemError> {
+        let region = self.region_mut(addr, len)?;
+        let off = (addr - region.base) as usize;
+        Ok(&mut region.data[off..off + len as usize])
+    }
+
+    /// Returns a direct slice view of `len` bytes of guest memory.
+    pub fn slice(&self, addr: u32, len: u32) -> Result<&[u8], MemError> {
+        let region = self.region(addr, len)?;
+        let off = (addr - region.base) as usize;
+        Ok(&region.data[off..off + len as usize])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::consts::{CODE_BASE, HEAP_BASE};
+
+    #[test]
+    fn regions_map_and_round() {
+        let m = GuestMem::new(0x1234);
+        // Code region is page-rounded from the image size.
+        assert!(m.read_u8(CODE_REGION_BASE + 0x1233).is_ok());
+        assert!(m.read_u8(CODE_REGION_BASE + 0x2000).is_err());
+        assert!(m.read_u8(HEAP_BASE).is_ok());
+    }
+
+    #[test]
+    fn word_access_roundtrips() {
+        let mut m = GuestMem::new(0x10000);
+        m.write_u32(CODE_BASE, 0xDEAD_BEEF).unwrap();
+        assert_eq!(m.read_u32(CODE_BASE).unwrap(), 0xDEAD_BEEF);
+        m.write_u16(CODE_BASE + 4, 0x1234).unwrap();
+        assert_eq!(m.read_u16(CODE_BASE + 4).unwrap(), 0x1234);
+        m.write_u8(CODE_BASE + 6, 0x7F).unwrap();
+        assert_eq!(m.read_u8(CODE_BASE + 6).unwrap(), 0x7F);
+    }
+
+    #[test]
+    fn bulk_access_and_slices() {
+        let mut m = GuestMem::new(0x10000);
+        m.write(CODE_BASE + 0x10, &[1, 2, 3, 4]).unwrap();
+        let mut b = [0u8; 4];
+        m.read(CODE_BASE + 0x10, &mut b).unwrap();
+        assert_eq!(b, [1, 2, 3, 4]);
+        m.slice_mut(CODE_BASE + 0x20, 2).unwrap()[0] = 9;
+        assert_eq!(m.read_u8(CODE_BASE + 0x20).unwrap(), 9);
+        assert_eq!(m.slice(CODE_BASE + 0x20, 2).unwrap(), [9, 0]);
+    }
+
+    #[test]
+    fn unmapped_access_errors() {
+        let m = GuestMem::new(0x10000);
+        assert_eq!(m.read_u32(0), Err(MemError::Unmapped(0)));
+        assert_eq!(
+            m.read_u32(0x5000_0000),
+            Err(MemError::Unmapped(0x5000_0000))
+        );
+    }
+}

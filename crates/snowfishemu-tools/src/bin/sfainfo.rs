@@ -13,7 +13,8 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let data = std::fs::read(&args.path).with_context(|| format!("read {}", args.path.display()))?;
+    let data =
+        std::fs::read(&args.path).with_context(|| format!("read {}", args.path.display()))?;
     let img = SfaImage::parse(&data).map_err(anyhow::Error::from)?;
     let h = &img.header;
     println!("file:      {} ({} bytes)", args.path.display(), data.len());
