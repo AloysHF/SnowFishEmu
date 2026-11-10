@@ -1,0 +1,11 @@
+[package]
+name = "snowfishemu-tools"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+license.workspace = true
+
+[dependencies]
+snowfishemu-core = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }

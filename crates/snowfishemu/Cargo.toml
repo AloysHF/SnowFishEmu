@@ -1,0 +1,18 @@
+[package]
+name = "snowfishemu"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "snowfishemu"
+path = "src/main.rs"
+
+[dependencies]
+snowfishemu-core = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+env_logger = { workspace = true }
+log = { workspace = true }
+minifb = { workspace = true }

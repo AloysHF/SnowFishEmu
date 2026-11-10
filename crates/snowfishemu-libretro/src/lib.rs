@@ -1,0 +1,1 @@
+//! SnowFishEmu libretro core (scaffold).
