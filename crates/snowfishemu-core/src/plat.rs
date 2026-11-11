@@ -16,10 +16,12 @@ pub const ROOT_ADDR: u32 = PLAT_BASE;
 pub const ROOT_SIZE: u32 = 0x600;
 /// Guest address of the reg record (platform magic + canvas descriptors).
 pub const REG_ADDR: u32 = PLAT_BASE + 0x600;
-/// Guest address of the canvas descriptor.
-pub const CANVAS_ADDR: u32 = REG_ADDR + 0x10;
-/// Guest address of the second canvas descriptor.
-pub const CANVAS2_ADDR: u32 = REG_ADDR + 0x20;
+/// Guest address of the canvas descriptor (above the stub area).
+pub const CANVAS_ADDR: u32 = STUB_ADDR + 0x80;
+/// Guest address of the 240x320 RGB565 framebuffer.
+pub const FB_ADDR: u32 = CANVAS_ADDR + 0x10;
+/// Framebuffer size in bytes (240 * 320 * 2).
+pub const FB_SIZE: u32 = 0x25800;
 /// Guest address of the vtable record.
 pub const VTABLE_ADDR: u32 = PLAT_BASE + 0x640;
 /// Guest address of the app record the entry code reads.
@@ -31,9 +33,9 @@ pub const STUB_FOPEN_ADDR: u32 = STUB_ADDR + 0x58;
 /// Guest address of the state-store stub (root slot 0x524).
 pub const STUB_STORE_ADDR: u32 = STUB_ADDR + 0x60;
 /// Guest address of the memory descriptor record.
-pub const MEMDESC_ADDR: u32 = PLAT_BASE + 0x25E20;
+pub const MEMDESC_ADDR: u32 = PLAT_BASE + 0x25F20;
 /// Guest address of the cell the state-store stub writes r2 into.
-pub const STATE_PTR_ADDR: u32 = PLAT_BASE + 0x25E30;
+pub const STATE_PTR_ADDR: u32 = PLAT_BASE + 0x25F30;
 
 /// Per-stub value trampolines: each returns a fixed constant in r0.
 pub const STUB_HEAP_BASE: u32 = STUB_ADDR + 0x08;
@@ -128,8 +130,8 @@ pub fn layout(mem: &mut crate::mem::GuestMem, code_base: u32, image_size: u32) {
     w(mem, REG_ADDR, REG_MAGIC);
     w(mem, REG_ADDR + 0x04, ROOT_ADDR);
     w(mem, REG_ADDR + 0x08, STUB_ADDR);
-    // Canvas 0: {next = canvas2, width, height, width}.
-    w(mem, CANVAS_ADDR, CANVAS2_ADDR);
+    // Canvas: {framebuffer, width, height, stride}.
+    w(mem, CANVAS_ADDR, FB_ADDR);
     w(mem, CANVAS_ADDR + 0x04, SCREEN_WIDTH);
     w(mem, CANVAS_ADDR + 0x08, SCREEN_HEIGHT);
     w(mem, CANVAS_ADDR + 0x0C, SCREEN_WIDTH);
@@ -210,12 +212,14 @@ mod tests {
         assert_eq!(mem.read_u32(REG_ADDR + 4).unwrap(), ROOT_ADDR);
         assert_eq!(mem.read_u32(CANVAS_ADDR + 4).unwrap(), SCREEN_WIDTH);
         assert_eq!(mem.read_u32(CANVAS_ADDR + 8).unwrap(), SCREEN_HEIGHT);
-        assert_eq!(mem.read_u32(CANVAS_ADDR).unwrap(), CANVAS2_ADDR);
+        assert_eq!(mem.read_u32(CANVAS_ADDR).unwrap(), FB_ADDR);
 
         // Value stubs return their constants through ldr r0,[pc,#0].
         assert_eq!(mem.read_u32(STUB_HEAP_BASE + 8).unwrap(), HEAP_BASE);
         assert_eq!(mem.read_u32(STUB_HEIGHT + 8).unwrap(), SCREEN_HEIGHT);
         assert_eq!(mem.read_u32(STUB_CANVAS + 8).unwrap(), CANVAS_ADDR);
+        // Framebuffer sits right above the canvas in the plat region.
+        assert_eq!(FB_ADDR, CANVAS_ADDR + 0x10);
 
         // Loader info block around the image.
         assert_eq!(mem.read_u32(CODE_BASE - 8).unwrap(), REG_ADDR);
