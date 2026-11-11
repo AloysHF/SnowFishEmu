@@ -8,9 +8,13 @@
 //! - Framebuffer and runtime state management
 
 pub mod consts;
+pub mod cpu;
+pub mod lz;
 pub mod mem;
 pub mod plat;
 pub mod sfa;
 
+pub use cpu::ArmCpu;
+pub use lz::LzError;
 pub use mem::GuestMem;
 pub use sfa::{SfaError, SfaHeader, SfaImage};

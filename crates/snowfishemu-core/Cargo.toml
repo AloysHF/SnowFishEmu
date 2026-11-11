@@ -6,7 +6,9 @@ description.workspace = true
 license.workspace = true
 
 [dependencies]
+unarm = "2.3"
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 armv4t_emu = { workspace = true }
+

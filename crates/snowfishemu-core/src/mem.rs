@@ -30,8 +30,10 @@ pub struct GuestMem {
     regions: Vec<Region>,
 }
 
+/// Rounds the image size up to a page with room for the 0x1000 reserved
+/// head the code segment loads above (the loader maps image + 0x2000 slack).
 fn page_round(v: u32) -> u32 {
-    v.saturating_add(0xFFF) & !0xFFF
+    v.saturating_add(0x2FFF) & !0xFFF
 }
 
 impl GuestMem {
@@ -162,9 +164,10 @@ mod tests {
     #[test]
     fn regions_map_and_round() {
         let m = GuestMem::new(0x1234);
-        // Code region is page-rounded from the image size.
-        assert!(m.read_u8(CODE_REGION_BASE + 0x1233).is_ok());
-        assert!(m.read_u8(CODE_REGION_BASE + 0x2000).is_err());
+        // Code region rounds the image up with the 0x1000 loader head:
+        // (0x1234 + 0x2FFF) & !0xFFF = 0x4000.
+        assert!(m.read_u8(CODE_REGION_BASE + 0x3FFF).is_ok());
+        assert!(m.read_u8(CODE_REGION_BASE + 0x4000).is_err());
         assert!(m.read_u8(HEAP_BASE).is_ok());
     }
 
