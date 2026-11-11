@@ -25,7 +25,7 @@ struct Args {
     /// Queue a few key presses after boot (indices into the key map).
     #[arg(long)]
     keys: Vec<u8>,
-    /// Dump the framebuffer to a BMP-ish raw file after the run.
+    /// Directory for per-frame framebuffer dumps.
     #[arg(long)]
     dump_fb: Option<PathBuf>,
 }
@@ -41,9 +41,32 @@ fn main() -> Result<()> {
     };
     let mut m = SnowFishMachine::load(container, res)?;
     m.boot(args.budget)?;
+    // Mimic the platform bring-up: 5 idle ticks, LSK down+up, OK down+up,
+    // then the remaining frames (key indices per the core's key table).
+    let lsk = 10u8;
+    let ok = 5u8;
     for i in 0..args.frames {
+        if i == 5 {
+            m.set_key(lsk, true)?;
+            m.run_frame(args.budget)?;
+            m.set_key(lsk, false)?;
+            m.run_frame(args.budget)?;
+            m.set_key(ok, true)?;
+            m.run_frame(args.budget)?;
+            m.set_key(ok, false)?;
+            m.run_frame(args.budget)?;
+            continue;
+        }
         m.run_frame(args.budget)?;
         eprintln!("frame {} state={:?}", i, m.state());
+        if let Some(dir) = &args.dump_fb {
+            let px = m.frame_pixels();
+            let mut out = Vec::new();
+            for p in &px {
+                out.extend_from_slice(&p.to_le_bytes());
+            }
+            let _ = std::fs::write(dir.join(format!("frame_{i:03}.raw")), &out);
+        }
     }
     for k in &args.keys {
         m.set_key(*k, true)?;
@@ -70,13 +93,6 @@ fn main() -> Result<()> {
         fb.len(),
         fb.iter().filter(|&&p| p & 0xFFFFFF != 0).count()
     );
-    if let Some(dump) = args.dump_fb {
-        let mut out = Vec::new();
-        for px in &fb {
-            out.extend_from_slice(&px.to_le_bytes());
-        }
-        std::fs::write(&dump, &out)?;
-        eprintln!("framebuffer written to {}", dump.display());
-    }
+
     Ok(())
 }
