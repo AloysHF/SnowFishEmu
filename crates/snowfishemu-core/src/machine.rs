@@ -307,6 +307,15 @@ impl SnowFishMachine {
                 }
                 // Un-hooked slot: execute the wrapper body natively so the
                 // root-table stub returns its canned value.
+                if self.trace {
+                    debug!(
+                        "[plat] native slot +0x{:X} lr={:#010x} r0={:08x} r1={:08x}",
+                        w.slot,
+                        self.cpu.reg_get(armv4t_emu::reg::LR),
+                        self.cpu.reg_get(0),
+                        self.cpu.reg_get(1)
+                    );
+                }
             }
             // Record non-sequential transfers for fault diagnostics.
             if executed > 0 && aligned != self.last_pc.wrapping_add(4) {
@@ -427,8 +436,8 @@ impl SnowFishMachine {
                 self.gdi.op_fill(x, y, w, h, color);
             }
             0x154 => {
-                // text(obj, str u16le, x, y, font)
-                let adj = self.sp_adjust(self.wrapper_for_slot(slot));
+                // text(obj, str u16le, x, y, font) — the font selector is
+                // ignored (single embedded font set).
                 let str_ptr = r(1);
                 let x = r(2) as i32;
                 let y = r(3) as i32;
@@ -672,6 +681,11 @@ impl SnowFishMachine {
         let cap = 0x100000usize;
         let mut srcbuf = vec![0u8; src_len as usize];
         self.mem.read(src, &mut srcbuf)?;
+        if std::env::var_os("SF_DUMP_BLOCK").is_some() {
+            let name = format!("SF_DUMP_BLOCK_{src:08X}_{src_len}.bin");
+            let _ = std::fs::write(&name, &srcbuf);
+            info!("dumped {name}");
+        }
         // The platform keeps a rolling decompression window per destination:
         // matches reaching before the block start read the previous output
         // (zero-initialized before the first block).
@@ -831,8 +845,8 @@ impl SnowFishMachine {
         match self.mem.slice(plat::FB_ADDR, plat::FB_SIZE) {
             Ok(raw) => {
                 let mut out = Vec::with_capacity((plat::FB_SIZE / 2) as usize);
-                for pair in raw.chunks_exact(2) {
-                    let v = u16::from_le_bytes([pair[0], pair[1]]);
+                for i in 0..raw.len() / 2 {
+                    let v = u16::from_le_bytes([raw[i * 2], raw[i * 2 + 1]]);
                     let r = ((v >> 11) & 0x1F) as u32;
                     let g = ((v >> 5) & 0x3F) as u32;
                     let b = (v & 0x1F) as u32;

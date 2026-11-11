@@ -63,7 +63,7 @@ impl Gdi {
     pub fn frame_pixels(&self) -> Vec<u32> {
         self.fb
             .iter()
-            .map(|v| {
+            .map(|&v| {
                 let r = ((v >> 11) & 0x1F) as u32;
                 let g = ((v >> 5) & 0x3F) as u32;
                 let b = (v & 0x1F) as u32;
@@ -81,6 +81,7 @@ impl Gdi {
     }
 
     /// Rect fill with the same RGB565 value; dirty only when non-empty.
+    #[allow(clippy::too_many_arguments)]
     pub fn fill(&mut self, x: i32, y: i32, w: i32, h: i32, color: u16) {
         self.fill_count += 1;
         let x0 = x.max(0);
@@ -104,6 +105,7 @@ impl Gdi {
     }
 
     /// Verbatim RGB565 surface copy with clipping.
+    #[allow(clippy::too_many_arguments)]
     fn blit_rgb565(
         &mut self,
         src: &[u16],
@@ -180,6 +182,7 @@ impl Gdi {
     /// `+0x198 draw(obj, bmp, w, h, _, dx, dy)` — palette or RGB565 blit
     /// with color-key transparency. `read_u8`/`read_u16` fetch guest bytes;
     /// failures skip pixels like the reference's per-pixel reads.
+    #[allow(clippy::too_many_arguments)]
     pub fn op_draw<F>(
         &mut self,
         bmp: &[u8],
@@ -219,9 +222,8 @@ impl Gdi {
             }
         } else {
             let tr = (key & 0xFFFF) as u16;
-            let src: Vec<u16> = bmp
-                .chunks_exact(2)
-                .map(|p| u16::from_le_bytes([p[0], p[1]]))
+            let src: Vec<u16> = (0..bmp.len() / 2)
+                .map(|i| u16::from_le_bytes([bmp[i * 2], bmp[i * 2 + 1]]))
                 .collect();
             if tr != 0 && tr != 0xFFFF {
                 for j in 0..h.min(sh) {
@@ -262,10 +264,10 @@ impl Gdi {
                 0x00..=0x1F => cx += 8,
                 0x20..=0x7E => {
                     let glyph = FONT_ASCII8X8[(ch - 0x20) as usize];
-                    for row in 0..8usize {
+                    for (row, bits) in glyph.iter().enumerate() {
                         for col in 0..8usize {
                             // font8x8 encodes pixels LSB-first (col 0 = 0x01).
-                            if glyph[row] & (1 << col) != 0 {
+                            if bits & (1 << col) != 0 {
                                 self.set_px(cx + col as i32, y + row as i32, color);
                             }
                         }
