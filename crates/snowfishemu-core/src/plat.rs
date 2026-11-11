@@ -35,6 +35,8 @@ pub const STUB_ADDR: u32 = PLAT_BASE + 0x690;
 pub const STUB_FOPEN_ADDR: u32 = STUB_ADDR + 0x58;
 /// Guest address of the state-store stub (root slot 0x524).
 pub const STUB_STORE_ADDR: u32 = STUB_ADDR + 0x60;
+/// Guest address of the passthrough (`bx lr`) stub for un-planted slots.
+pub const STUB_PASSTHROUGH_ADDR: u32 = STUB_ADDR + 0x78;
 /// Guest address of the memory descriptor record.
 pub const MEMDESC_ADDR: u32 = PLAT_BASE + 0x25F20;
 /// Guest address of the cell the state-store stub writes r2 into.
@@ -77,6 +79,10 @@ pub const REG_MAGIC: u32 = 0x5346_3031;
 
 /// ARM trampoline: `mov r0,#0; bx lr`.
 pub const STUB_RET0: [u8; 8] = [0x00, 0x00, 0xA0, 0xE3, 0x1E, 0xFF, 0x2F, 0xE1];
+/// ARM trampoline: `bx lr` — passthrough for slots the platform build does
+/// not implement. The reference device walk leaves r0 (the first argument)
+/// unchanged; returning through this stub reproduces that net effect.
+pub const STUB_PASSTHROUGH: [u8; 4] = [0x1E, 0xFF, 0x2F, 0xE1];
 /// ARM trampoline: `mov r0,#1; bx lr`.
 pub const STUB_RET1: [u8; 8] = [0x01, 0x00, 0xA0, 0xE3, 0x1E, 0xFF, 0x2F, 0xE1];
 /// ARM trampoline: `ldr r0,[pc,#0]; bx lr; .word <value>` — the value lives
@@ -156,6 +162,28 @@ pub fn layout(mem: &mut crate::mem::GuestMem, code_base: u32, image_size: u32) {
 
     // --- stub area ---------------------------------------------------------
     wb(mem, STUB_ADDR, &STUB_RET0);
+    // Default-fill every un-planted root slot with the passthrough stub so a
+    // game calling an API this build lacks gets its arguments back (the
+    // reference device's net behavior) instead of jumping to zero.
+    let planted: &[u32] = &[
+        ROOT_SLOT_CANVAS,
+        ROOT_SLOT_WIDTH,
+        ROOT_SLOT_HEIGHT,
+        ROOT_SLOT_HEAP,
+        ROOT_SLOT_CODE,
+        ROOT_SLOT_STATE,
+    ];
+    for off in (0..ROOT_SIZE).step_by(4) {
+        let planted_here = ROOT_SLOTS_GENERIC.contains(&off)
+            || ROOT_SLOTS_FOPEN.contains(&off)
+            || ROOT_SLOTS_RET1.contains(&off)
+            || planted.contains(&off);
+        if !planted_here {
+            w(mem, ROOT_ADDR + off, STUB_PASSTHROUGH_ADDR);
+        }
+    }
+    // The passthrough stub (`bx lr`) lives right after the value stubs.
+    wb(mem, STUB_PASSTHROUGH_ADDR, &STUB_PASSTHROUGH);
     wb(mem, STUB_FOPEN_ADDR, &STUB_RET1);
     for (stub, value) in [
         (STUB_HEAP_BASE, HEAP_BASE),

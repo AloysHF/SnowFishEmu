@@ -214,6 +214,15 @@ pub struct SnowFishMachine {
     branch_log: Vec<(u32, u32)>,
     gdi: Gdi,
     lz_windows: std::collections::HashMap<u32, Vec<u8>>,
+    timer_callback: Option<TimerCallback>,
+}
+
+/// A guest-registered periodic callback (platform timer).
+#[derive(Debug, Clone, Copy)]
+pub struct TimerCallback {
+    pub id: u32,
+    pub entry: u32,
+    pub interval_ms: u64,
 }
 
 impl SnowFishMachine {
@@ -251,6 +260,7 @@ impl SnowFishMachine {
             branch_log: Vec::new(),
             gdi: Gdi::new(),
             lz_windows: std::collections::HashMap::new(),
+            timer_callback: None,
         })
     }
 
@@ -270,6 +280,7 @@ impl SnowFishMachine {
         match w.slot {
             0x7C | 0x58 | 0x5C | 0x64 | 0x68 | 0x108 => Some(w.ret),
             0x12C | 0x154 | 0x198 | 0x194 | 0x184 | 0x15C | 0x010 => Some(w.ret),
+            0x500 => Some(w.ret),
             _ => None,
         }
     }
@@ -319,7 +330,7 @@ impl SnowFishMachine {
             }
             // Record non-sequential transfers for fault diagnostics.
             if executed > 0 && aligned != self.last_pc.wrapping_add(4) {
-                if self.branch_log.len() >= 48 {
+                if self.branch_log.len() >= 96 {
                     self.branch_log.remove(0);
                 }
                 self.branch_log.push((self.last_pc, aligned));
@@ -340,6 +351,16 @@ impl SnowFishMachine {
     /// Executes one hooked platform slot natively and resumes at `ret`.
     fn exec_slot(&mut self, slot: u32, ret: u32) -> Result<(), MachineError> {
         let r = |i: u8| self.cpu.reg_get(i);
+        if slot == 0x500 && self.timer_callback.is_none() {
+            // timerStart(id, callback): the guest registers a periodic
+            // callback the platform must invoke on its own schedule.
+            self.timer_callback = Some(TimerCallback {
+                id: r(0),
+                entry: r(1),
+                interval_ms: 50,
+            });
+            debug!("[plat] timer registered id={} cb={:#010x}", r(0), r(1));
+        }
         let result = match slot {
             0x7C => {
                 let msg = if r(0) > 0x1000 {
@@ -433,7 +454,7 @@ impl SnowFishMachine {
                 if self.trace {
                     debug!("[gdi] fill @{x},{y} {w}x{h} c={color:#06x}");
                 }
-                self.gdi.op_fill(x, y, w, h, color);
+                self.gdi.op_fill(&mut self.mem, x, y, w, h, color);
             }
             0x154 => {
                 // text(obj, str u16le, x, y, font) — the font selector is
@@ -471,7 +492,7 @@ impl SnowFishMachine {
                         chars.len()
                     );
                 }
-                self.gdi.op_text(&chars, x, y, color);
+                self.gdi.op_text(&mut self.mem, &chars, x, y, color);
             }
             0x198 => {
                 // draw(obj, bmp, w, h, _, dx, dy)
@@ -511,12 +532,19 @@ impl SnowFishMachine {
                 if self.mem.read(data, &mut buf).is_err() {
                     return Ok(());
                 }
-                let pal_addr = pal;
-                let mem = &self.mem;
-                self.gdi
-                    .op_draw(&buf, sw, sh, key, pal_mode, w, h, dx, dy, |idx| {
-                        mem.read_u16(pal_addr.wrapping_add(idx * 2)).ok()
-                    });
+                self.gdi.op_draw(
+                    &mut self.mem,
+                    &buf,
+                    sw,
+                    sh,
+                    key,
+                    pal_mode,
+                    w,
+                    h,
+                    dx,
+                    dy,
+                    pal,
+                );
             }
             0x194 => {
                 self.gdi.op_bmp();
@@ -555,7 +583,7 @@ impl SnowFishMachine {
                 if self.trace {
                     debug!("[gdi] fill2 @{x},{y} {w}x{h} c={color:#06x}");
                 }
-                self.gdi.op_fill2(x, y, w, h, color);
+                self.gdi.op_fill2(&mut self.mem, x, y, w, h, color);
             }
             0x010 => {
                 self.gdi.op_flush();
@@ -774,6 +802,20 @@ impl SnowFishMachine {
             // first word is the dispatch function. Call it as
             // fn(app_root, selector, param, 0).
             let entry = self.mem.read_u32(self.handler)?;
+            if entry == 0 {
+                let mut dump = String::new();
+                for k in 0..16u32 {
+                    let v = self
+                        .mem
+                        .read_u32(self.handler.wrapping_add(k * 4))
+                        .unwrap_or(0);
+                    dump.push_str(&format!("{:08x} ", v));
+                }
+                debug!(
+                    "event entry==0: handler={:#010x} block: {dump}",
+                    self.handler
+                );
+            }
             self.cpu.reg_set(0, self.handler);
             self.cpu.reg_set(1, selector as u32);
             self.cpu.reg_set(2, param);
@@ -810,6 +852,19 @@ impl SnowFishMachine {
     pub fn run_frame(&mut self, budget: u64) -> Result<(), MachineError> {
         self.pump(budget)?;
         self.app_call(10, 0, budget)?;
+        // Deliver the guest's registered timer callback once per frame.
+        // The platform invokes the callback directly (r0 = timer id).
+        if let Some(tc) = self.timer_callback {
+            self.cpu.reg_set(armv4t_emu::reg::SP, STACK_TOP);
+            self.cpu.reg_set(armv4t_emu::reg::LR, STOP_ADDRESS);
+            self.cpu.reg_set(armv4t_emu::reg::CPSR, 0x10);
+            self.cpu.reg_set(0, tc.id);
+            self.cpu.reg_set(1, 0);
+            self.cpu.reg_set(2, 0);
+            self.cpu.reg_set(3, 0);
+            self.cpu.reg_set(armv4t_emu::reg::PC, tc.entry);
+            self.run_until_return(budget)?;
+        }
         self.frame_count += 1;
         Ok(())
     }
@@ -826,7 +881,7 @@ impl SnowFishMachine {
 
     /// Copy of the guest framebuffer as RGBA8 (minifb-ready).
     pub fn frame_pixels(&self) -> Vec<u32> {
-        self.gdi.frame_pixels()
+        self.gdi.frame_pixels(&self.mem)
     }
 
     /// Whether the display changed since the last presentation.

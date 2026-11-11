@@ -46,6 +46,8 @@ fn main() -> Result<()> {
     let lsk = 10u8;
     let ok = 5u8;
     for i in 0..args.frames {
+        // Platform bring-up: LSK+OK at frame 5; periodic OK presses every
+        // 10 frames afterwards (menus advance on OK/5).
         if i == 5 {
             m.set_key(lsk, true)?;
             m.run_frame(args.budget)?;
@@ -56,6 +58,11 @@ fn main() -> Result<()> {
             m.set_key(ok, false)?;
             m.run_frame(args.budget)?;
             continue;
+        }
+        if i > 6 && (i - 6) % 10 == 0 {
+            m.set_key(ok, true)?;
+            m.run_frame(args.budget)?;
+            m.set_key(ok, false)?;
         }
         m.run_frame(args.budget)?;
         eprintln!("frame {} state={:?}", i, m.state());
