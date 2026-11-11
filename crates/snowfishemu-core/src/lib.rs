@@ -10,11 +10,13 @@
 pub mod consts;
 pub mod cpu;
 pub mod lz;
+pub mod machine;
 pub mod mem;
 pub mod plat;
 pub mod sfa;
 
 pub use cpu::ArmCpu;
 pub use lz::LzError;
+pub use machine::SnowFishMachine;
 pub use mem::GuestMem;
 pub use sfa::{SfaError, SfaHeader, SfaImage};

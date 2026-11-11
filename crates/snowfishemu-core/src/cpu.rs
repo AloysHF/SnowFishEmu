@@ -145,6 +145,25 @@ impl ArmCpu {
         self.reg_get(reg::PC)
     }
 
+    /// Executes a single instruction (with ARMv5TE pre-decode). Returns
+    /// false when the core halted (undefined instruction).
+    pub fn step_once(&mut self, mem: &mut GuestMem) -> bool {
+        let pc = self.pc();
+        let aligned = if self.thumb_mode() { pc & !1 } else { pc & !3 };
+        if aligned != pc {
+            self.reg_set(reg::PC, aligned);
+        }
+        let mut adapter = MemAdapter::new(mem);
+        let ok = if self.step_predecoded(&mut adapter, aligned) {
+            true
+        } else {
+            self.cpu.step(&mut adapter)
+        };
+        self.read_faults += adapter.read_faults;
+        self.write_faults += adapter.write_faults;
+        ok
+    }
+
     /// Runs until the guest returns to [`STOP_ADDRESS`] or the instruction
     /// budget runs out. Returns the number of instructions executed.
     pub fn run(&mut self, mem: &mut GuestMem, budget: u64) -> (u64, StepOutcome) {
