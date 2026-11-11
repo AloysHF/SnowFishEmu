@@ -11,4 +11,5 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 armv4t_emu = { workspace = true }
+unifont = "1.1"
 

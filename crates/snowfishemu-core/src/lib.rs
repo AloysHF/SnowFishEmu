@@ -9,6 +9,8 @@
 
 pub mod consts;
 pub mod cpu;
+pub mod font;
+pub mod gdi;
 pub mod lz;
 pub mod machine;
 pub mod mem;

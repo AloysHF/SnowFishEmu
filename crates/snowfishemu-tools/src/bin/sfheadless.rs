@@ -51,7 +51,19 @@ fn main() -> Result<()> {
         m.set_key(*k, false)?;
         m.run_frame(args.budget)?;
     }
-    let fb = m.frame_pixels()?;
+    eprintln!(
+        "gdi counters [fill,text,draw,clear,fill2,flush] = {:?}",
+        m.gdi_counters()
+    );
+    let fb = m.frame_pixels();
+    // Also report the guest framebuffer window (apps may draw there
+    // directly instead of using the GDI bridge).
+    let guest_fb = m.guest_fb_pixels();
+    eprintln!(
+        "guest fb nonzero: {} / {}",
+        guest_fb.iter().filter(|&&p| p & 0xFFFFFF != 0).count(),
+        guest_fb.len()
+    );
     eprintln!(
         "done: frames={} fb={}px nonzero={}",
         m.frame_count(),

@@ -6,7 +6,8 @@
 //! executes through the planted root-table stubs unchanged.
 
 use crate::consts::{CODE_BASE, HEAP_BASE, STACK_TOP, STOP_ADDRESS};
-use crate::cpu::{ArmCpu, StepOutcome};
+use crate::cpu::ArmCpu;
+use crate::gdi::Gdi;
 use crate::lz;
 use crate::mem::GuestMem;
 use crate::plat::{self, APP_RECORD_ADDR};
@@ -200,7 +201,6 @@ pub struct SnowFishMachine {
     pub mem: GuestMem,
     pub cpu: ArmCpu,
     code_base: u32,
-    image_size: u32,
     wrappers: Vec<Wrapper>,
     handler: u32,
     file_slots: Vec<FileSlot>,
@@ -210,6 +210,10 @@ pub struct SnowFishMachine {
     frame_count: u64,
     lz_calls: u64,
     trace: bool,
+    last_pc: u32,
+    branch_log: Vec<(u32, u32)>,
+    gdi: Gdi,
+    lz_windows: std::collections::HashMap<u32, Vec<u8>>,
 }
 
 impl SnowFishMachine {
@@ -234,7 +238,6 @@ impl SnowFishMachine {
             mem,
             cpu: ArmCpu::new(),
             code_base: CODE_BASE,
-            image_size,
             wrappers,
             handler: 0,
             file_slots: vec![FileSlot::default(); 4],
@@ -244,17 +247,16 @@ impl SnowFishMachine {
             frame_count: 0,
             lz_calls: 0,
             trace,
+            last_pc: 0,
+            branch_log: Vec::new(),
+            gdi: Gdi::new(),
+            lz_windows: std::collections::HashMap::new(),
         })
     }
 
     /// Guest address of the state byte (app record +0x16).
     pub fn state_addr(&self) -> u32 {
         APP_RECORD_ADDR + 0x16
-    }
-
-    /// Wrapper lookup by root-table slot.
-    fn wrapper_for(&self, slot: u32) -> Option<&Wrapper> {
-        self.wrappers.iter().find(|w| w.slot == slot)
     }
 
     /// Wrapper lookup by hook address.
@@ -289,6 +291,15 @@ impl SnowFishMachine {
             if aligned == STOP_ADDRESS {
                 return Ok(executed);
             }
+            if aligned < 0x1000 {
+                // Fetching from the zero vector: a call through a null
+                // pointer. Dump the branch trail for diagnosis.
+                debug!("guest executing at {aligned:#010x}");
+                for (from, to) in &self.branch_log {
+                    debug!("  branch {from:#010x} -> {to:#010x}");
+                }
+                return Err(MachineError::GuestFault(aligned));
+            }
             if let Some(w) = self.wrapper_at(aligned) {
                 if let Some(ret) = self.hooked_slot_ret(w) {
                     self.exec_slot(w.slot, ret)?;
@@ -297,8 +308,19 @@ impl SnowFishMachine {
                 // Un-hooked slot: execute the wrapper body natively so the
                 // root-table stub returns its canned value.
             }
+            // Record non-sequential transfers for fault diagnostics.
+            if executed > 0 && aligned != self.last_pc.wrapping_add(4) {
+                if self.branch_log.len() >= 48 {
+                    self.branch_log.remove(0);
+                }
+                self.branch_log.push((self.last_pc, aligned));
+            }
+            self.last_pc = aligned;
             if !self.cpu.step_once(&mut self.mem) {
                 debug!("guest fault at pc {aligned:#010x}");
+                for (from, to) in &self.branch_log {
+                    debug!("  branch {from:#010x} -> {to:#010x}");
+                }
                 return Err(MachineError::GuestFault(aligned));
             }
             executed += 1;
@@ -328,7 +350,7 @@ impl SnowFishMachine {
             0x64 => Some(self.hook_fseek(r(0), r(1), r(2))?),
             0x68 => {
                 let h = r(0);
-                if h >= 1 && h <= 4 && self.file_slots[(h - 1) as usize].in_use {
+                if (1..=4).contains(&h) && self.file_slots[(h - 1) as usize].in_use {
                     let slot = &self.file_slots[(h - 1) as usize];
                     debug!(
                         "[plat] +0x68 fclose h={h} path=\"{}\" (pos={}/{})",
@@ -343,12 +365,9 @@ impl SnowFishMachine {
             }
             0x108 => Some(self.hook_lz(r(0), r(1), r(2), r(3))?),
             0x12C | 0x154 | 0x198 | 0x194 | 0x184 | 0x15C | 0x010 => {
-                // GDI slots: implemented in the display bridge; until then
-                // resume the wrapper epilogue without drawing.
-                if self.trace {
-                    debug!("[gdi] slot +0x{slot:X} (stubbed)");
-                }
-                Some(0)
+                // GDI slots leave r0 untouched (the reference writes PC only).
+                self.exec_gdi(slot)?;
+                None
             }
             _ => {
                 warn!("unhandled hooked slot +0x{slot:X} at ret {ret:#010x}");
@@ -359,6 +378,181 @@ impl SnowFishMachine {
             self.cpu.reg_set(0, v);
         }
         self.cpu.reg_set(armv4t_emu::reg::PC, ret); // wrapper epilogue
+        Ok(())
+    }
+
+    /// Wrapper stack adjustment (`add sp,#imm` at the epilogue).
+    fn sp_adjust(&self, ret: u32) -> u32 {
+        if let Ok(word) = self.mem.read_u32(ret) {
+            if word & 0xFFFF_F000 == 0xE28D_D000 {
+                return word & 0xFFF;
+            }
+        }
+        0
+    }
+
+    /// Original caller-pushed stack argument `n` (1 = the 5th argument).
+    fn stack_arg(&self, sp: u32, adj: u32, n: u32) -> Result<u32, MachineError> {
+        Ok(self
+            .mem
+            .read_u32(sp.wrapping_add(adj).wrapping_add(4 * n))?)
+    }
+
+    /// Hook address wrapper for a slot (for stack-adjust probing).
+    fn wrapper_for_slot(&self, slot: u32) -> u32 {
+        self.wrappers
+            .iter()
+            .find(|w| w.slot == slot)
+            .map(|w| w.ret)
+            .unwrap_or(0)
+    }
+
+    /// Executes one hooked GDI slot. Stack args follow the reference's
+    /// `SP + adj + 4*n` layout; r0 stays untouched.
+    fn exec_gdi(&mut self, slot: u32) -> Result<(), MachineError> {
+        let sp = self.cpu.reg_get(armv4t_emu::reg::SP);
+        let r = |i: u8| self.cpu.reg_get(i);
+        match slot {
+            0x12C => {
+                // fill(obj, x, y, w, h, color)
+                let adj = self.sp_adjust(self.wrapper_for_slot(slot));
+                let x = r(1) as i32;
+                let y = r(2) as i32;
+                let w = r(3) as i32;
+                let h = self.stack_arg(sp, adj, 1)? as i32;
+                let color = self.stack_arg(sp, adj, 2)?;
+                if self.trace {
+                    debug!("[gdi] fill @{x},{y} {w}x{h} c={color:#06x}");
+                }
+                self.gdi.op_fill(x, y, w, h, color);
+            }
+            0x154 => {
+                // text(obj, str u16le, x, y, font)
+                let adj = self.sp_adjust(self.wrapper_for_slot(slot));
+                let str_ptr = r(1);
+                let x = r(2) as i32;
+                let y = r(3) as i32;
+                let mut chars = Vec::with_capacity(64);
+                for i in 0..256u32 {
+                    let v = self.mem.read_u16(str_ptr.wrapping_add(i * 2))?;
+                    chars.push(v);
+                    if v == 0 {
+                        break;
+                    }
+                }
+                let mut rgb24: u32 = 0xFFFFFF;
+                if r(0) > 0x1000 {
+                    let mut b3 = [0u8; 3];
+                    if self.mem.read(r(0) + 0x28, &mut b3).is_ok() {
+                        let v = (b3[0] as u32) << 16 | (b3[1] as u32) << 8 | b3[2] as u32;
+                        if v != 0 {
+                            rgb24 = v;
+                        }
+                    }
+                }
+                let color = crate::gdi::rgb888_to_565(rgb24);
+                if self.trace {
+                    let text: String = chars
+                        .iter()
+                        .take_while(|&&c| c != 0)
+                        .filter_map(|&c| char::from_u32(c as u32))
+                        .collect();
+                    debug!(
+                        "[gdi] text @{x},{y} c={color:#06x} len={} \"{text}\"",
+                        chars.len()
+                    );
+                }
+                self.gdi.op_text(&chars, x, y, color);
+            }
+            0x198 => {
+                // draw(obj, bmp, w, h, _, dx, dy)
+                let adj = self.sp_adjust(self.wrapper_for_slot(slot));
+                let bmp_ptr = r(1);
+                let w = self.stack_arg(sp, adj, 1)? as i32;
+                let h = self.stack_arg(sp, adj, 2)? as i32;
+                let dx = self.stack_arg(sp, adj, 4)? as i32;
+                let dy = self.stack_arg(sp, adj, 5)? as i32;
+                if bmp_ptr <= 0x1000 || w == 0 || h == 0 || w > 0x400 || h > 0x400 {
+                    return Ok(());
+                }
+                let mut hdr = [0u8; 0x14];
+                if self.mem.read(bmp_ptr, &mut hdr).is_err() {
+                    return Ok(());
+                }
+                let sw = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as i32;
+                let sh = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as i32;
+                let key = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
+                let pal = u32::from_le_bytes([hdr[12], hdr[13], hdr[14], hdr[15]]);
+                let data = u32::from_le_bytes([hdr[16], hdr[17], hdr[18], hdr[19]]);
+                let data = if data > 0x1000 && data <= 0x7F_FFFF {
+                    data
+                } else {
+                    self.mem.read_u32(bmp_ptr.wrapping_add(0x14))?
+                };
+                let pal_mode = pal > 0x1000 && pal <= 0x7F_FFFF;
+                let nbytes = if pal_mode {
+                    (sw * sh) as usize
+                } else {
+                    (sw * sh * 2) as usize
+                };
+                if sw <= 0 || sh <= 0 || nbytes == 0 || nbytes > 0x80000 {
+                    return Ok(());
+                }
+                let mut buf = vec![0u8; nbytes];
+                if self.mem.read(data, &mut buf).is_err() {
+                    return Ok(());
+                }
+                let pal_addr = pal;
+                let mem = &self.mem;
+                self.gdi
+                    .op_draw(&buf, sw, sh, key, pal_mode, w, h, dx, dy, |idx| {
+                        mem.read_u16(pal_addr.wrapping_add(idx * 2)).ok()
+                    });
+            }
+            0x194 => {
+                self.gdi.op_bmp();
+            }
+            0x184 => {
+                // clear(obj, r, g, b) — records the pen color only.
+                let (rgb24, rgb565) = self.gdi.op_clear(r(1), r(2), r(3));
+                if r(0) > 0x1000 {
+                    let bytes = rgb24.to_le_bytes();
+                    self.mem.write(r(0) + 0x28, &bytes[..3])?;
+                    self.mem.write_u16(r(0) + 0x2C, rgb565)?;
+                }
+            }
+            0x15C => {
+                // fill2(obj, x, y, w, h) — color from the canvas object.
+                let adj = self.sp_adjust(self.wrapper_for_slot(slot));
+                let x = r(1) as i32;
+                let y = r(2) as i32;
+                let w = r(3) as i32;
+                let h = self.stack_arg(sp, adj, 1)? as i32;
+                let mut color = self.gdi.fill_color();
+                if r(0) > 0x1000 {
+                    match self.mem.read_u16(r(0) + 0x2C) {
+                        Ok(c16) if c16 != 0 => color = c16,
+                        _ => {
+                            let mut b3 = [0u8; 3];
+                            if self.mem.read(r(0) + 0x28, &mut b3).is_ok() {
+                                let v = (b3[0] as u32) << 16 | (b3[1] as u32) << 8 | b3[2] as u32;
+                                if v != 0 {
+                                    color = crate::gdi::rgb888_to_565(v);
+                                }
+                            }
+                        }
+                    }
+                }
+                if self.trace {
+                    debug!("[gdi] fill2 @{x},{y} {w}x{h} c={color:#06x}");
+                }
+                self.gdi.op_fill2(x, y, w, h, color);
+            }
+            0x010 => {
+                self.gdi.op_flush();
+            }
+            _ => {}
+        }
         Ok(())
     }
 
@@ -381,14 +575,13 @@ impl SnowFishMachine {
             return Ok(0);
         };
         let lower = path.to_ascii_lowercase();
-        let special = self.res_data.is_some()
-            && !path.is_empty()
-            && (lower.contains(".pak") || lower.contains("res"));
-        let (data, size) = if special {
-            let res = self.res_data.as_ref().unwrap();
-            (0u8, res.len())
-        } else {
-            (1u8, self.container.len())
+        let special = self
+            .res_data
+            .as_ref()
+            .is_some_and(|_| !path.is_empty() && (lower.contains(".pak") || lower.contains("res")));
+        let (data, size) = match (&self.res_data, special) {
+            (Some(res), true) => (0u8, res.len()),
+            _ => (1u8, self.container.len()),
         };
         self.file_slots[idx] = FileSlot {
             in_use: true,
@@ -410,7 +603,7 @@ impl SnowFishMachine {
 
     /// `fread(handle, guest_buf, len)` — copies container bytes.
     fn hook_fread(&mut self, handle: u32, buf: u32, len: u32) -> Result<u32, MachineError> {
-        if handle < 1 || handle > 4 || !self.file_slots[(handle - 1) as usize].in_use {
+        if !(1..=4).contains(&handle) || !self.file_slots[(handle - 1) as usize].in_use {
             debug!("[plat] +0x5C fread h={handle} buf={buf:#x} size={len} -> 0 (bad handle)");
             return Ok(0);
         }
@@ -421,13 +614,13 @@ impl SnowFishMachine {
         let n = (len as usize).min(avail);
         if n > 0 && buf > 0x1000 {
             let src_off = self.file_slots[idx].offset;
-            let data: &[u8] = if self.file_slots[idx]
-                .name
-                .to_ascii_lowercase()
-                .contains("res")
-                && self.res_data.is_some()
-            {
-                &self.res_data.as_ref().unwrap()[src_off..src_off + n]
+            let uses_res = self.res_data.is_some()
+                && self.file_slots[idx]
+                    .name
+                    .to_ascii_lowercase()
+                    .contains("res");
+            let data: &[u8] = if uses_res {
+                &self.res_data.as_deref().unwrap()[src_off..src_off + n]
             } else {
                 &self.container[src_off..src_off + n]
             };
@@ -443,7 +636,7 @@ impl SnowFishMachine {
 
     /// `fseek(handle, offset, whence)` — 0 SET, 1 CUR, 2 END.
     fn hook_fseek(&mut self, handle: u32, offset: u32, whence: u32) -> Result<u32, MachineError> {
-        if handle < 1 || handle > 4 || !self.file_slots[(handle - 1) as usize].in_use {
+        if !(1..=4).contains(&handle) || !self.file_slots[(handle - 1) as usize].in_use {
             debug!("[plat] +0x64 fseek h={handle} off={offset} whence={whence} -> -1 (bad handle)");
             return Ok(u32::MAX);
         }
@@ -470,7 +663,7 @@ impl SnowFishMachine {
     fn hook_lz(&mut self, src: u32, src_len: u32, dst: u32, out: u32) -> Result<u32, MachineError> {
         self.lz_calls += 1;
         debug!("[plat] +0x108 lz src={src:#x} len={src_len} dst={dst:#x} out={out:#x}");
-        if src_len == 0 || src_len > 0x400000 || src <= 0x1000 || dst <= 0x1000 {
+        if src_len == 0 || !(1..=0x400000).contains(&src_len) || src <= 0x1000 || dst <= 0x1000 {
             if out > 0x1000 {
                 self.mem.write_u32(out, 0)?;
             }
@@ -479,9 +672,23 @@ impl SnowFishMachine {
         let cap = 0x100000usize;
         let mut srcbuf = vec![0u8; src_len as usize];
         self.mem.read(src, &mut srcbuf)?;
-        match lz::decompress(&srcbuf, &[], cap) {
+        // The platform keeps a rolling decompression window per destination:
+        // matches reaching before the block start read the previous output
+        // (zero-initialized before the first block).
+        let window_tail: Vec<u8> = {
+            let entry = self.lz_windows.entry(dst).or_default();
+            let start = entry.len().saturating_sub(0x8000);
+            entry[start..].to_vec()
+        };
+        match lz::decompress(&srcbuf, &window_tail, cap) {
             Ok(data) => {
                 let out_len = data.len();
+                {
+                    let entry = self.lz_windows.entry(dst).or_default();
+                    entry.extend_from_slice(&data);
+                    let keep_start = entry.len().saturating_sub(0x10000);
+                    entry.drain(..keep_start);
+                }
                 self.mem.write(dst, &data)?;
                 if out > 0x1000 {
                     self.mem.write_u32(out, out_len as u32)?;
@@ -497,7 +704,7 @@ impl SnowFishMachine {
                 Ok(match e {
                     lz::LzError::InvalidToken => u32::MAX,
                     lz::LzError::OutputFull => u32::MAX - 1,
-                    lz::LzError::BadOffset => u32::MAX - 5,
+                    lz::LzError::BadOffset { .. } => u32::MAX - 5,
                     lz::LzError::SourceOverrun => u32::MAX - 3,
                     lz::LzError::SourceTruncated => u32::MAX - 7,
                     lz::LzError::BadTerminator(_) => u32::MAX,
@@ -506,7 +713,9 @@ impl SnowFishMachine {
         }
     }
 
-    /// Boots the guest (selector -1) and captures the registered handler.
+    /// Boots the guest: init (selector -1, registers the handler), then the
+    /// start (1) and first-tick (3) calls, mirroring the platform's boot
+    /// sequence.
     pub fn boot(&mut self, budget: u64) -> Result<(), MachineError> {
         self.app_call(-1, 0, budget)?;
         if self.handler == 0 {
@@ -514,6 +723,8 @@ impl SnowFishMachine {
         } else {
             info!("guest handler registered at {:#010x}", self.handler);
         }
+        self.app_call(1, 0, budget)?;
+        self.app_call(3, 0, budget)?;
         Ok(())
     }
 
@@ -537,14 +748,23 @@ impl SnowFishMachine {
                 self.mem.write_u32(APP_RECORD_ADDR, registered)?;
                 self.mem
                     .write_u32(registered.wrapping_add(0x40), u32::MAX)?;
+                let mut dump = String::new();
+                for k in 0..16u32 {
+                    let v = self.mem.read_u32(registered + k * 4)?;
+                    dump.push_str(&format!("{:08x} ", v));
+                }
+                debug!("app_root block: {dump}");
             }
         } else {
-            // Event: handler(self, selector, param, 0).
+            // Event: the registered value is a block pointer; the block's
+            // first word is the dispatch function. Call it as
+            // fn(app_root, selector, param, 0).
+            let entry = self.mem.read_u32(self.handler)?;
             self.cpu.reg_set(0, self.handler);
             self.cpu.reg_set(1, selector as u32);
             self.cpu.reg_set(2, param);
             self.cpu.reg_set(3, 0);
-            self.cpu.reg_set(armv4t_emu::reg::PC, self.handler);
+            self.cpu.reg_set(armv4t_emu::reg::PC, entry);
             self.run_until_return(budget)?;
         }
         self.mem.write_u8(self.state_addr(), 3)?;
@@ -571,9 +791,11 @@ impl SnowFishMachine {
         Ok(())
     }
 
-    /// Advances one frame: pump events and count the frame.
+    /// Advances one frame: pump queued events, deliver the frame tick
+    /// (selector 10, the host paces at ~20 fps), count the frame.
     pub fn run_frame(&mut self, budget: u64) -> Result<(), MachineError> {
         self.pump(budget)?;
+        self.app_call(10, 0, budget)?;
         self.frame_count += 1;
         Ok(())
     }
@@ -589,17 +811,37 @@ impl SnowFishMachine {
     }
 
     /// Copy of the guest framebuffer as RGBA8 (minifb-ready).
-    pub fn frame_pixels(&self) -> Result<Vec<u32>, MachineError> {
-        let raw = self.mem.slice(plat::FB_ADDR, plat::FB_SIZE)?;
-        let mut out = Vec::with_capacity((plat::FB_SIZE / 2) as usize);
-        for px in raw.chunks_exact(2) {
-            let v = u16::from_le_bytes([px[0], px[1]]);
-            let r = ((v >> 11) & 0x1F) as u32;
-            let g = ((v >> 5) & 0x3F) as u32;
-            let b = (v & 0x1F) as u32;
-            out.push(0xFF00_0000 | (r << 19) | (g << 10) | (b << 3));
+    pub fn frame_pixels(&self) -> Vec<u32> {
+        self.gdi.frame_pixels()
+    }
+
+    /// Whether the display changed since the last presentation.
+    pub fn take_dirty(&mut self) -> bool {
+        self.gdi.take_dirty()
+    }
+
+    /// GDI call counters (fill, text, draw, clear, fill2, flush).
+    pub fn gdi_counters(&self) -> [u64; 6] {
+        self.gdi.counters()
+    }
+
+    /// The guest framebuffer window as RGBA8 (for apps that draw directly
+    /// into the plat-region surface instead of using the GDI bridge).
+    pub fn guest_fb_pixels(&self) -> Vec<u32> {
+        match self.mem.slice(plat::FB_ADDR, plat::FB_SIZE) {
+            Ok(raw) => {
+                let mut out = Vec::with_capacity((plat::FB_SIZE / 2) as usize);
+                for pair in raw.chunks_exact(2) {
+                    let v = u16::from_le_bytes([pair[0], pair[1]]);
+                    let r = ((v >> 11) & 0x1F) as u32;
+                    let g = ((v >> 5) & 0x3F) as u32;
+                    let b = (v & 0x1F) as u32;
+                    out.push(0xFF00_0000 | (r << 19) | (g << 10) | (b << 3));
+                }
+                out
+            }
+            Err(_) => Vec::new(),
         }
-        Ok(out)
     }
 
     /// Heap base (the guest's scratch window for decompression).

@@ -33,8 +33,8 @@ pub enum LzError {
     InvalidToken,
     #[error("output capacity exceeded")]
     OutputFull,
-    #[error("invalid match offset")]
-    BadOffset,
+    #[error("invalid match offset {off} at out {out_len}, ip {ip}")]
+    BadOffset { off: i64, out_len: usize, ip: usize },
     #[error("source overrun")]
     SourceOverrun,
     #[error("source truncated")]
@@ -108,7 +108,7 @@ pub fn decompress(src: &[u8], window: &[u8], dst_cap: usize) -> Result<Vec<u8>, 
                     if out.len() >= dst_cap {
                         return Err(LzError::OutputFull);
                     }
-                    let b = copy_byte(&out, prev, start + (k as i64))?;
+                    let b = copy_byte(&out, prev, start + (k as i64), ip)?;
                     out.push(b);
                 }
                 let tail = f & 3;
@@ -157,12 +157,12 @@ pub fn decompress(src: &[u8], window: &[u8], dst_cap: usize) -> Result<Vec<u8>, 
                 }
                 return Ok(out);
             }
-            let start = v as i64 - 0x4000;
+            let start = (v as i32) as i64 - 0x4000;
             for k in 0..(len + 2) {
                 if out.len() >= dst_cap {
                     return Err(LzError::OutputFull);
                 }
-                let b = copy_byte(&out, prev, start + (k as i64))?;
+                let b = copy_byte(&out, prev, start + (k as i64), ip)?;
                 out.push(b);
             }
             let tail = (src[p] & 3) as usize;
@@ -193,7 +193,7 @@ pub fn decompress(src: &[u8], window: &[u8], dst_cap: usize) -> Result<Vec<u8>, 
                 if out.len() >= dst_cap {
                     return Err(LzError::OutputFull);
                 }
-                let b = copy_byte(&out, prev, start + (k as i64))?;
+                let b = copy_byte(&out, prev, start + (k as i64), ip)?;
                 out.push(b);
             }
             let tail = (src[p] & 3) as usize;
@@ -213,7 +213,7 @@ pub fn decompress(src: &[u8], window: &[u8], dst_cap: usize) -> Result<Vec<u8>, 
                 if out.len() >= dst_cap {
                     return Err(LzError::OutputFull);
                 }
-                let b = copy_byte(&out, prev, start + (k as i64))?;
+                let b = copy_byte(&out, prev, start + (k as i64), ip)?;
                 out.push(b);
             }
             let tail = (f & 3) as usize;
@@ -230,7 +230,7 @@ pub fn decompress(src: &[u8], window: &[u8], dst_cap: usize) -> Result<Vec<u8>, 
 
 /// Reads one byte for a match copy. Negative offsets index the previous
 /// block's output tail; offsets past the current output are errors.
-fn copy_byte(out: &[u8], prev: &[u8], off: i64) -> Result<u8, LzError> {
+fn copy_byte(out: &[u8], prev: &[u8], off: i64, ip: usize) -> Result<u8, LzError> {
     if off < 0 {
         let idx = (prev.len() as i64 + off) as usize;
         if idx < prev.len() {
@@ -239,7 +239,11 @@ fn copy_byte(out: &[u8], prev: &[u8], off: i64) -> Result<u8, LzError> {
             Ok(0)
         }
     } else if (off as usize) >= out.len() {
-        Err(LzError::BadOffset)
+        Err(LzError::BadOffset {
+            off,
+            out_len: out.len(),
+            ip,
+        })
     } else {
         Ok(out[off as usize])
     }

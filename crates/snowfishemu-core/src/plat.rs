@@ -22,6 +22,9 @@ pub const CANVAS_ADDR: u32 = STUB_ADDR + 0x80;
 pub const FB_ADDR: u32 = CANVAS_ADDR + 0x10;
 /// Framebuffer size in bytes (240 * 320 * 2).
 pub const FB_SIZE: u32 = 0x25800;
+/// Framebuffer dimensions.
+pub const FB_WIDTH: u32 = 240;
+pub const FB_HEIGHT: u32 = 320;
 /// Guest address of the vtable record.
 pub const VTABLE_ADDR: u32 = PLAT_BASE + 0x640;
 /// Guest address of the app record the entry code reads.
@@ -64,6 +67,8 @@ pub const ROOT_SLOT_HEAP: u32 = 0x030;
 pub const ROOT_SLOT_CODE: u32 = 0x034;
 /// Slots pointing at the fopen stub.
 pub const ROOT_SLOTS_FOPEN: &[u32] = &[0x058, 0x05C];
+/// Slots pointing at the plain return-1 stub.
+pub const ROOT_SLOTS_RET1: &[u32] = &[0x04C];
 /// Slot pointing at the state-store stub.
 pub const ROOT_SLOT_STATE: u32 = 0x524;
 
@@ -122,6 +127,9 @@ pub fn layout(mem: &mut crate::mem::GuestMem, code_base: u32, image_size: u32) {
     w(mem, ROOT_ADDR + ROOT_SLOT_HEAP, STUB_HEAP_BASE);
     w(mem, ROOT_ADDR + ROOT_SLOT_CODE, STUB_CODE_BASE);
     for slot in ROOT_SLOTS_FOPEN {
+        w(mem, ROOT_ADDR + slot, STUB_FOPEN_ADDR);
+    }
+    for slot in ROOT_SLOTS_RET1 {
         w(mem, ROOT_ADDR + slot, STUB_FOPEN_ADDR);
     }
     w(mem, ROOT_ADDR + ROOT_SLOT_STATE, STUB_STORE_ADDR);
@@ -202,6 +210,7 @@ mod tests {
             mem.read_u32(ROOT_ADDR + ROOT_SLOTS_FOPEN[1]).unwrap(),
             STUB_FOPEN_ADDR
         );
+        assert_eq!(mem.read_u32(ROOT_ADDR + 0x4C).unwrap(), STUB_FOPEN_ADDR);
         assert_eq!(
             mem.read_u32(ROOT_ADDR + ROOT_SLOT_STATE).unwrap(),
             STUB_STORE_ADDR
