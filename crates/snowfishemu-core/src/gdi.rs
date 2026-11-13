@@ -11,6 +11,7 @@ use crate::plat::{FB_HEIGHT, FB_WIDTH};
 /// Display bridge state. All drawing lands in the guest framebuffer window
 /// (plat region 0x540720) — the same surface the canvas descriptor points
 /// at, so GDI ops and direct guest writes compose on one surface.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Gdi {
     dirty: bool,
     fill_color: u16,

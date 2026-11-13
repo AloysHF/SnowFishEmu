@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "core": "snowfishemu",
+  "so_name": "libsnowfishemu_libretro.so",
+  "system": "snowfish",
+  "display_name": {
+    "en": "SnowFish",
+    "zh": "雪鲤鱼"
+  },
+  "short_name": "SnowFish",
+  "manufacturer": "Shanghai SnowFish",
+  "supported_extensions": ["app"],
+  "save_state_format": 1,
+  "firmware": [],
+  "input": {
+    "preset": "dpad-ab-lr-select"
+  },
+  "video": {
+    "orientation": "portrait",
+    "pixel_format": "xrgb8888"
+  },
+  "notes": {
+    "en": "Loads .app SnowFish applications. Uses a phone keypad: D-pad, Confirm, soft keys and Select for the number layer. Titles present a 240x320 portrait screen. An optional sibling resource file next to the content (content-stem.pak/.res, or a single .pak/res-named file) is served to games that request one.",
+    "zh": "加载 .app 雪鲤鱼应用。操作对应手机键盘：方向键、确认键、左右软键，按住 Select 切换数字层。游戏为 240x320 竖屏。若内容旁存在资源文件（与内容同名的 .pak/.res，或唯一的 .pak/res 命名文件），会自动提供给需要它的游戏。"
+  }
+}

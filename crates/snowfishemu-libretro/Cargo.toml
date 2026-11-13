@@ -1,14 +1,16 @@
 [package]
 name = "snowfishemu-libretro"
+description = "SnowFish/SFA application emulator - Libretro core"
 version.workspace = true
 edition.workspace = true
-description.workspace = true
 license.workspace = true
 
 [lib]
 name = "snowfishemu_libretro"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "staticlib"]
+path = "src/lib.rs"
 
 [dependencies]
 snowfishemu-core = { workspace = true }
+anyhow = { workspace = true }
 log = { workspace = true }

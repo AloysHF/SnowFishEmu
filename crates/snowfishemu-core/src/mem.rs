@@ -9,6 +9,7 @@ use crate::consts::{
     APP_DATA_BASE, APP_DATA_SIZE, CODE_MAX_SIZE, CODE_REGION_BASE, HEAP_BASE, HEAP_SIZE, PLAT_BASE,
     PLAT_SIZE, STACK_BASE, STACK_SIZE,
 };
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Guest memory errors.
@@ -16,16 +17,18 @@ use thiserror::Error;
 pub enum MemError {
     #[error("unmapped guest address 0x{0:08X}")]
     Unmapped(u32),
+    #[error("region layout mismatch")]
+    LayoutMismatch,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Region {
     base: u32,
     data: Vec<u8>,
 }
 
 /// Guest address space.
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuestMem {
     regions: Vec<Region>,
 }
@@ -153,6 +156,46 @@ impl GuestMem {
         let region = self.region(addr, len)?;
         let off = (addr - region.base) as usize;
         Ok(&region.data[off..off + len as usize])
+    }
+
+    /// (base, len) of every mapped region, in address order. Read-only
+    /// layout summary for tools and frontend memory registration.
+    pub fn region_spans(&self) -> Vec<(u32, usize)> {
+        self.regions
+            .iter()
+            .map(|r| (r.base, r.data.len()))
+            .collect()
+    }
+
+    /// Raw pointer to the first byte of the region based at `base`.
+    ///
+    /// The allocation lives as long as the machine does (regions never
+    /// resize after load), so frontends may keep the pointer across frames.
+    pub fn region_pointer(&mut self, base: u32) -> Option<*mut u8> {
+        self.regions
+            .iter_mut()
+            .find(|r| r.base == base)
+            .map(|r| r.data.as_mut_ptr())
+    }
+
+    /// Copies the region contents of `src` into `self` in place.
+    ///
+    /// Both maps must have the same region layout; differing layouts are a
+    /// caller bug (a save state restored into mismatched content), reported
+    /// as [`MemError::LayoutMismatch`]. Copying in place (instead of
+    /// swapping maps) keeps raw region pointers handed out through
+    /// [`GuestMem::region_pointer`] valid across a save-state restore.
+    pub fn copy_regions_from(&mut self, src: &GuestMem) -> Result<(), MemError> {
+        if self.regions.len() != src.regions.len() {
+            return Err(MemError::LayoutMismatch);
+        }
+        for (dst, src) in self.regions.iter_mut().zip(&src.regions) {
+            if dst.base != src.base || dst.data.len() != src.data.len() {
+                return Err(MemError::LayoutMismatch);
+            }
+            dst.data.copy_from_slice(&src.data);
+        }
+        Ok(())
     }
 }
 

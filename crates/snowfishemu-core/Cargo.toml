@@ -10,6 +10,8 @@ unarm = "2.3"
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
 armv4t_emu = { workspace = true }
 unifont = "1.1"
 

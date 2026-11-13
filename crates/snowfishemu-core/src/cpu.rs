@@ -110,6 +110,7 @@ pub enum StepOutcome {
 }
 
 /// ARM execution bridge over the guest memory map.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ArmCpu {
     cpu: Cpu,
     read_faults: u64,

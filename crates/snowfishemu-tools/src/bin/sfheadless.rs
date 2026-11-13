@@ -75,11 +75,21 @@ fn main() -> Result<()> {
             let _ = std::fs::write(dir.join(format!("frame_{i:03}.raw")), &out);
         }
     }
+    let mut key_frame = args.frames;
     for k in &args.keys {
         m.set_key(*k, true)?;
         m.run_frame(args.budget)?;
         m.set_key(*k, false)?;
         m.run_frame(args.budget)?;
+        if let Some(dir) = &args.dump_fb {
+            let px = m.frame_pixels();
+            let mut out = Vec::new();
+            for p in &px {
+                out.extend_from_slice(&p.to_le_bytes());
+            }
+            let _ = std::fs::write(dir.join(format!("frame_{key_frame:03}.raw")), &out);
+        }
+        key_frame += 2;
     }
     eprintln!(
         "gdi counters [fill,text,draw,clear,fill2,flush] = {:?}",

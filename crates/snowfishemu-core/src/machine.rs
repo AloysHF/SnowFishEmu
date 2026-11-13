@@ -154,23 +154,23 @@ fn basename(path: &str) -> &str {
 }
 
 /// One open file slot served from container bytes.
-#[derive(Debug, Default, Clone)]
-struct FileSlot {
-    in_use: bool,
-    offset: usize,
-    size: usize,
-    name: String,
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct FileSlot {
+    pub(crate) in_use: bool,
+    pub(crate) offset: usize,
+    pub(crate) size: usize,
+    pub(crate) name: String,
 }
 
 /// Queued guest event.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Event {
     pub selector: i32,
     pub param: u32,
 }
 
 /// Event queue (64 entries, drop-on-full like the reference).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EventQueue {
     events: Vec<Event>,
 }
@@ -485,6 +485,11 @@ impl SnowFishMachine {
                 let key = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
                 let pal = u32::from_le_bytes([hdr[12], hdr[13], hdr[14], hdr[15]]);
                 let data = u32::from_le_bytes([hdr[16], hdr[17], hdr[18], hdr[19]]);
+                if self.trace {
+                    debug!(
+                        "[gdi] draw desc {bmp_ptr:#x}: sw={sw} sh={sh} key={key:#x} pal={pal:#x} data={data:#x}"
+                    );
+                }
                 let data = if data > 0x1000 && data <= 0x7F_FFFF {
                     data
                 } else {
@@ -865,6 +870,60 @@ impl SnowFishMachine {
     pub fn heap_base(&self) -> u32 {
         HEAP_BASE
     }
+
+    /// Content fingerprint over the container and resource bytes; save
+    /// states carry it so they are only restored into matching content.
+    fn content_fingerprint(&self) -> u64 {
+        let res: &[u8] = self.res_data.as_deref().unwrap_or(&[]);
+        crate::save::content_fingerprint([&self.container, res])
+    }
+
+    /// Full-state snapshot as a versioned, self-checking blob.
+    ///
+    /// The blob covers everything the guest can observe across frames
+    /// (memory, CPU, handler, file slots, event queue, counters, display
+    /// bridge). Load artifacts (container, resource bytes, wrapper table)
+    /// stay with the loaded machine and are not duplicated in the snapshot.
+    pub fn serialize(&self) -> Vec<u8> {
+        let state = crate::save::MachineState {
+            mem: self.mem.clone(),
+            cpu: self.cpu.clone(),
+            handler: self.handler,
+            file_slots: self.file_slots.clone(),
+            events: self.events.clone(),
+            frame_count: self.frame_count,
+            lz_calls: self.lz_calls,
+            last_pc: self.last_pc,
+            branch_log: self.branch_log.clone(),
+            gdi: self.gdi.clone(),
+        };
+        // Encoding a well-formed snapshot cannot fail; surface any codec
+        // fault loudly rather than returning a corrupt state.
+        crate::save::encode(&state, self.content_fingerprint())
+            .expect("save-state encode of a live machine")
+    }
+
+    /// Restores a snapshot in place, keeping the loaded container, resource
+    /// bytes, and wrapper table. States from other packages or unknown
+    /// formats are rejected; guest memory is copied into the existing
+    /// region allocations so pointers handed out before the restore stay
+    /// valid.
+    pub fn deserialize(&mut self, data: &[u8]) -> Result<(), crate::save::SaveStateError> {
+        let state = crate::save::decode(data, self.content_fingerprint())?;
+        self.mem
+            .copy_regions_from(&state.mem)
+            .map_err(|_| crate::save::SaveStateError::ContentMismatch)?;
+        self.cpu = state.cpu;
+        self.handler = state.handler;
+        self.file_slots = state.file_slots;
+        self.events = state.events;
+        self.frame_count = state.frame_count;
+        self.lz_calls = state.lz_calls;
+        self.last_pc = state.last_pc;
+        self.branch_log = state.branch_log;
+        self.gdi = state.gdi;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -957,5 +1016,72 @@ mod tests {
         assert_eq!(vfile_kind("mysave_save_1.dat"), Some(4));
         assert_eq!(vfile_kind("data.bin"), None);
         assert_eq!(basename("E:\\Application\\data.bin"), "data.bin");
+    }
+
+    /// Save states round-trip the observable runtime state: frame count,
+    /// handler, and guest memory survive serialize -> deserialize.
+    #[test]
+    fn save_state_round_trips_runtime_state() {
+        let container = build_test_image();
+        let mut machine = SnowFishMachine::load(container, None).unwrap();
+        machine.boot(1000).unwrap();
+        machine.app_call(6, 0x08, 1000).unwrap();
+        let blob = machine.serialize();
+
+        // Run further ahead, then rewind and confirm the earlier state.
+        machine.run_frame(1000).unwrap();
+        machine.run_frame(1000).unwrap();
+        let ahead_frames = machine.frame_count();
+        assert_eq!(ahead_frames, 2);
+
+        machine.deserialize(&blob).unwrap();
+        assert!(machine.frame_count() < ahead_frames);
+        assert_eq!(machine.state().unwrap(), 3);
+        assert_ne!(machine.handler, 0);
+        // The restored machine keeps executing guest calls.
+        machine.app_call(6, 0x08, 1000).unwrap();
+        assert_eq!(machine.state().unwrap(), 3);
+    }
+
+    /// A state from other content (different fingerprint) must be rejected
+    /// without touching the running machine.
+    #[test]
+    fn save_state_rejects_foreign_content() {
+        let mut machine = SnowFishMachine::load(build_test_image(), None).unwrap();
+        machine.boot(1000).unwrap();
+        let blob = machine.serialize();
+
+        // Flip a container byte to fake a different package.
+        let mut other = SnowFishMachine::load(build_test_image(), None).unwrap();
+        other.container[0x30] ^= 0xFF;
+        assert!(matches!(
+            other.deserialize(&blob),
+            Err(crate::save::SaveStateError::ContentMismatch)
+        ));
+
+        // Garbage blobs are rejected as well.
+        assert!(matches!(
+            machine.deserialize(b"garbage!"),
+            Err(crate::save::SaveStateError::BadSignature)
+        ));
+    }
+
+    /// Restoring a state keeps the region allocations stable: pointers
+    /// handed out before the restore still address the same guest memory.
+    #[test]
+    fn save_state_restore_keeps_region_pointers_valid() {
+        let mut machine = SnowFishMachine::load(build_test_image(), None).unwrap();
+        machine.boot(1000).unwrap();
+        let ptr = machine
+            .mem
+            .region_pointer(crate::consts::CODE_REGION_BASE)
+            .unwrap();
+        let blob = machine.serialize();
+        machine.deserialize(&blob).unwrap();
+        let ptr_after = machine
+            .mem
+            .region_pointer(crate::consts::CODE_REGION_BASE)
+            .unwrap();
+        assert_eq!(ptr, ptr_after);
     }
 }
