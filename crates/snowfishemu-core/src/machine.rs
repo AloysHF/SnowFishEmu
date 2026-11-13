@@ -350,6 +350,19 @@ impl SnowFishMachine {
             if aligned == STOP_ADDRESS {
                 return Ok(executed);
             }
+            if std::env::var_os("SF_SM_TRACE").is_some()
+                && ((0x1189E4..0x119010).contains(&aligned)
+                    || (0x1223AC..0x122E90).contains(&aligned)
+                    || (0x11B050..0x11B520).contains(&aligned))
+            {
+                debug!(
+                    "[sm] {aligned:#010x} r0={:08x} r1={:08x} r2={:08x} r3={:08x}",
+                    self.cpu.reg_get(0),
+                    self.cpu.reg_get(1),
+                    self.cpu.reg_get(2),
+                    self.cpu.reg_get(3)
+                );
+            }
             if aligned < 0x1000 {
                 // Fetching from the zero vector: a call through a null
                 // pointer. Dump the branch trail for diagnosis.
@@ -1022,6 +1035,13 @@ impl SnowFishMachine {
                 // is what would set them on a real device.
                 let _ = self.mem.write_u32(0x1355F0 + 0x34C, 1);
                 let _ = self.mem.write_u32(0x1355F0 + 0x348, 1);
+                // The SMS queue head (BSS) is zero = "no message": the
+                // callback exits at its first gate. Fabricate a pending
+                // message, and set the pay-flow state machine to its
+                // second phase so the guest walks its own confirmation
+                // steps.
+                let _ = self.mem.write_u32(0x133164, 1);
+                let _ = self.mem.write_u32(0x13533C, 2);
                 job[9] = 1; // result ready
                 job[4] = 8; // payload carries halfwords
                 let be: Vec<u8> = RECEIPT
@@ -1078,15 +1098,15 @@ impl SnowFishMachine {
                 // 0x1355F0 in sanguo): counters 0x348/0x34c gate the send.
                 let read_w = |off: u32| self.mem.read_u32(0x1355F0 + off).unwrap_or(0xFFFF);
                 let cooldown = self.mem.read_u32(0x13498C).unwrap_or(0xFFFF);
+                let s1 = self.mem.read_u32(0x1331A0).unwrap_or(0xFFFF);
+                let s2 = self.mem.read_u8(0x133169).unwrap_or(0xFF);
+                let s3 = self.mem.read_u8(0x1364B4).unwrap_or(0xFF);
+                let s4 = self.mem.read_u8(0x1364B5).unwrap_or(0xFF);
+                let phase = self.mem.read_u32(0x134990).unwrap_or(0xFFFF);
+                let gate = self.mem.read_u32(0x133164).unwrap_or(0xFFFF);
                 debug!(
-                    "[plat] net state: cooldown={cooldown} [344]={} [348]={} [34c]={}",
-                    read_w(0x344),
-                    read_w(0x348),
-                    read_w(0x34C)
+                    "[plat] net state: cooldown={cooldown} s1={s1} s2={s2} s3={s3} s4={s4}                      phase={phase:#010x} gate={gate:#010x}"
                 );
-                if std::env::var_os("SF_FAKE_PAY").is_some() && cooldown == 0 {
-                    let _ = self.mem.write_u32(0x13498C, 2);
-                }
                 let count = self.mem.read_u8(t.count_addr).unwrap_or(0xFF);
                 let mut tgt = [0u8; 64];
                 let _ = self.mem.read(t.target_addr, &mut tgt);
