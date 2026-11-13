@@ -654,7 +654,10 @@ impl SnowFishMachine {
                     }
                 }
                 if self.trace {
-                    debug!("[gdi]+0x{slot:X} fill2 @{x},{y} {w}x{h} c={color:#06x}");
+                    debug!(
+                        "[gdi]+0x{slot:X} fill2 @{x},{y} {w}x{h} c={color:#06x} lr={:#010x}",
+                        self.cpu.reg_get(armv4t_emu::reg::LR)
+                    );
                 }
                 self.gdi.op_fill2(&mut self.mem, x, y, w, h, color);
             }
@@ -1035,13 +1038,29 @@ impl SnowFishMachine {
                 // is what would set them on a real device.
                 let _ = self.mem.write_u32(0x1355F0 + 0x34C, 1);
                 let _ = self.mem.write_u32(0x1355F0 + 0x348, 1);
+                // Screen survey: cycle the UI screen index (0x1332C1, one
+                // 0x14-byte screen-table entry per 20 frames) so every
+                // screen renders into the frame dumps.
+                if std::env::var_os("SF_SCREEN_SCAN").is_some() {
+                    let idx = (self.frame_count / 20) as u8;
+                    let _ = self.mem.write_u8(0x1332C1, idx);
+                }
                 // The SMS queue head (BSS) is zero = "no message": the
                 // callback exits at its first gate. Fabricate a pending
                 // message, and set the pay-flow state machine to its
                 // second phase so the guest walks its own confirmation
                 // steps.
                 let _ = self.mem.write_u32(0x133164, 1);
-                let _ = self.mem.write_u32(0x13533C, 2);
+                // Walk the pay-flow state machine through its phases: 2
+                // (clear the message table), 4 (copy the config), 5 (write
+                // the send record), then hold at 5.
+                let cycle = (self.frame_count % 3) as u32;
+                let phase = match cycle {
+                    0 => 2,
+                    1 => 4,
+                    _ => 5,
+                };
+                let _ = self.mem.write_u32(0x13533C, phase);
                 job[9] = 1; // result ready
                 job[4] = 8; // payload carries halfwords
                 let be: Vec<u8> = RECEIPT
