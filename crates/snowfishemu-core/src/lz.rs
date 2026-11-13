@@ -58,8 +58,8 @@ pub fn decompress(src: &[u8], window: &[u8], dst_cap: usize) -> Result<Vec<u8>, 
     let prev = window;
     let prev_len = prev.len();
 
-    let mut ip: usize = 0;
-    let mut f: u32 = 0;
+    let mut ip: usize;
+    let mut f: u32;
 
     // Reads from the output; negative offsets index the previous block's
     // window tail (further-negative reads yield zeros).
