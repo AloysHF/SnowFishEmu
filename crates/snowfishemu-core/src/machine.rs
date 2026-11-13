@@ -1104,12 +1104,13 @@ impl SnowFishMachine {
                 // second phase so the guest walks its own confirmation
                 // steps.
                 let _ = self.mem.write_u32(0x133164, 1);
-                // Set ALL the decoded conditions simultaneously:
-                // s1 = 1 (the dispatcher's dispatch state), the pay-flow
-                // state = 2 (the clear-table handler), so the dispatcher
-                // selects the phase and the handler runs.
-                let _ = self.mem.write_u32(0x1331A0, 1);
-                let _ = self.mem.write_u32(0x13533C, 2);
+                // Seed once: s1 = 1 (the dispatcher state), the pay-flow
+                // state = 2 (the clear-table handler). Let the nested
+                // state machines advance the state on their own.
+                if self.frame_count == 0 {
+                    let _ = self.mem.write_u32(0x1331A0, 1);
+                    let _ = self.mem.write_u32(0x13533C, 2);
+                }
                 // Screen survey: cycle the game's screen state [0x12FF44]
                 // through values 1-17, 20 frames each, to see every screen.
                 if std::env::var_os("SF_SCREEN_SCAN").is_some() {
@@ -1192,6 +1193,15 @@ impl SnowFishMachine {
                     0
                 };
                 let cfg = self.mem.read_u8(0x133189).unwrap_or(0xFF);
+                // The 0x115900 config struct at 0x13873E: 5 signed halfwords
+                let hw: Vec<i16> = (0..5)
+                    .filter_map(|k| self.mem.read_u16(0x13873E + k * 2).ok())
+                    .map(|v| v as i16)
+                    .collect();
+                let buf5: Vec<u32> = (0..5)
+                    .filter_map(|k| self.mem.read_u32(0x3FFF9C + k * 4).ok())
+                    .collect();
+                debug!("[plat] cfg hw={hw:?} buf5={buf5:?}");
                 let expected = self
                     .mem
                     .read_u32(0x1367B8 + cfg as u32 * 4)
