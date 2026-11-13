@@ -82,9 +82,6 @@ pub fn scan_wrappers(code: &[u8]) -> Vec<Wrapper> {
         }
         let hook = CODE_BASE + (w * 4) as u32;
         let ret = hook + 0xC;
-        if out.iter().any(|e: &Wrapper| e.slot == slot) {
-            continue;
-        }
         out.push(Wrapper { slot, hook, ret });
     }
     out
@@ -328,7 +325,7 @@ impl SnowFishMachine {
     fn hooked_slot_ret(&self, w: &Wrapper) -> Option<u32> {
         match w.slot {
             0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 => Some(w.ret),
-            0x12C | 0x154 | 0x198 | 0x194 | 0x184 | 0x15C | 0x010 => Some(w.ret),
+            0x12C | 0x154 | 0x180 | 0x198 | 0x194 | 0x184 | 0x15C | 0x010 => Some(w.ret),
             _ => None,
         }
     }
@@ -457,7 +454,8 @@ impl SnowFishMachine {
                 Some(u32::MAX) // fclose always returns -1
             }
             0x108 => Some(self.hook_lz(r(0), r(1), r(2), r(3))?),
-            0x12C | 0x154 | 0x198 | 0x194 | 0x184 | 0x15C | 0x010 => {
+            0x12C | 0x130 | 0x134 | 0x140 | 0x154 | 0x158 | 0x180 | 0x198 | 0x194 | 0x184
+            | 0x15C | 0x010 => {
                 // GDI slots leave r0 untouched (the reference writes PC only).
                 self.exec_gdi(slot, ret)?;
                 None
@@ -620,6 +618,22 @@ impl SnowFishMachine {
                     self.mem.write_u16(r(0) + 0x2C, rgb565)?;
                 }
             }
+            0x180 => {
+                // set-color(obj, rgb888) — records the pen/text color: the
+                // painter calls it before drawing the content lines.
+                let rgb24 = r(1) & 0xFFFFFF;
+                let (rgb24, rgb565) =
+                    self.gdi
+                        .op_clear((rgb24 >> 16) & 0xFF, (rgb24 >> 8) & 0xFF, rgb24 & 0xFF);
+                if self.trace {
+                    debug!("[gdi]+0x180 set-color rgb24={rgb24:#08x} rgb565={rgb565:#06x}");
+                }
+                if r(0) > 0x1000 {
+                    let bytes = rgb24.to_le_bytes();
+                    let _ = self.mem.write(r(0) + 0x28, &bytes[..3]);
+                    let _ = self.mem.write_u16(r(0) + 0x2C, rgb565);
+                }
+            }
             0x15C => {
                 // fill2(obj, x, y, w, h) — color from the canvas object.
                 let adj = self.sp_adjust(ret);
@@ -652,6 +666,22 @@ impl SnowFishMachine {
             }
             0x010 => {
                 self.gdi.op_flush(&self.mem);
+            }
+            // +0x130/+0x140: the long-form fill/text variants the help
+            // viewer uses for its content lines. Their exact argument
+            // layout is still being decoded; r0 = canvas.
+            0x130 | 0x140 => {
+                let adj = self.sp_adjust(ret);
+                let x = r(1) as i32;
+                let y = r(2) as i32;
+                if self.trace {
+                    let raw1 = r(1);
+                    let raw2 = r(2);
+                    debug!(
+                        "[gdi]+0x{slot:X} variant raw1={raw1:#010x} raw2={raw2:#010x} x={x} y={y}"
+                    );
+                }
+                let _ = adj;
             }
             _ => {}
         }
@@ -1067,11 +1097,15 @@ impl SnowFishMachine {
                 // second phase so the guest walks its own confirmation
                 // steps.
                 let _ = self.mem.write_u32(0x133164, 1);
-                // Seed the pay-flow state machine at phase 2 once; the
-                // phase handlers advance it themselves.
-                if self.mem.read_u32(0x13533C).unwrap_or(0) == 0 {
-                    let _ = self.mem.write_u32(0x13533C, 2);
-                }
+                // Walk the pay-flow state machine: hold each phase for 30
+                // deliveries so its handler completes multi-tick work.
+                let f = self.frame_count;
+                let phase = match f {
+                    0..=29 => 2,
+                    30..=59 => 4,
+                    _ => 5,
+                };
+                let _ = self.mem.write_u32(0x13533C, phase);
                 job[9] = 1; // result ready
                 job[4] = 8; // payload carries halfwords
                 let be: Vec<u8> = RECEIPT
