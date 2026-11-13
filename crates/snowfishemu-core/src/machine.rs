@@ -162,6 +162,9 @@ pub(crate) struct FileSlot {
     pub(crate) offset: usize,
     pub(crate) size: usize,
     pub(crate) name: String,
+    /// In-memory backing store for writable service files (empty for the
+    /// container/res-backed read-only slots).
+    pub(crate) data: Vec<u8>,
 }
 
 /// Queued guest event.
@@ -216,15 +219,58 @@ pub struct SnowFishMachine {
     branch_log: Vec<(u32, u32)>,
     gdi: Gdi,
     timer: Option<GuestTimer>,
+    /// Persistent contents of the guest-writable service files (the SMS
+    /// billing records), keyed by full path.
+    named_files: std::collections::HashMap<String, Vec<u8>>,
 }
 
 /// A guest-registered timer callback (platform slot +0x500,
 /// `timerStart(id, callback, context)`).
+///
+/// The shared SDK pay callback also carries three data-section references
+/// decoded from its own literal loads: the pattern-item array, the item
+/// count byte, and the match target buffer (see [`Self::decode_tables`]).
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct GuestTimer {
     pub id: u32,
     pub entry: u32,
     pub ctx: u32,
+    pub item_array: u32,
+    pub count_addr: u32,
+    pub target_addr: u32,
+}
+
+impl GuestTimer {
+    /// Decodes the callback's data-table references from its own literal
+    /// loads. The shared SDK callback loads the pattern-item array into r6,
+    /// the item count byte address into r7 and the match target into r1 via
+    /// `ldr rX, [pc, #imm]` within its first 0x80 bytes; anything that does
+    /// not fit that shape leaves the fields zero and the offline shim skips.
+    fn decode_tables(mem: &GuestMem, entry: u32) -> (u32, u32, u32) {
+        let mut item_array = 0;
+        let mut count_addr = 0;
+        let mut target_addr = 0;
+        for off in (0u32..0x80).step_by(4) {
+            let Ok(word) = mem.read_u32(entry + off) else {
+                break;
+            };
+            if word & 0xFFFF0000 != 0xE59F0000 {
+                continue; // not `ldr rX, [pc, #imm]`
+            }
+            let rd = (word >> 12) & 0xF;
+            let pool = entry + off + 8 + (word & 0xFFF);
+            let Ok(value) = mem.read_u32(pool) else {
+                continue;
+            };
+            match rd {
+                6 => item_array = value,
+                7 => count_addr = value,
+                1 => target_addr = value,
+                _ => {}
+            }
+        }
+        (item_array, count_addr, target_addr)
+    }
 }
 
 impl SnowFishMachine {
@@ -262,6 +308,7 @@ impl SnowFishMachine {
             branch_log: Vec::new(),
             gdi: Gdi::new(),
             timer: None,
+            named_files: std::collections::HashMap::new(),
         })
     }
 
@@ -279,7 +326,7 @@ impl SnowFishMachine {
     /// through the root-table stubs).
     fn hooked_slot_ret(&self, w: &Wrapper) -> Option<u32> {
         match w.slot {
-            0x7C | 0x58 | 0x5C | 0x64 | 0x68 | 0x108 => Some(w.ret),
+            0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 => Some(w.ret),
             0x12C | 0x154 | 0x198 | 0x194 | 0x184 | 0x15C | 0x010 => Some(w.ret),
             _ => None,
         }
@@ -330,16 +377,23 @@ impl SnowFishMachine {
                 if w.slot == 0x500 {
                     // timerStart(id, callback, context): record the latest
                     // registration so the frame loop can deliver the callback.
-                    self.timer = Some(GuestTimer {
-                        id: self.cpu.reg_get(0),
-                        entry: self.cpu.reg_get(1),
-                        ctx: self.cpu.reg_get(2),
-                    });
-                    debug!(
-                        "[plat] timer registered id={} cb={:#010x} ctx={:#010x}",
+                    let (id, entry, ctx) = (
                         self.cpu.reg_get(0),
                         self.cpu.reg_get(1),
-                        self.cpu.reg_get(2)
+                        self.cpu.reg_get(2),
+                    );
+                    let (item_array, count_addr, target_addr) =
+                        GuestTimer::decode_tables(&self.mem, entry);
+                    self.timer = Some(GuestTimer {
+                        id,
+                        entry,
+                        ctx,
+                        item_array,
+                        count_addr,
+                        target_addr,
+                    });
+                    debug!(
+                        "[plat] timer registered id={id} cb={entry:#010x} ctx={ctx:#010x}                          items={item_array:#010x} count={count_addr:#010x} target={target_addr:#010x}"
                     );
                 }
             }
@@ -382,6 +436,7 @@ impl SnowFishMachine {
             }
             0x58 => Some(self.hook_fopen(r(0), r(1))?),
             0x5C => Some(self.hook_fread(r(0), r(1), r(2))?),
+            0x60 => Some(self.hook_fwrite(r(0), r(1), r(2))?),
             0x64 => Some(self.hook_fseek(r(0), r(1), r(2))?),
             0x68 => {
                 let h = r(0);
@@ -620,6 +675,31 @@ impl SnowFishMachine {
             .res_data
             .as_ref()
             .is_some_and(|_| !path.is_empty() && (lower.contains(".pak") || lower.contains("res")));
+        // The SMS-billing service keeps its request/response records in
+        // guest-visible files (__sfsms*): back them with in-memory data so
+        // the guest can write its request and read the service response.
+        let writable = basename(&path).starts_with("__sfsms");
+        if writable {
+            let stored = self.named_files.get(&path).cloned().unwrap_or_default();
+            let size = stored.len();
+            // flags bit 0 = write intent: start an empty record; otherwise
+            // serve the previously written contents for reading.
+            let data = if flags & 1 != 0 { Vec::new() } else { stored };
+            debug!(
+                "[plat] +0x58 fopen \"{path}\" flags={flags} -> h={} (writable, {} bytes; store={})",
+                idx + 1,
+                data.len(),
+                self.named_files.get(&path).map(|d| d.len()).unwrap_or(0)
+            );
+            self.file_slots[idx] = FileSlot {
+                in_use: true,
+                offset: 0,
+                size,
+                name: path.clone(),
+                data,
+            };
+            return Ok(idx as u32 + 1);
+        }
         let (data, size) = match (&self.res_data, special) {
             (Some(res), true) => (0u8, res.len()),
             _ => (1u8, self.container.len()),
@@ -633,6 +713,7 @@ impl SnowFishMachine {
             } else {
                 path.clone()
             },
+            data: Vec::new(),
         };
         debug!(
             "[plat] +0x58 fopen \"{path}\" flags={flags} -> h={} (size={size}{})",
@@ -643,12 +724,66 @@ impl SnowFishMachine {
     }
 
     /// `fread(handle, guest_buf, len)` — copies container bytes.
+    /// `fwrite(handle, buf, len)` (slot +0x60) — appends to a writable
+    /// service file. The SMS-billing service keeps its request and response
+    /// records in these files; the host logs the bytes to make the record
+    /// format observable.
+    fn hook_fwrite(&mut self, handle: u32, buf: u32, len: u32) -> Result<u32, MachineError> {
+        if !(1..=4).contains(&handle) || !self.file_slots[(handle - 1) as usize].in_use {
+            debug!("[plat] +0x60 fwrite h={handle} buf={buf:#x} size={len} -> 0 (bad handle)");
+            return Ok(0);
+        }
+        let idx = (handle - 1) as usize;
+        let mut chunk = vec![0u8; len as usize];
+        if buf > 0x1000 && len > 0 {
+            self.mem.read(buf, &mut chunk)?;
+        }
+        let name = self.file_slots[idx].name.clone();
+        debug!(
+            "[plat] +0x60 fwrite h={handle} \"{name}\" {} bytes: {:02x?}",
+            len, chunk
+        );
+        if !self.file_slots[idx].data.is_empty()
+            || basename(&self.file_slots[idx].name).starts_with("__sfsms")
+        {
+            let (name, offset) = {
+                let slot = &self.file_slots[idx];
+                (slot.name.clone(), slot.offset)
+            };
+            let entry = self
+                .named_files
+                .entry(name.clone())
+                .or_insert_with(|| self.file_slots[idx].data.clone());
+            let at = offset.min(entry.len());
+            let end = (at + chunk.len()).max(entry.len());
+            entry.resize(end, 0);
+            entry[at..at + chunk.len()].copy_from_slice(&chunk);
+            let slot = &mut self.file_slots[idx];
+            slot.data = entry.clone();
+            slot.offset = at + chunk.len();
+            slot.size = slot.data.len();
+        }
+        Ok(len)
+    }
+
     fn hook_fread(&mut self, handle: u32, buf: u32, len: u32) -> Result<u32, MachineError> {
         if !(1..=4).contains(&handle) || !self.file_slots[(handle - 1) as usize].in_use {
             debug!("[plat] +0x5C fread h={handle} buf={buf:#x} size={len} -> 0 (bad handle)");
             return Ok(0);
         }
         let idx = (handle - 1) as usize;
+        if !self.file_slots[idx].data.is_empty() {
+            let slot = &self.file_slots[idx];
+            let avail = slot.data.len().saturating_sub(slot.offset);
+            let n = (len as usize).min(avail);
+            if n > 0 && buf > 0x1000 {
+                let chunk = slot.data[slot.offset..slot.offset + n].to_vec();
+                self.mem.write(buf, &chunk)?;
+            }
+            self.file_slots[idx].offset += n;
+            debug!("[plat] +0x5C fread h={handle} -> {n} (writable file)");
+            return Ok(n as u32);
+        }
         let avail = self.file_slots[idx]
             .size
             .saturating_sub(self.file_slots[idx].offset);
@@ -854,11 +989,66 @@ impl SnowFishMachine {
             // at +0xB and a payload buffer at +0x3C. Zeroed = no result.
             let mut job = [0u8; TIMER_JOB_SIZE as usize];
             if std::env::var_os("SF_FAKE_PAY").is_some() {
-                // Fabricated service response: status byte at +9 (result
-                // ready) with an otherwise empty record.
-                job[9] = 1;
+                // Offline billing receipt. The shared SDK callback renders
+                // the record's narrow string field (+0xB) into the match
+                // target buffer through its own log formatter, copies the
+                // same string into the pattern-item table, and then matches
+                // the table against the target — so delivering a record
+                // whose narrow string is the confirmation number makes the
+                // guest's own code find a match and run its success action
+                // (which serves its pay-info file through the file service).
+                const RECEIPT: &str = "8";
+                let mut text: Vec<u8> = RECEIPT.as_bytes().to_vec();
+                text.push(0);
+                let t = self.timer.expect("timer captured before delivery");
+                if t.item_array != 0 && t.count_addr != 0 {
+                    let mut item = [0u8; 0x20];
+                    item[..text.len().min(0x20)].copy_from_slice(&text);
+                    let _ = self.mem.write(t.item_array, &item);
+                    let _ = self.mem.write_u8(t.count_addr, 1);
+                }
+                job[9] = 1; // result ready
+                job[4] = 8; // payload carries halfwords
+                let be: Vec<u8> = RECEIPT
+                    .encode_utf16()
+                    .flat_map(|c| [(c >> 8) as u8, (c & 0xFF) as u8])
+                    .collect();
+                job[6] = (be.len() / 2) as u8;
+                job[7] = ((be.len() / 2) >> 8) as u8;
+                let so = 0xB;
+                job[so..so + text.len()].copy_from_slice(&text);
+                let po = 0x3C;
+                job[po..po + be.len()].copy_from_slice(&be);
             }
             self.mem.write(TIMER_JOB_ADDR, &job)?;
+            if std::env::var_os("SF_PAY_WATCH").is_some() {
+                let t = self.timer.expect("timer captured before delivery");
+                let count = self.mem.read_u8(t.count_addr).unwrap_or(0xFF);
+                let mut tgt = [0u8; 64];
+                let _ = self.mem.read(t.target_addr, &mut tgt);
+                let to_text = |b: &[u8]| -> String {
+                    b.chunks(2)
+                        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                        .take_while(|&c| c != 0)
+                        .map(|c| char::from_u32(c as u32).unwrap_or('?'))
+                        .collect()
+                };
+                if self.frame_count.is_multiple_of(20) {
+                    let mut dump = String::new();
+                    for i in 0..count.min(12) {
+                        let mut item = [0u8; 0x20];
+                        let _ = self.mem.read(t.item_array + i as u32 * 0x20, &mut item);
+                        dump.push_str(&format!(" [{}] {:?}", i, to_text(&item)));
+                    }
+                    debug!(
+                        "[plat] timer job: frame={} count={} target={:?} items{}",
+                        self.frame_count,
+                        count,
+                        to_text(&tgt),
+                        dump
+                    );
+                }
+            }
             self.cpu.reg_set(armv4t_emu::reg::SP, STACK_TOP);
             self.cpu.reg_set(armv4t_emu::reg::LR, STOP_ADDRESS);
             self.cpu.reg_set(armv4t_emu::reg::CPSR, 0x10);
@@ -868,6 +1058,25 @@ impl SnowFishMachine {
             self.cpu.reg_set(3, 0);
             self.cpu.reg_set(armv4t_emu::reg::PC, t.entry);
             self.run_until_return(budget)?;
+            if std::env::var_os("SF_PAY_WATCH").is_some() {
+                let count = self.mem.read_u8(t.count_addr).unwrap_or(0xFF);
+                let mut tgt = [0u8; 64];
+                let _ = self.mem.read(t.target_addr, &mut tgt);
+                let to_text = |b: &[u8]| -> String {
+                    b.chunks(2)
+                        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                        .take_while(|&c| c != 0)
+                        .map(|c| char::from_u32(c as u32).unwrap_or('?'))
+                        .collect()
+                };
+                debug!(
+                    "[plat] timer cb done: frame={} count={} target={:?} lr={:#010x}",
+                    self.frame_count,
+                    count,
+                    to_text(&tgt),
+                    self.cpu.reg_get(armv4t_emu::reg::LR)
+                );
+            }
         }
         self.frame_count += 1;
         Ok(())
