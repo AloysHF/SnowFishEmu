@@ -283,12 +283,13 @@ impl SnowFishMachine {
         plat::layout(&mut mem, CODE_BASE, image_size);
         let wrappers = scan_wrappers(&image.code);
         info!(
-            "loaded .app: image 0x{image_size:X}, {} wrappers: {:?}",
+            "loaded .app: image 0x{image_size:X}, {} wrappers: {}",
             wrappers.len(),
             wrappers
                 .iter()
-                .map(|w| format!("+0x{:X}", w.slot))
+                .map(|w| format!("+0x{:X}@{:#X}", w.slot, w.hook))
                 .collect::<Vec<_>>()
+                .join(" ")
         );
         let trace = std::env::var_os("SF_TRACE").is_some();
         Ok(Self {
