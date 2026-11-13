@@ -327,7 +327,7 @@ impl SnowFishMachine {
     /// through the root-table stubs).
     fn hooked_slot_ret(&self, w: &Wrapper) -> Option<u32> {
         match w.slot {
-            0x48 | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 => Some(w.ret),
+            0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 => Some(w.ret),
             0x12C | 0x154 | 0x198 | 0x194 | 0x184 | 0x15C | 0x010 => Some(w.ret),
             _ => None,
         }
@@ -437,7 +437,7 @@ impl SnowFishMachine {
                 Some(0u32)
             }
             0x58 => Some(self.hook_fopen(r(0), r(1))?),
-            0x48 => Some(self.hook_sms_fetch(r(0))?),
+            0x48 => Some(self.hook_sms_fetch(r(0), r(1))?),
             0x5C => Some(self.hook_fread(r(0), r(1), r(2))?),
             0x60 => Some(self.hook_fwrite(r(0), r(1), r(2))?),
             0x64 => Some(self.hook_fseek(r(0), r(1), r(2))?),
@@ -734,8 +734,15 @@ impl SnowFishMachine {
     /// The poll phase checks the record's leading dword for the 200-299
     /// port range and the dword at +0x10 against the confirmation-code
     /// pattern; the offline shim fabricates both.
-    fn hook_sms_fetch(&mut self, buf: u32) -> Result<u32, MachineError> {
-        if std::env::var_os("SF_FAKE_PAY").is_some() && buf > 0x1000 {
+    fn hook_sms_fetch(&mut self, buf: u32, kind: u32) -> Result<u32, MachineError> {
+        // kind 1 = the poll query (buffer, 5 words, type 1); the boot-time
+        // info query passes other registers and keeps passthrough
+        // semantics so its flow stays untouched.
+        if std::env::var_os("SF_FAKE_PAY").is_some()
+            && kind == 1
+            && buf > 0x1000
+            && std::env::var_os("SF_NO_SMS").is_none()
+        {
             let rec: [u32; 5] = [0xC8, 0, 0, 0, 0x0002_EAB5];
             let mut bytes = [0u8; 20];
             for (k, v) in rec.iter().enumerate() {
@@ -1123,13 +1130,19 @@ impl SnowFishMachine {
                 let s4 = self.mem.read_u8(0x1364B5).unwrap_or(0xFF);
                 let phase = self.mem.read_u32(0x134990).unwrap_or(0xFFFF);
                 let gate = self.mem.read_u32(0x133164).unwrap_or(0xFFFF);
+                let disp_obj = self.mem.read_u32(0x137214).unwrap_or(0);
+                let disp_vt = if disp_obj > 0x1000 {
+                    self.mem.read_u32(disp_obj).unwrap_or(0)
+                } else {
+                    0
+                };
                 let cfg = self.mem.read_u8(0x133189).unwrap_or(0xFF);
                 let expected = self
                     .mem
                     .read_u32(0x1367B8 + cfg as u32 * 4)
                     .unwrap_or(0xFFFF);
                 debug!(
-                    "[plat] net state: cooldown={cooldown} s1={s1} s2={s2} s3={s3} s4={s4}                      phase={phase:#010x} gate={gate:#010x} cfg={cfg} expect={expected:#010x}"
+                    "[plat] net state: cooldown={cooldown} s1={s1} s2={s2} s3={s3} s4={s4}                      phase={phase:#010x} gate={gate:#010x} cfg={cfg} expect={expected:#010x}                      disp_obj={disp_obj:#010x} disp_vt={disp_vt:#010x}"
                 );
                 let count = self.mem.read_u8(t.count_addr).unwrap_or(0xFF);
                 let mut tgt = [0u8; 64];
