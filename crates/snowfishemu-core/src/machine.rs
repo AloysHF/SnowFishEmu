@@ -1111,6 +1111,10 @@ impl SnowFishMachine {
                     let _ = self.mem.write_u32(0x1331A0, 1);
                     let _ = self.mem.write_u32(0x13533C, 2);
                 }
+                // The flag bytes 0x1364B4/0x1364B5 control both the phase
+                // selection and the 0x117b74 nested machine.
+                let _ = self.mem.write_u8(0x1364B4, 1);
+                let _ = self.mem.write_u8(0x1364B5, 1);
                 // Screen survey: cycle the game's screen state [0x12FF44]
                 // through values 1-17, 20 frames each, to see every screen.
                 if std::env::var_os("SF_SCREEN_SCAN").is_some() {
