@@ -327,7 +327,7 @@ impl SnowFishMachine {
     /// through the root-table stubs).
     fn hooked_slot_ret(&self, w: &Wrapper) -> Option<u32> {
         match w.slot {
-            0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 => Some(w.ret),
+            0x48 | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 => Some(w.ret),
             0x12C | 0x154 | 0x198 | 0x194 | 0x184 | 0x15C | 0x010 => Some(w.ret),
             _ => None,
         }
@@ -350,19 +350,6 @@ impl SnowFishMachine {
             if aligned == STOP_ADDRESS {
                 return Ok(executed);
             }
-            if std::env::var_os("SF_SM_TRACE").is_some()
-                && ((0x1189E4..0x119010).contains(&aligned)
-                    || (0x1223AC..0x122E90).contains(&aligned)
-                    || (0x11B050..0x11B520).contains(&aligned))
-            {
-                debug!(
-                    "[sm] {aligned:#010x} r0={:08x} r1={:08x} r2={:08x} r3={:08x}",
-                    self.cpu.reg_get(0),
-                    self.cpu.reg_get(1),
-                    self.cpu.reg_get(2),
-                    self.cpu.reg_get(3)
-                );
-            }
             if aligned < 0x1000 {
                 // Fetching from the zero vector: a call through a null
                 // pointer. Dump the branch trail for diagnosis.
@@ -379,13 +366,14 @@ impl SnowFishMachine {
                 }
                 // Un-hooked slot: execute the wrapper body natively so the
                 // root-table stub returns its canned value.
-                if self.trace {
+                if self.trace || w.slot == 0x48 {
                     debug!(
-                        "[plat] native slot +0x{:X} lr={:#010x} r0={:08x} r1={:08x}",
+                        "[plat] native slot +0x{:X} lr={:#010x} r0={:08x} r1={:08x} r2={:08x}",
                         w.slot,
                         self.cpu.reg_get(armv4t_emu::reg::LR),
                         self.cpu.reg_get(0),
-                        self.cpu.reg_get(1)
+                        self.cpu.reg_get(1),
+                        self.cpu.reg_get(2)
                     );
                 }
                 if w.slot == 0x500 {
@@ -449,6 +437,7 @@ impl SnowFishMachine {
                 Some(0u32)
             }
             0x58 => Some(self.hook_fopen(r(0), r(1))?),
+            0x48 => Some(self.hook_sms_fetch(r(0))?),
             0x5C => Some(self.hook_fread(r(0), r(1), r(2))?),
             0x60 => Some(self.hook_fwrite(r(0), r(1), r(2))?),
             0x64 => Some(self.hook_fseek(r(0), r(1), r(2))?),
@@ -741,6 +730,23 @@ impl SnowFishMachine {
     }
 
     /// `fread(handle, guest_buf, len)` — copies container bytes.
+    /// `+0x48 fetch_sms_info(buffer)` — the SDK's SMS pay-record fetch.
+    /// The poll phase checks the record's leading dword for the 200-299
+    /// port range and the dword at +0x10 against the confirmation-code
+    /// pattern; the offline shim fabricates both.
+    fn hook_sms_fetch(&mut self, buf: u32) -> Result<u32, MachineError> {
+        if std::env::var_os("SF_FAKE_PAY").is_some() && buf > 0x1000 {
+            let rec: [u32; 5] = [0xC8, 0, 0, 0, 0x0002_EAB5];
+            let mut bytes = [0u8; 20];
+            for (k, v) in rec.iter().enumerate() {
+                bytes[k * 4..k * 4 + 4].copy_from_slice(&v.to_le_bytes());
+            }
+            self.mem.write(buf, &bytes)?;
+            debug!("[plat] +0x48 sms fetch -> fabricated record at {buf:#010x}");
+        }
+        Ok(buf)
+    }
+
     /// `fwrite(handle, buf, len)` (slot +0x60) — appends to a writable
     /// service file. The SMS-billing service keeps its request and response
     /// records in these files; the host logs the bytes to make the record
@@ -1117,8 +1123,13 @@ impl SnowFishMachine {
                 let s4 = self.mem.read_u8(0x1364B5).unwrap_or(0xFF);
                 let phase = self.mem.read_u32(0x134990).unwrap_or(0xFFFF);
                 let gate = self.mem.read_u32(0x133164).unwrap_or(0xFFFF);
+                let cfg = self.mem.read_u8(0x133189).unwrap_or(0xFF);
+                let expected = self
+                    .mem
+                    .read_u32(0x1367B8 + cfg as u32 * 4)
+                    .unwrap_or(0xFFFF);
                 debug!(
-                    "[plat] net state: cooldown={cooldown} s1={s1} s2={s2} s3={s3} s4={s4}                      phase={phase:#010x} gate={gate:#010x}"
+                    "[plat] net state: cooldown={cooldown} s1={s1} s2={s2} s3={s3} s4={s4}                      phase={phase:#010x} gate={gate:#010x} cfg={cfg} expect={expected:#010x}"
                 );
                 let count = self.mem.read_u8(t.count_addr).unwrap_or(0xFF);
                 let mut tgt = [0u8; 64];
