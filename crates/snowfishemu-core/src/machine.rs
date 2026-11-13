@@ -1051,16 +1051,11 @@ impl SnowFishMachine {
                 // second phase so the guest walks its own confirmation
                 // steps.
                 let _ = self.mem.write_u32(0x133164, 1);
-                // Walk the pay-flow state machine through its phases: 2
-                // (clear the message table), 4 (copy the config), 5 (write
-                // the send record), then hold at 5.
-                let cycle = (self.frame_count % 3) as u32;
-                let phase = match cycle {
-                    0 => 2,
-                    1 => 4,
-                    _ => 5,
-                };
-                let _ = self.mem.write_u32(0x13533C, phase);
+                // Seed the pay-flow state machine at phase 2 once; the
+                // phase handlers advance it themselves.
+                if self.mem.read_u32(0x13533C).unwrap_or(0) == 0 {
+                    let _ = self.mem.write_u32(0x13533C, 2);
+                }
                 job[9] = 1; // result ready
                 job[4] = 8; // payload carries halfwords
                 let be: Vec<u8> = RECEIPT
