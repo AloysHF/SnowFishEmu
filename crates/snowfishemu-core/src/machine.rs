@@ -213,16 +213,6 @@ pub struct SnowFishMachine {
     last_pc: u32,
     branch_log: Vec<(u32, u32)>,
     gdi: Gdi,
-    lz_windows: std::collections::HashMap<u32, Vec<u8>>,
-    timer_callback: Option<TimerCallback>,
-}
-
-/// A guest-registered periodic callback (platform timer).
-#[derive(Debug, Clone, Copy)]
-pub struct TimerCallback {
-    pub id: u32,
-    pub entry: u32,
-    pub interval_ms: u64,
 }
 
 impl SnowFishMachine {
@@ -259,8 +249,6 @@ impl SnowFishMachine {
             last_pc: 0,
             branch_log: Vec::new(),
             gdi: Gdi::new(),
-            lz_windows: std::collections::HashMap::new(),
-            timer_callback: None,
         })
     }
 
@@ -280,7 +268,6 @@ impl SnowFishMachine {
         match w.slot {
             0x7C | 0x58 | 0x5C | 0x64 | 0x68 | 0x108 => Some(w.ret),
             0x12C | 0x154 | 0x198 | 0x194 | 0x184 | 0x15C | 0x010 => Some(w.ret),
-            0x500 => Some(w.ret),
             _ => None,
         }
     }
@@ -351,16 +338,6 @@ impl SnowFishMachine {
     /// Executes one hooked platform slot natively and resumes at `ret`.
     fn exec_slot(&mut self, slot: u32, ret: u32) -> Result<(), MachineError> {
         let r = |i: u8| self.cpu.reg_get(i);
-        if slot == 0x500 && self.timer_callback.is_none() {
-            // timerStart(id, callback): the guest registers a periodic
-            // callback the platform must invoke on its own schedule.
-            self.timer_callback = Some(TimerCallback {
-                id: r(0),
-                entry: r(1),
-                interval_ms: 50,
-            });
-            debug!("[plat] timer registered id={} cb={:#010x}", r(0), r(1));
-        }
         let result = match slot {
             0x7C => {
                 let msg = if r(0) > 0x1000 {
@@ -396,7 +373,7 @@ impl SnowFishMachine {
             0x108 => Some(self.hook_lz(r(0), r(1), r(2), r(3))?),
             0x12C | 0x154 | 0x198 | 0x194 | 0x184 | 0x15C | 0x010 => {
                 // GDI slots leave r0 untouched (the reference writes PC only).
-                self.exec_gdi(slot)?;
+                self.exec_gdi(slot, ret)?;
                 None
             }
             _ => {
@@ -428,31 +405,22 @@ impl SnowFishMachine {
             .read_u32(sp.wrapping_add(adj).wrapping_add(4 * n))?)
     }
 
-    /// Hook address wrapper for a slot (for stack-adjust probing).
-    fn wrapper_for_slot(&self, slot: u32) -> u32 {
-        self.wrappers
-            .iter()
-            .find(|w| w.slot == slot)
-            .map(|w| w.ret)
-            .unwrap_or(0)
-    }
-
     /// Executes one hooked GDI slot. Stack args follow the reference's
     /// `SP + adj + 4*n` layout; r0 stays untouched.
-    fn exec_gdi(&mut self, slot: u32) -> Result<(), MachineError> {
+    fn exec_gdi(&mut self, slot: u32, ret: u32) -> Result<(), MachineError> {
         let sp = self.cpu.reg_get(armv4t_emu::reg::SP);
         let r = |i: u8| self.cpu.reg_get(i);
         match slot {
             0x12C => {
                 // fill(obj, x, y, w, h, color)
-                let adj = self.sp_adjust(self.wrapper_for_slot(slot));
+                let adj = self.sp_adjust(ret);
                 let x = r(1) as i32;
                 let y = r(2) as i32;
                 let w = r(3) as i32;
                 let h = self.stack_arg(sp, adj, 1)? as i32;
                 let color = self.stack_arg(sp, adj, 2)?;
                 if self.trace {
-                    debug!("[gdi] fill @{x},{y} {w}x{h} c={color:#06x}");
+                    debug!("[gdi]+0x{slot:X} fill @{x},{y} {w}x{h} c={color:#010x}");
                 }
                 self.gdi.op_fill(&mut self.mem, x, y, w, h, color);
             }
@@ -488,7 +456,7 @@ impl SnowFishMachine {
                         .filter_map(|&c| char::from_u32(c as u32))
                         .collect();
                     debug!(
-                        "[gdi] text @{x},{y} c={color:#06x} len={} \"{text}\"",
+                        "[gdi]+0x{slot:X} text @{x},{y} c={color:#06x} len={} \"{text}\"",
                         chars.len()
                     );
                 }
@@ -496,12 +464,15 @@ impl SnowFishMachine {
             }
             0x198 => {
                 // draw(obj, bmp, w, h, _, dx, dy)
-                let adj = self.sp_adjust(self.wrapper_for_slot(slot));
+                let adj = self.sp_adjust(ret);
                 let bmp_ptr = r(1);
                 let w = self.stack_arg(sp, adj, 1)? as i32;
                 let h = self.stack_arg(sp, adj, 2)? as i32;
                 let dx = self.stack_arg(sp, adj, 4)? as i32;
                 let dy = self.stack_arg(sp, adj, 5)? as i32;
+                if self.trace {
+                    debug!("[gdi]+0x198 draw bmp@{bmp_ptr:#x} clip {w}x{h} @({dx},{dy})");
+                }
                 if bmp_ptr <= 0x1000 || w == 0 || h == 0 || w > 0x400 || h > 0x400 {
                     return Ok(());
                 }
@@ -560,7 +531,7 @@ impl SnowFishMachine {
             }
             0x15C => {
                 // fill2(obj, x, y, w, h) — color from the canvas object.
-                let adj = self.sp_adjust(self.wrapper_for_slot(slot));
+                let adj = self.sp_adjust(ret);
                 let x = r(1) as i32;
                 let y = r(2) as i32;
                 let w = r(3) as i32;
@@ -581,12 +552,12 @@ impl SnowFishMachine {
                     }
                 }
                 if self.trace {
-                    debug!("[gdi] fill2 @{x},{y} {w}x{h} c={color:#06x}");
+                    debug!("[gdi]+0x{slot:X} fill2 @{x},{y} {w}x{h} c={color:#06x}");
                 }
                 self.gdi.op_fill2(&mut self.mem, x, y, w, h, color);
             }
             0x010 => {
-                self.gdi.op_flush();
+                self.gdi.op_flush(&self.mem);
             }
             _ => {}
         }
@@ -714,23 +685,9 @@ impl SnowFishMachine {
             let _ = std::fs::write(&name, &srcbuf);
             info!("dumped {name}");
         }
-        // The platform keeps a rolling decompression window per destination:
-        // matches reaching before the block start read the previous output
-        // (zero-initialized before the first block).
-        let window_tail: Vec<u8> = {
-            let entry = self.lz_windows.entry(dst).or_default();
-            let start = entry.len().saturating_sub(0x8000);
-            entry[start..].to_vec()
-        };
-        match lz::decompress(&srcbuf, &window_tail, cap) {
+        match lz::decompress(&srcbuf, cap) {
             Ok(data) => {
                 let out_len = data.len();
-                {
-                    let entry = self.lz_windows.entry(dst).or_default();
-                    entry.extend_from_slice(&data);
-                    let keep_start = entry.len().saturating_sub(0x10000);
-                    entry.drain(..keep_start);
-                }
                 self.mem.write(dst, &data)?;
                 if out > 0x1000 {
                     self.mem.write_u32(out, out_len as u32)?;
@@ -849,22 +806,13 @@ impl SnowFishMachine {
 
     /// Advances one frame: pump queued events, deliver the frame tick
     /// (selector 10, the host paces at ~20 fps), count the frame.
+    ///
+    /// The platform exposes no timer service: slots like +0x500 are
+    /// passthrough stubs and the guest is only driven by the host's tick
+    /// and key events (matching the reference session logs).
     pub fn run_frame(&mut self, budget: u64) -> Result<(), MachineError> {
         self.pump(budget)?;
         self.app_call(10, 0, budget)?;
-        // Deliver the guest's registered timer callback once per frame.
-        // The platform invokes the callback directly (r0 = timer id).
-        if let Some(tc) = self.timer_callback {
-            self.cpu.reg_set(armv4t_emu::reg::SP, STACK_TOP);
-            self.cpu.reg_set(armv4t_emu::reg::LR, STOP_ADDRESS);
-            self.cpu.reg_set(armv4t_emu::reg::CPSR, 0x10);
-            self.cpu.reg_set(0, tc.id);
-            self.cpu.reg_set(1, 0);
-            self.cpu.reg_set(2, 0);
-            self.cpu.reg_set(3, 0);
-            self.cpu.reg_set(armv4t_emu::reg::PC, tc.entry);
-            self.run_until_return(budget)?;
-        }
         self.frame_count += 1;
         Ok(())
     }
@@ -954,7 +902,7 @@ mod tests {
             code.extend_from_slice(&w.to_le_bytes());
         }
         // literal: handler address relative to code_base (relocated)
-        code.extend_from_slice(&(handler_off as u32).to_le_bytes());
+        code.extend_from_slice(&handler_off.to_le_bytes());
         // relocation entry for the literal at offset 0x10
         let reloc = 0x10u32;
 

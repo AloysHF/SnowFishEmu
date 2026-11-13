@@ -211,8 +211,15 @@ impl Gdi {
     }
 
     /// `+0x010 flush()` — counted only; presentation is host-driven.
-    pub fn op_flush(&mut self) {
+    pub fn op_flush(&mut self, mem: &crate::mem::GuestMem) {
         self.flush_count += 1;
+        if std::env::var_os("SF_FB_PROBE").is_some() {
+            let p00 = mem.read_u16(crate::plat::FB_ADDR).unwrap_or(0);
+            let pmid = mem
+                .read_u16(crate::plat::FB_ADDR + (180 * 240 + 99) * 2)
+                .unwrap_or(0);
+            log::debug!("[gdi] flush probe (0,0)={p00:#06x} (99,180)={pmid:#06x}");
+        }
     }
 
     /// `+0x198 draw(obj, bmp, w, h, _, dx, dy)` — palette or RGB565 blit
@@ -374,7 +381,7 @@ mod tests {
     fn rgb_conversion_truncates() {
         assert_eq!(rgb888_to_565(0xFFFFFF), 0xFFFF);
         assert_eq!(rgb888_to_565(0x000000), 0x0000);
-        assert_eq!(rgb888_to_565(0xF80000), ((0xF8) as u16) << 8);
+        assert_eq!(rgb888_to_565(0xF80000), 0xF800u16);
     }
 
     #[test]
