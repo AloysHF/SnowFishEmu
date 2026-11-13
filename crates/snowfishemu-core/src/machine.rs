@@ -1115,7 +1115,6 @@ impl SnowFishMachine {
             if std::env::var_os("SF_PAY_WATCH").is_some() {
                 // The SDK's network state machine struct (pointer variable at
                 // 0x1355F0 in sanguo): counters 0x348/0x34c gate the send.
-                let read_w = |off: u32| self.mem.read_u32(0x1355F0 + off).unwrap_or(0xFFFF);
                 let cooldown = self.mem.read_u32(0x13498C).unwrap_or(0xFFFF);
                 let s1 = self.mem.read_u32(0x1331A0).unwrap_or(0xFFFF);
                 let s2 = self.mem.read_u8(0x133169).unwrap_or(0xFF);
