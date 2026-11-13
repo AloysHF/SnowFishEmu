@@ -1455,6 +1455,18 @@ mod tests {
             game_path.to_string_lossy()
         );
 
+        for _ in 0..120 {
+            retro_run();
+        }
+
+        // Debug aid: dump the last presented frame for offline inspection.
+        if let Ok(dir) = std::env::var("SF_FRAME_DUMP") {
+            let last = LAST_VIDEO.lock().unwrap();
+            if let Some((_, _, _, bytes)) = last.as_ref() {
+                let _ = std::fs::write(std::path::Path::new(&dir).join("core_last.raw"), &**bytes);
+            }
+        }
+
         for _ in 0..30 {
             retro_run();
         }

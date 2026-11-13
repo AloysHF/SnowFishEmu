@@ -94,6 +94,10 @@ then load a `.app` as content.
 - Core options: CPU/HLE debug logging.
 - Resource file: the core serves the same optional sibling resource file
   as the standalone frontend (see above), resolved from the content path.
+- Note: on Windows, RetroArch's d3d11 driver has a first-present race
+  when the window starts in the background (the frontend can fault in
+  `msvcrt.dll` or present one garbled frame). Launching with the `gdi`
+  video driver avoids it.
 
 RetroPad controls (in addition to the keyboard controls above):
 

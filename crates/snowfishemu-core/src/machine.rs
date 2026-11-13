@@ -287,10 +287,9 @@ impl SnowFishMachine {
         if let Ok(skips) = std::env::var("SF_FSKIP") {
             for pair in skips.split(';') {
                 if let Some((a, v)) = pair.split_once(':') {
-                    if let (Ok(entry), Ok(val)) = (
-                        u32::from_str_radix(a, 16),
-                        u32::from_str_radix(v, 16),
-                    ) {
+                    if let (Ok(entry), Ok(val)) =
+                        (u32::from_str_radix(a, 16), u32::from_str_radix(v, 16))
+                    {
                         fn_skips.push((entry, val));
                     }
                 }
@@ -362,11 +361,12 @@ impl SnowFishMachine {
         // SF_PCTRACE="lo-hi" (hex): log every fetch inside the range with
         // the link register — bounded per call to keep logs readable.
         let pc_range: Option<(u32, u32)> = std::env::var("SF_PCTRACE").ok().and_then(|s| {
-            s.split_once('-')
-                .and_then(|(a, b)| match (u32::from_str_radix(a, 16), u32::from_str_radix(b, 16)) {
+            s.split_once('-').and_then(|(a, b)| {
+                match (u32::from_str_radix(a, 16), u32::from_str_radix(b, 16)) {
                     (Ok(a), Ok(b)) => Some((a, b)),
                     _ => None,
-                })
+                }
+            })
         });
         let mut traced = 0u64;
         while executed < budget {
@@ -380,17 +380,14 @@ impl SnowFishMachine {
                 if aligned >= lo && aligned <= hi && traced < 300 {
                     traced += 1;
                     debug!(
-                        "[trace] pc={aligned:#010x} lr={:#010x} r0={:#010x}",
+                        "[trace] pc={aligned:#010x} lr={:#010x} r0={:#010x} r1={:#010x}",
                         self.cpu.reg_get(armv4t_emu::reg::LR),
-                        self.cpu.reg_get(0)
+                        self.cpu.reg_get(0),
+                        self.cpu.reg_get(1)
                     );
                 }
             }
-            if let Some(&(entry, val)) = self
-                .fn_skips
-                .iter()
-                .find(|&&(e, _)| e == aligned)
-            {
+            if let Some(&(entry, val)) = self.fn_skips.iter().find(|&&(e, _)| e == aligned) {
                 debug!("[plat] fn skip @{entry:#010x} -> r0={val:#x}");
                 self.cpu.reg_set(0, val);
                 let lr = self.cpu.reg_get(armv4t_emu::reg::LR);
@@ -495,24 +492,23 @@ impl SnowFishMachine {
                 let lr = self.cpu.reg_get(armv4t_emu::reg::LR);
                 debug!("[plat] +0x4C lr={lr:#010x}");
                 // 0 = "billing service present": CheckSms exits at once and
-                // the render dispatch selects the full screen-data block.
-                // SF_4C="lr:val;lr:val;*:val" (hex) overrides per call site
-                // — some guests gate their poll-timer registration on a
-                // non-zero result at one site and the paid-mode state on a
-                // zero result at another.
-                let mut base = if std::env::var_os("SF_SKIP_PAY").is_some() {
-                    0
-                } else {
-                    1
-                };
+                // the render dispatch selects the full screen-data block —
+                // the games' own menus come up instead of the billing wait
+                // screen. The loader's planted stub returns 1 ("absent"),
+                // which is what parks the titles on the pay dialog.
+                // SF_4C="lr:val;lr:val;*:val" (hex) overrides per call
+                // site — some guests gate their poll-timer registration on
+                // a non-zero result at one site and the paid-mode state on
+                // a zero result at another.
+                let mut base = 0u32;
                 let mut result = None;
                 if let Ok(policy) = std::env::var("SF_4C") {
                     // "*" sets the base value; a matching `lr:val` entry
                     // wins regardless of its order in the list.
                     let lr_low = lr & 0xFFFFFF;
                     for pair in policy.split(';') {
-                        let (a, v) = pair.split_once(':').unwrap_or(("*", "1"));
-                        let val = u32::from_str_radix(v, 16).unwrap_or(1);
+                        let (a, v) = pair.split_once(':').unwrap_or(("*", "0"));
+                        let val = u32::from_str_radix(v, 16).unwrap_or(0);
                         match u32::from_str_radix(a, 16) {
                             Ok(site) => {
                                 if site == lr_low {
@@ -811,7 +807,6 @@ impl SnowFishMachine {
             // parse. Start empty and let the guest's own registration
             // flow fill it (the write hook forces the leading dword
             // positive so the gate check passes).
-            let stored = stored;
             let size = stored.len();
             // flags bit 0 = write intent: start an empty record; otherwise
             // serve the previously written contents for reading.
@@ -1152,16 +1147,29 @@ impl SnowFishMachine {
             if let Ok(seed) = std::env::var("SF_SEED") {
                 for pair in seed.split(';') {
                     let (a, v) = pair.split_once('=').unwrap_or((pair, "0"));
-                    if let (Ok(addr), Ok(val)) = (
-                        usize::from_str_radix(a, 16),
-                        u32::from_str_radix(v, 16),
-                    ) {
+                    if let (Ok(addr), Ok(val)) =
+                        (usize::from_str_radix(a, 16), u32::from_str_radix(v, 16))
+                    {
                         let _ = self.mem.write_u32(addr as u32, val);
                     }
                 }
             }
         }
         self.pump(budget)?;
+        // SF_FORCE="addr:val;..." (hex): write guest words EVERY frame
+        // before the tick — for variables the guest's own flow clears but
+        // an experiment needs held at a value.
+        if let Ok(force) = std::env::var("SF_FORCE") {
+            for pair in force.split(';') {
+                if let Some((a, v)) = pair.split_once(':') {
+                    if let (Ok(addr), Ok(val)) =
+                        (u32::from_str_radix(a, 16), u32::from_str_radix(v, 16))
+                    {
+                        let _ = self.mem.write_u32(addr, val);
+                    }
+                }
+            }
+        }
         self.app_call(10, 0, budget)?;
         if let Some(t) = self.timer {
             // The callback receives a platform-allocated result record: the
@@ -1254,9 +1262,9 @@ impl SnowFishMachine {
                     let _ = self.mem.write_u32(0x13498C, 1);
                 }
                 job[9] = 1; // result ready
-                // The callback's phase gate: the record's phase byte (+0xA)
-                // must be >= the pay-flow state for the match path to run.
-                // 0xFF passes at every state.
+                            // The callback's phase gate: the record's phase byte (+0xA)
+                            // must be >= the pay-flow state for the match path to run.
+                            // 0xFF passes at every state.
                 job[0xA] = 0xFF;
                 job[4] = 8; // payload carries halfwords
                 let be: Vec<u8> = RECEIPT
@@ -1318,12 +1326,7 @@ impl SnowFishMachine {
                 let vals: Vec<String> = vars
                     .split(',')
                     .filter_map(|a| u32::from_str_radix(a, 16).ok())
-                    .map(|a| {
-                        format!(
-                            "{a:#x}={:#x}",
-                            self.mem.read_u32(a).unwrap_or(0xFFFF_FFFF)
-                        )
-                    })
+                    .map(|a| format!("{a:#x}={:#x}", self.mem.read_u32(a).unwrap_or(0xFFFF_FFFF)))
                     .collect();
                 debug!("[plat] vars pre-cb: {}", vals.join(" "));
             }
