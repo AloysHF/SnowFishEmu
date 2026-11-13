@@ -1100,6 +1100,12 @@ impl SnowFishMachine {
                 // selects the phase and the handler runs.
                 let _ = self.mem.write_u32(0x1331A0, 1);
                 let _ = self.mem.write_u32(0x13533C, 2);
+                // Screen survey: cycle the game's screen state [0x12FF44]
+                // through values 1-17, 20 frames each, to see every screen.
+                if std::env::var_os("SF_SCREEN_SCAN").is_some() {
+                    let idx = (self.frame_count / 20) as u32 % 17 + 1;
+                    let _ = self.mem.write_u32(0x12FF44, idx);
+                }
                 job[9] = 1; // result ready
                 job[4] = 8; // payload carries halfwords
                 let be: Vec<u8> = RECEIPT
