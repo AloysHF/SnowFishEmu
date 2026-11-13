@@ -324,7 +324,7 @@ impl SnowFishMachine {
     /// through the root-table stubs).
     fn hooked_slot_ret(&self, w: &Wrapper) -> Option<u32> {
         match w.slot {
-            0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 => Some(w.ret),
+            0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 => Some(w.ret),
             0x12C | 0x130 | 0x134 | 0x140 | 0x154 | 0x158 | 0x180 | 0x198 | 0x194 | 0x184
             | 0x15C | 0x010 => Some(w.ret),
             _ => None,
@@ -436,6 +436,16 @@ impl SnowFishMachine {
             }
             0x58 => Some(self.hook_fopen(r(0), r(1))?),
             0x48 => Some(self.hook_sms_fetch(r(0), r(1))?),
+            0x4C => {
+                let lr = self.cpu.reg_get(armv4t_emu::reg::LR);
+                debug!("[plat] +0x4C lr={lr:#010x}");
+                if std::env::var_os("SF_SKIP_PAY").is_some() && lr == 0x00118158 {
+                    debug!("[plat] +0x4C -> 0 (skip pay from CheckSms)");
+                    Some(0)
+                } else {
+                    Some(1)
+                }
+            }
             0x5C => Some(self.hook_fread(r(0), r(1), r(2))?),
             0x60 => Some(self.hook_fwrite(r(0), r(1), r(2))?),
             0x64 => Some(self.hook_fseek(r(0), r(1), r(2))?),
@@ -1085,8 +1095,8 @@ impl SnowFishMachine {
                 // 0x14-byte screen-table entry per 20 frames) so every
                 // screen renders into the frame dumps.
                 if std::env::var_os("SF_SCREEN_SCAN").is_some() {
-                    let idx = (self.frame_count / 20) as u8;
-                    let _ = self.mem.write_u8(0x1332C1, idx);
+                    let idx = (self.frame_count / 20) as u32 % 17 + 1;
+                    let _ = self.mem.write_u32(0x13532C, idx);
                 }
                 // The SMS queue head (BSS) is zero = "no message": the
                 // callback exits at its first gate. Fabricate a pending
@@ -1156,7 +1166,15 @@ impl SnowFishMachine {
             self.cpu.reg_set(2, 0);
             self.cpu.reg_set(3, 0);
             self.cpu.reg_set(armv4t_emu::reg::PC, t.entry);
+            if std::env::var_os("SF_PAY_WATCH").is_some() {
+                let scr = self.mem.read_u32(0x13532C).unwrap_or(0xFF);
+                debug!("[plat] screen state pre-cb: {scr}");
+            }
             self.run_until_return(budget)?;
+            if std::env::var_os("SF_PAY_WATCH").is_some() {
+                let scr = self.mem.read_u32(0x13532C).unwrap_or(0xFF);
+                debug!("[plat] screen state post-cb: {scr}");
+            }
             if std::env::var_os("SF_PAY_WATCH").is_some() {
                 // The SDK's network state machine struct (pointer variable at
                 // 0x1355F0 in sanguo): counters 0x348/0x34c gate the send.
