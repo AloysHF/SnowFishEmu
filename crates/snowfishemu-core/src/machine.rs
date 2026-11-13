@@ -724,6 +724,18 @@ impl SnowFishMachine {
         let writable = basename(&path).starts_with("__sfsms");
         if writable {
             let stored = self.named_files.get(&path).cloned().unwrap_or_default();
+            // Pre-populate the pay-info file with a "paid" record: the
+            // leading BE dword must be positive for the SDK's gate check.
+            let mut stored = stored;
+            if stored.is_empty()
+                && std::env::var_os("SF_FAKE_PAY").is_some()
+                && basename(&path).starts_with("__sfsmspayinfo")
+            {
+                stored = vec![0u8; 72];
+                stored[0..4].copy_from_slice(&1u32.to_be_bytes());
+                stored[4..8].copy_from_slice(&1u32.to_be_bytes());
+                debug!("[plat] pre-created paid record for {path}");
+            }
             let size = stored.len();
             // flags bit 0 = write intent: start an empty record; otherwise
             // serve the previously written contents for reading.
