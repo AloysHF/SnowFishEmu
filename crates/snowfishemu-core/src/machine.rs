@@ -741,8 +741,10 @@ impl SnowFishMachine {
         }
         let name = self.file_slots[idx].name.clone();
         debug!(
-            "[plat] +0x60 fwrite h={handle} \"{name}\" {} bytes: {:02x?}",
-            len, chunk
+            "[plat] +0x60 fwrite h={handle} \"{name}\" {} bytes lr={:#010x}: {:02x?}",
+            len,
+            self.cpu.reg_get(armv4t_emu::reg::LR),
+            chunk
         );
         if !self.file_slots[idx].data.is_empty()
             || basename(&self.file_slots[idx].name).starts_with("__sfsms")
@@ -1015,6 +1017,11 @@ impl SnowFishMachine {
                     let _ = self.mem.write(t.item_array, &item);
                     let _ = self.mem.write_u8(t.count_addr, 1);
                 }
+                // The network state machine's send-state counters gate the
+                // menu flow (0x122d68 → the UI setup calls). The pay success
+                // is what would set them on a real device.
+                let _ = self.mem.write_u32(0x1355F0 + 0x34C, 1);
+                let _ = self.mem.write_u32(0x1355F0 + 0x348, 1);
                 job[9] = 1; // result ready
                 job[4] = 8; // payload carries halfwords
                 let be: Vec<u8> = RECEIPT
@@ -1067,6 +1074,19 @@ impl SnowFishMachine {
             self.cpu.reg_set(armv4t_emu::reg::PC, t.entry);
             self.run_until_return(budget)?;
             if std::env::var_os("SF_PAY_WATCH").is_some() {
+                // The SDK's network state machine struct (pointer variable at
+                // 0x1355F0 in sanguo): counters 0x348/0x34c gate the send.
+                let read_w = |off: u32| self.mem.read_u32(0x1355F0 + off).unwrap_or(0xFFFF);
+                let cooldown = self.mem.read_u32(0x13498C).unwrap_or(0xFFFF);
+                debug!(
+                    "[plat] net state: cooldown={cooldown} [344]={} [348]={} [34c]={}",
+                    read_w(0x344),
+                    read_w(0x348),
+                    read_w(0x34C)
+                );
+                if std::env::var_os("SF_FAKE_PAY").is_some() && cooldown == 0 {
+                    let _ = self.mem.write_u32(0x13498C, 2);
+                }
                 let count = self.mem.read_u8(t.count_addr).unwrap_or(0xFF);
                 let mut tgt = [0u8; 64];
                 let _ = self.mem.read(t.target_addr, &mut tgt);
