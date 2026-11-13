@@ -31,3 +31,9 @@ pub const HEAP_SIZE: u32 = 0x0010_0000;
 
 /// Sentinel return address inside the plat region; guest calls stop here.
 pub const STOP_ADDRESS: u32 = 0x0054_1000;
+
+/// Guest scratch record for timer-callback delivery (below the guest stack
+/// top, far enough that callback frames never collide with it).
+pub const TIMER_JOB_ADDR: u32 = STACK_TOP - 0x1000;
+/// Timer-callback result record size.
+pub const TIMER_JOB_SIZE: u32 = 0x100;

@@ -53,6 +53,7 @@ pub(crate) struct MachineState {
     pub(crate) last_pc: u32,
     pub(crate) branch_log: Vec<(u32, u32)>,
     pub(crate) gdi: Gdi,
+    pub(crate) timer: Option<crate::machine::GuestTimer>,
 }
 
 /// FNV-1a 64-bit content fingerprint over the container and resource bytes.
@@ -136,6 +137,7 @@ mod tests {
             last_pc: 0,
             branch_log: Vec::new(),
             gdi: Gdi::new(),
+            timer: None,
         };
         let blob = encode(&state, 42).unwrap();
 

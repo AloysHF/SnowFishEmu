@@ -5,7 +5,9 @@
 //! natively here and resume at the wrapper epilogue, everything else
 //! executes through the planted root-table stubs unchanged.
 
-use crate::consts::{CODE_BASE, HEAP_BASE, STACK_TOP, STOP_ADDRESS};
+use crate::consts::{
+    CODE_BASE, HEAP_BASE, STACK_TOP, STOP_ADDRESS, TIMER_JOB_ADDR, TIMER_JOB_SIZE,
+};
 use crate::cpu::ArmCpu;
 use crate::gdi::Gdi;
 use crate::lz;
@@ -213,6 +215,16 @@ pub struct SnowFishMachine {
     last_pc: u32,
     branch_log: Vec<(u32, u32)>,
     gdi: Gdi,
+    timer: Option<GuestTimer>,
+}
+
+/// A guest-registered timer callback (platform slot +0x500,
+/// `timerStart(id, callback, context)`).
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct GuestTimer {
+    pub id: u32,
+    pub entry: u32,
+    pub ctx: u32,
 }
 
 impl SnowFishMachine {
@@ -249,6 +261,7 @@ impl SnowFishMachine {
             last_pc: 0,
             branch_log: Vec::new(),
             gdi: Gdi::new(),
+            timer: None,
         })
     }
 
@@ -312,6 +325,21 @@ impl SnowFishMachine {
                         self.cpu.reg_get(armv4t_emu::reg::LR),
                         self.cpu.reg_get(0),
                         self.cpu.reg_get(1)
+                    );
+                }
+                if w.slot == 0x500 {
+                    // timerStart(id, callback, context): record the latest
+                    // registration so the frame loop can deliver the callback.
+                    self.timer = Some(GuestTimer {
+                        id: self.cpu.reg_get(0),
+                        entry: self.cpu.reg_get(1),
+                        ctx: self.cpu.reg_get(2),
+                    });
+                    debug!(
+                        "[plat] timer registered id={} cb={:#010x} ctx={:#010x}",
+                        self.cpu.reg_get(0),
+                        self.cpu.reg_get(1),
+                        self.cpu.reg_get(2)
                     );
                 }
             }
@@ -810,14 +838,37 @@ impl SnowFishMachine {
     }
 
     /// Advances one frame: pump queued events, deliver the frame tick
-    /// (selector 10, the host paces at ~20 fps), count the frame.
-    ///
-    /// The platform exposes no timer service: slots like +0x500 are
-    /// passthrough stubs and the guest is only driven by the host's tick
-    /// and key events (matching the reference session logs).
+    /// (selector 10, the host paces at ~20 fps), then deliver the guest's
+    /// registered timer callback (the platform's +0x500 service is a
+    /// passthrough on the wire, but a real device fires the callback on the
+    /// frame cadence), and count the frame.
     pub fn run_frame(&mut self, budget: u64) -> Result<(), MachineError> {
         self.pump(budget)?;
         self.app_call(10, 0, budget)?;
+        if let Some(t) = self.timer {
+            // The callback receives a platform-allocated result record: the
+            // registration's context word is a guest-internal value (hjkg
+            // passes the just-read flag byte, i.e. zero), while the callback
+            // dereferences r1 as a record with a status byte at +9, a type
+            // byte at +4, a payload length halfword at +6, a UTF-16 string
+            // at +0xB and a payload buffer at +0x3C. Zeroed = no result.
+            let mut job = [0u8; TIMER_JOB_SIZE as usize];
+            if std::env::var_os("SF_FAKE_PAY").is_some() {
+                // Fabricated service response: status byte at +9 (result
+                // ready) with an otherwise empty record.
+                job[9] = 1;
+            }
+            self.mem.write(TIMER_JOB_ADDR, &job)?;
+            self.cpu.reg_set(armv4t_emu::reg::SP, STACK_TOP);
+            self.cpu.reg_set(armv4t_emu::reg::LR, STOP_ADDRESS);
+            self.cpu.reg_set(armv4t_emu::reg::CPSR, 0x10);
+            self.cpu.reg_set(0, t.id);
+            self.cpu.reg_set(1, TIMER_JOB_ADDR);
+            self.cpu.reg_set(2, 0);
+            self.cpu.reg_set(3, 0);
+            self.cpu.reg_set(armv4t_emu::reg::PC, t.entry);
+            self.run_until_return(budget)?;
+        }
         self.frame_count += 1;
         Ok(())
     }
@@ -896,6 +947,7 @@ impl SnowFishMachine {
             last_pc: self.last_pc,
             branch_log: self.branch_log.clone(),
             gdi: self.gdi.clone(),
+            timer: self.timer,
         };
         // Encoding a well-formed snapshot cannot fail; surface any codec
         // fault loudly rather than returning a corrupt state.
@@ -922,6 +974,7 @@ impl SnowFishMachine {
         self.last_pc = state.last_pc;
         self.branch_log = state.branch_log;
         self.gdi = state.gdi;
+        self.timer = state.timer;
         Ok(())
     }
 }

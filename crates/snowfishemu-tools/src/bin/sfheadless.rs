@@ -25,6 +25,9 @@ struct Args {
     /// Queue a few key presses after boot (indices into the key map).
     #[arg(long)]
     keys: Vec<u8>,
+    /// Skip the automatic bring-up key replay (pure idle run).
+    #[arg(long)]
+    no_keys: bool,
     /// Directory for per-frame framebuffer dumps.
     #[arg(long)]
     dump_fb: Option<PathBuf>,
@@ -43,12 +46,13 @@ fn main() -> Result<()> {
     m.boot(args.budget)?;
     // Mimic the platform bring-up: 5 idle ticks, LSK down+up, OK down+up,
     // then the remaining frames (key indices per the core's key table).
+    // --no-keys skips the replay for pure idle runs.
     let lsk = 10u8;
     let ok = 5u8;
     for i in 0..args.frames {
         // Platform bring-up: LSK+OK at frame 5; periodic OK presses every
         // 10 frames afterwards (menus advance on OK/5).
-        if i == 5 {
+        if i == 5 && !args.no_keys {
             m.set_key(lsk, true)?;
             m.run_frame(args.budget)?;
             m.set_key(lsk, false)?;
@@ -59,7 +63,7 @@ fn main() -> Result<()> {
             m.run_frame(args.budget)?;
             continue;
         }
-        if i > 6 && (i - 6) % 10 == 0 {
+        if i > 6 && (i - 6) % 10 == 0 && !args.no_keys {
             m.set_key(ok, true)?;
             m.run_frame(args.budget)?;
             m.set_key(ok, false)?;
