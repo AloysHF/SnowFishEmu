@@ -214,6 +214,10 @@ pub struct SnowFishMachine {
     trace: bool,
     last_pc: u32,
     branch_log: Vec<(u32, u32)>,
+    // Function-entry skips: (entry, r0) — when the PC reaches `entry` the
+    // call returns immediately with r0. Used by the offline billing shim
+    // to report the SDK's SMS send as accepted.
+    fn_skips: Vec<(u32, u32)>,
     gdi: Gdi,
     timer: Option<GuestTimer>,
     /// Persistent contents of the guest-writable service files (the SMS
@@ -273,6 +277,25 @@ impl GuestTimer {
 impl SnowFishMachine {
     /// Loads a package (the whole `.app` container) and prepares the guest.
     pub fn load(container: Vec<u8>, res_data: Option<Vec<u8>>) -> Result<Self, MachineError> {
+        // Static function-entry skips: SF_FSKIP="addr:r0;addr:r0" (hex).
+        // When the guest PC reaches `addr` the call returns at once with
+        // r0 = `val`. Used by the offline billing shim to report the SDK's
+        // SMS send method (the task object's vtable +0x18 entry) as
+        // accepted; the address is per-binary, resolved from the task
+        // class vtable.
+        let mut fn_skips = Vec::new();
+        if let Ok(skips) = std::env::var("SF_FSKIP") {
+            for pair in skips.split(';') {
+                if let Some((a, v)) = pair.split_once(':') {
+                    if let (Ok(entry), Ok(val)) = (
+                        u32::from_str_radix(a, 16),
+                        u32::from_str_radix(v, 16),
+                    ) {
+                        fn_skips.push((entry, val));
+                    }
+                }
+            }
+        }
         let image = SfaImage::parse(&container)?;
         let mut mem = GuestMem::new(image.header.image_size());
         let image_size = image.header.image_size();
@@ -304,6 +327,7 @@ impl SnowFishMachine {
             trace,
             last_pc: 0,
             branch_log: Vec::new(),
+            fn_skips,
             gdi: Gdi::new(),
             timer: None,
             named_files: std::collections::HashMap::new(),
@@ -335,6 +359,16 @@ impl SnowFishMachine {
     /// instruction budget, or a fault. Handles wrapper interception.
     fn run_until_return(&mut self, budget: u64) -> Result<u64, MachineError> {
         let mut executed = 0u64;
+        // SF_PCTRACE="lo-hi" (hex): log every fetch inside the range with
+        // the link register — bounded per call to keep logs readable.
+        let pc_range: Option<(u32, u32)> = std::env::var("SF_PCTRACE").ok().and_then(|s| {
+            s.split_once('-')
+                .and_then(|(a, b)| match (u32::from_str_radix(a, 16), u32::from_str_radix(b, 16)) {
+                    (Ok(a), Ok(b)) => Some((a, b)),
+                    _ => None,
+                })
+        });
+        let mut traced = 0u64;
         while executed < budget {
             let pc = self.cpu.pc();
             let aligned = if self.cpu.thumb_mode() {
@@ -342,6 +376,27 @@ impl SnowFishMachine {
             } else {
                 pc & !3
             };
+            if let Some((lo, hi)) = pc_range {
+                if aligned >= lo && aligned <= hi && traced < 300 {
+                    traced += 1;
+                    debug!(
+                        "[trace] pc={aligned:#010x} lr={:#010x} r0={:#010x}",
+                        self.cpu.reg_get(armv4t_emu::reg::LR),
+                        self.cpu.reg_get(0)
+                    );
+                }
+            }
+            if let Some(&(entry, val)) = self
+                .fn_skips
+                .iter()
+                .find(|&&(e, _)| e == aligned)
+            {
+                debug!("[plat] fn skip @{entry:#010x} -> r0={val:#x}");
+                self.cpu.reg_set(0, val);
+                let lr = self.cpu.reg_get(armv4t_emu::reg::LR);
+                self.cpu.reg_set(armv4t_emu::reg::PC, lr);
+                continue;
+            }
             if aligned != pc {
                 self.cpu.reg_set(0xF, aligned); // PC
             }
@@ -439,12 +494,37 @@ impl SnowFishMachine {
             0x4C => {
                 let lr = self.cpu.reg_get(armv4t_emu::reg::LR);
                 debug!("[plat] +0x4C lr={lr:#010x}");
-                if std::env::var_os("SF_SKIP_PAY").is_some() && lr == 0x00118158 {
-                    debug!("[plat] +0x4C -> 0 (skip pay from CheckSms)");
-                    Some(0)
+                // 0 = "billing service present": CheckSms exits at once and
+                // the render dispatch selects the full screen-data block.
+                // SF_4C="lr:val;lr:val;*:val" (hex) overrides per call site
+                // — some guests gate their poll-timer registration on a
+                // non-zero result at one site and the paid-mode state on a
+                // zero result at another.
+                let mut base = if std::env::var_os("SF_SKIP_PAY").is_some() {
+                    0
                 } else {
-                    Some(1)
+                    1
+                };
+                let mut result = None;
+                if let Ok(policy) = std::env::var("SF_4C") {
+                    // "*" sets the base value; a matching `lr:val` entry
+                    // wins regardless of its order in the list.
+                    let lr_low = lr & 0xFFFFFF;
+                    for pair in policy.split(';') {
+                        let (a, v) = pair.split_once(':').unwrap_or(("*", "1"));
+                        let val = u32::from_str_radix(v, 16).unwrap_or(1);
+                        match u32::from_str_radix(a, 16) {
+                            Ok(site) => {
+                                if site == lr_low {
+                                    result = Some(val);
+                                }
+                            }
+                            Err(_) if a == "*" => base = val,
+                            _ => {}
+                        }
+                    }
                 }
+                Some(result.unwrap_or(base))
             }
             0x5C => Some(self.hook_fread(r(0), r(1), r(2))?),
             0x60 => Some(self.hook_fwrite(r(0), r(1), r(2))?),
@@ -719,23 +799,19 @@ impl SnowFishMachine {
             .as_ref()
             .is_some_and(|_| !path.is_empty() && (lower.contains(".pak") || lower.contains("res")));
         // The SMS-billing service keeps its request/response records in
-        // guest-visible files (__sfsms*): back them with in-memory data so
-        // the guest can write its request and read the service response.
-        let writable = basename(&path).starts_with("__sfsms");
+        // guest-visible files (`__`-prefixed names: __sfsms* request
+        // records, __dcsmsinfo_ the response inbox, __sfgpsav saves): back
+        // them all with in-memory data so the guest reads back what it
+        // wrote instead of the container bytes.
+        let writable = basename(&path).starts_with("__");
         if writable {
             let stored = self.named_files.get(&path).cloned().unwrap_or_default();
-            // Pre-populate the pay-info file with a "paid" record: the
-            // leading BE dword must be positive for the SDK's gate check.
-            let mut stored = stored;
-            if stored.is_empty()
-                && std::env::var_os("SF_FAKE_PAY").is_some()
-                && basename(&path).starts_with("__sfsmspayinfo")
-            {
-                stored = vec![0u8; 72];
-                stored[0..4].copy_from_slice(&1u32.to_be_bytes());
-                stored[4..8].copy_from_slice(&1u32.to_be_bytes());
-                debug!("[plat] pre-created paid record for {path}");
-            }
+            // The pay-info file is a tag-stream log the guest builds
+            // itself; pre-creating a synthetic record breaks the stream
+            // parse. Start empty and let the guest's own registration
+            // flow fill it (the write hook forces the leading dword
+            // positive so the gate check passes).
+            let stored = stored;
             let size = stored.len();
             // flags bit 0 = write intent: start an empty record; otherwise
             // serve the previously written contents for reading.
@@ -1069,6 +1145,22 @@ impl SnowFishMachine {
     /// passthrough on the wire, but a real device fires the callback on the
     /// frame cadence), and count the frame.
     pub fn run_frame(&mut self, budget: u64) -> Result<(), MachineError> {
+        // Debug seeding: SF_SEED="addr=value;addr=value" (hex) writes guest
+        // words once after boot, before the first frame tick. Lets runtime
+        // experiments drive the guest's own UI state machines.
+        if self.frame_count == 0 {
+            if let Ok(seed) = std::env::var("SF_SEED") {
+                for pair in seed.split(';') {
+                    let (a, v) = pair.split_once('=').unwrap_or((pair, "0"));
+                    if let (Ok(addr), Ok(val)) = (
+                        usize::from_str_radix(a, 16),
+                        u32::from_str_radix(v, 16),
+                    ) {
+                        let _ = self.mem.write_u32(addr as u32, val);
+                    }
+                }
+            }
+        }
         self.pump(budget)?;
         self.app_call(10, 0, budget)?;
         if let Some(t) = self.timer {
@@ -1098,42 +1190,74 @@ impl SnowFishMachine {
                     let _ = self.mem.write(t.item_array, &item);
                     let _ = self.mem.write_u8(t.count_addr, 1);
                 }
-                // The network state machine's send-state counters gate the
-                // menu flow (0x122d68 → the UI setup calls). The pay success
-                // is what would set them on a real device.
-                let _ = self.mem.write_u32(0x1355F0 + 0x34C, 1);
-                let _ = self.mem.write_u32(0x1355F0 + 0x348, 1);
-                // Screen survey: cycle the UI screen index (0x1332C1, one
-                // 0x14-byte screen-table entry per 20 frames) so every
-                // screen renders into the frame dumps.
+                // Screen survey: cycle the UI screen index (one 0x14-byte
+                // screen-table entry per 20 frames) so every screen renders
+                // into the frame dumps. SF_SCREEN_SCAN=2 sweeps the game's
+                // own screens (>= 18, past the SDK's dialog handlers). The
+                // swept variable is per-binary: SF_SCAN_ADDR overrides.
                 if std::env::var_os("SF_SCREEN_SCAN").is_some() {
-                    let idx = (self.frame_count / 20) as u32 % 17 + 1;
-                    let _ = self.mem.write_u32(0x13532C, idx);
+                    let wide = std::env::var("SF_SCREEN_SCAN")
+                        .map(|v| v == "2")
+                        .unwrap_or(false);
+                    let idx = if wide {
+                        (self.frame_count / 20) as u32 % 23 + 18
+                    } else {
+                        (self.frame_count / 20) as u32 % 17 + 1
+                    };
+                    let addr = std::env::var("SF_SCAN_ADDR")
+                        .ok()
+                        .and_then(|a| u32::from_str_radix(&a, 16).ok())
+                        .unwrap_or(0x13532C);
+                    let _ = self.mem.write_u32(addr, idx);
                 }
-                // The SMS queue head (BSS) is zero = "no message": the
-                // callback exits at its first gate. Fabricate a pending
-                // message, and set the pay-flow state machine to its
-                // second phase so the guest walks its own confirmation
-                // steps.
-                let _ = self.mem.write_u32(0x133164, 1);
-                // Seed once: s1 = 1 (the dispatcher state), the pay-flow
-                // state = 2 (the clear-table handler). Let the nested
-                // state machines advance the state on their own.
-                if self.frame_count == 0 {
-                    let _ = self.mem.write_u32(0x1331A0, 1);
-                    let _ = self.mem.write_u32(0x13533C, 2);
-                }
-                // The flag bytes 0x1364B4/0x1364B5 control both the phase
-                // selection and the 0x117b74 nested machine.
-                let _ = self.mem.write_u8(0x1364B4, 1);
-                let _ = self.mem.write_u8(0x1364B5, 1);
-                // Screen survey: cycle the game's screen state [0x12FF44]
-                // through values 1-17, 20 frames each, to see every screen.
-                if std::env::var_os("SF_SCREEN_SCAN").is_some() {
-                    let idx = (self.frame_count / 20) as u32 % 17 + 1;
-                    let _ = self.mem.write_u32(0x12FF44, idx);
+                // Binary-specific state synthesis (queue head 5 = the
+                // pay-flow message type, s1 = the dispatcher state, the
+                // pay-flow state 5, the nested-machine trigger, cooldown=1
+                // and the send-pattern receipt) — addresses are sanguo's
+                // decode; other binaries drive these through SF_SEED.
+                if std::env::var_os("SF_PAY_SYNTH").is_some() {
+                    // The callback's second match loop (the send-pattern
+                    // table this binary registers from its payinfo file)
+                    // gates the pay-flow state machine behind a match
+                    // against the same target.
+                    const SEND_ITEMS: u32 = 0x1353CC;
+                    const SEND_COUNT: u32 = 0x1331E0;
+                    let mut item = [0u8; 0x20];
+                    item[..text.len().min(0x20)].copy_from_slice(&text);
+                    let _ = self.mem.write(SEND_ITEMS, &item);
+                    let _ = self.mem.write_u8(SEND_COUNT, 1);
+                    // The network state machine's send-state counters gate
+                    // the menu flow (0x122d68 → the UI setup calls).
+                    let _ = self.mem.write_u32(0x1355F0 + 0x34C, 1);
+                    let _ = self.mem.write_u32(0x1355F0 + 0x348, 1);
+                    // The callback dispatches on the SMS queue head: head=5
+                    // is the pay-flow message type whose handler invokes
+                    // the message builder — the phase loop driver.
+                    let _ = self.mem.write_u32(0x133164, 5);
+                    // Seed once: s1 = 1 (the dispatcher state).
+                    if self.frame_count == 0 {
+                        let _ = self.mem.write_u32(0x1331A0, 1);
+                    }
+                    // The pay-flow state is only ever loaded from the
+                    // payinfo file's tag stream; force state 5 (whose
+                    // handler invokes the message builder each delivery).
+                    let _ = self.mem.write_u32(0x13533C, 5);
+                    // The flag bytes 0x1364B4/0x1364B5 control both the
+                    // phase selection and the 0x117b74 nested machine.
+                    let _ = self.mem.write_u8(0x1364B4, 1);
+                    let _ = self.mem.write_u8(0x1364B5, 1);
+                    // [0x133154] set routes the send handler's tail into
+                    // the 0x117b74 nested machine (the screen-transition
+                    // driver); cooldown=1 makes every 0x118988 gate call
+                    // report "expired" so the advance paths fire.
+                    let _ = self.mem.write_u8(0x133154, 1);
+                    let _ = self.mem.write_u32(0x13498C, 1);
                 }
                 job[9] = 1; // result ready
+                // The callback's phase gate: the record's phase byte (+0xA)
+                // must be >= the pay-flow state for the match path to run.
+                // 0xFF passes at every state.
+                job[0xA] = 0xFF;
                 job[4] = 8; // payload carries halfwords
                 let be: Vec<u8> = RECEIPT
                     .encode_utf16()
@@ -1185,12 +1309,29 @@ impl SnowFishMachine {
             self.cpu.reg_set(armv4t_emu::reg::PC, t.entry);
             if std::env::var_os("SF_PAY_WATCH").is_some() {
                 let scr = self.mem.read_u32(0x13532C).unwrap_or(0xFF);
-                debug!("[plat] screen state pre-cb: {scr}");
+                let pay = self.mem.read_u32(0x13533C).unwrap_or(0xFF);
+                debug!("[plat] screen state pre-cb: {scr} pay-state: {pay}");
+            }
+            // Generic variable watch: SF_VARS="addr,addr" (hex) logged per
+            // frame around the timer delivery.
+            if let Ok(vars) = std::env::var("SF_VARS") {
+                let vals: Vec<String> = vars
+                    .split(',')
+                    .filter_map(|a| u32::from_str_radix(a, 16).ok())
+                    .map(|a| {
+                        format!(
+                            "{a:#x}={:#x}",
+                            self.mem.read_u32(a).unwrap_or(0xFFFF_FFFF)
+                        )
+                    })
+                    .collect();
+                debug!("[plat] vars pre-cb: {}", vals.join(" "));
             }
             self.run_until_return(budget)?;
             if std::env::var_os("SF_PAY_WATCH").is_some() {
                 let scr = self.mem.read_u32(0x13532C).unwrap_or(0xFF);
-                debug!("[plat] screen state post-cb: {scr}");
+                let pay = self.mem.read_u32(0x13533C).unwrap_or(0xFF);
+                debug!("[plat] screen state post-cb: {scr} pay-state: {pay}");
             }
             if std::env::var_os("SF_PAY_WATCH").is_some() {
                 // The SDK's network state machine struct (pointer variable at
