@@ -758,6 +758,13 @@ impl SnowFishMachine {
             let end = (at + chunk.len()).max(entry.len());
             entry.resize(end, 0);
             entry[at..at + chunk.len()].copy_from_slice(&chunk);
+            // Offline billing: the pay-info record's leading big-endian
+            // dword is the service status the SDK's gate checks (negative
+            // = waiting for the carrier). Force it positive so the
+            // confirmation path runs.
+            if basename(&name).starts_with("__sfsmspayinfo") && entry.len() >= 4 {
+                entry[0..4].copy_from_slice(&1u32.to_be_bytes());
+            }
             let slot = &mut self.file_slots[idx];
             slot.data = entry.clone();
             slot.offset = at + chunk.len();
