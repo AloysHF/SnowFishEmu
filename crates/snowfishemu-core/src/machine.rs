@@ -1094,15 +1094,12 @@ impl SnowFishMachine {
                 // second phase so the guest walks its own confirmation
                 // steps.
                 let _ = self.mem.write_u32(0x133164, 1);
-                // Walk the pay-flow state machine: hold each phase for 30
-                // deliveries so its handler completes multi-tick work.
-                let f = self.frame_count;
-                let phase = match f {
-                    0..=29 => 2,
-                    30..=59 => 4,
-                    _ => 5,
-                };
-                let _ = self.mem.write_u32(0x13533C, phase);
+                // Set ALL the decoded conditions simultaneously:
+                // s1 = 1 (the dispatcher's dispatch state), the pay-flow
+                // state = 2 (the clear-table handler), so the dispatcher
+                // selects the phase and the handler runs.
+                let _ = self.mem.write_u32(0x1331A0, 1);
+                let _ = self.mem.write_u32(0x13533C, 2);
                 job[9] = 1; // result ready
                 job[4] = 8; // payload carries halfwords
                 let be: Vec<u8> = RECEIPT
