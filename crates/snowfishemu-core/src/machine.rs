@@ -325,7 +325,8 @@ impl SnowFishMachine {
     fn hooked_slot_ret(&self, w: &Wrapper) -> Option<u32> {
         match w.slot {
             0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 => Some(w.ret),
-            0x12C | 0x154 | 0x180 | 0x198 | 0x194 | 0x184 | 0x15C | 0x010 => Some(w.ret),
+            0x12C | 0x130 | 0x134 | 0x140 | 0x154 | 0x158 | 0x180 | 0x198 | 0x194 | 0x184
+            | 0x15C | 0x010 => Some(w.ret),
             _ => None,
         }
     }
@@ -668,21 +669,16 @@ impl SnowFishMachine {
             0x010 => {
                 self.gdi.op_flush(&self.mem);
             }
-            // +0x130/+0x140: the long-form fill/text variants the help
-            // viewer uses for its content lines. Their exact argument
-            // layout is still being decoded; r0 = canvas.
+            // +0x130/+0x140: the long-form fill variants for the dialog
+            // chrome (r1 = x, r2 = y; the canvas color from the context).
             0x130 | 0x140 => {
-                let adj = self.sp_adjust(ret);
                 let x = r(1) as i32;
                 let y = r(2) as i32;
+                let color = self.gdi.fill_color();
                 if self.trace {
-                    let raw1 = r(1);
-                    let raw2 = r(2);
-                    debug!(
-                        "[gdi]+0x{slot:X} variant raw1={raw1:#010x} raw2={raw2:#010x} x={x} y={y}"
-                    );
+                    debug!("[gdi]+0x{slot:X} fill @({x},{y}) c={color:#06x}");
                 }
-                let _ = adj;
+                self.gdi.op_fill2(&mut self.mem, x, y, 240, 8, color);
             }
             _ => {}
         }
