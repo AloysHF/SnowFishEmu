@@ -619,8 +619,9 @@ impl SnowFishMachine {
                 }
             }
             0x180 => {
-                // set-color(obj, rgb888) — records the pen/text color: the
-                // painter calls it before drawing the content lines.
+                // set-color(obj, rgb888) — records the pen/text color (the
+                // values seen are RGB grays/whites; the text reads at that
+                // address fault, so r1 is the color, not a pointer).
                 let rgb24 = r(1) & 0xFFFFFF;
                 let (rgb24, rgb565) =
                     self.gdi
