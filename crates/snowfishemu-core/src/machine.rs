@@ -751,7 +751,10 @@ impl SnowFishMachine {
             self.mem.write(buf, &bytes)?;
             debug!("[plat] +0x48 sms fetch -> fabricated record at {buf:#010x}");
         }
-        Ok(buf)
+        // A zero return routes the caller into its pay-processor callback
+        // (the indirect call through the API table), which is what advances
+        // the flow; the buffer-pointer return skips it.
+        Ok(0)
     }
 
     /// `fwrite(handle, buf, len)` (slot +0x60) — appends to a writable
