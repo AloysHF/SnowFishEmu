@@ -31,6 +31,11 @@ struct Region {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuestMem {
     regions: Vec<Region>,
+    /// Watched guest addresses (`SF_WATCH`): the next write that touches
+    /// one of them records the address in `watch_hit` for the machine's
+    /// execution loop to attribute to the current instruction.
+    pub watch: Vec<u32>,
+    pub watch_hit: Option<u32>,
 }
 
 /// Rounds the image size up to a page with room for the 0x1000 reserved
@@ -65,7 +70,11 @@ impl GuestMem {
                 data: vec![0; HEAP_SIZE as usize],
             },
         ];
-        Self { regions }
+        Self {
+            regions,
+            watch: Vec::new(),
+            watch_hit: None,
+        }
     }
 
     fn region(&self, addr: u32, len: u32) -> Result<&Region, MemError> {
@@ -100,6 +109,14 @@ impl GuestMem {
     /// Bulk write into guest memory.
     pub fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), MemError> {
         let len = data.len() as u32;
+        if !self.watch.is_empty() && self.watch_hit.is_none() {
+            for &w in &self.watch {
+                if addr <= w && w < addr + len {
+                    self.watch_hit = Some(w);
+                    break;
+                }
+            }
+        }
         let region = self.region_mut(addr, len)?;
         let off = (addr - region.base) as usize;
         region.data[off..off + data.len()].copy_from_slice(data);
@@ -138,6 +155,9 @@ impl GuestMem {
 
     /// Writes a single byte.
     pub fn write_u8(&mut self, addr: u32, v: u8) -> Result<(), MemError> {
+        if self.watch.contains(&addr) && self.watch_hit.is_none() {
+            self.watch_hit = Some(addr);
+        }
         let region = self.region_mut(addr, 1)?;
         region.data[(addr - region.base) as usize] = v;
         Ok(())

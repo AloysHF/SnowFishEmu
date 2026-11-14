@@ -317,6 +317,14 @@ impl SnowFishMachine {
                 }
             }
         }
+        // SF_WATCH="addr,addr" (hex): record the writing instruction for
+        // every guest write that touches these addresses.
+        if let Ok(vars) = std::env::var("SF_WATCH") {
+            mem.watch = vars
+                .split(',')
+                .filter_map(|a| u32::from_str_radix(a, 16).ok())
+                .collect();
+        }
         plat::layout(&mut mem, CODE_BASE, image_size);
         let wrappers = scan_wrappers(&image.code);
         info!(
@@ -481,6 +489,14 @@ impl SnowFishMachine {
                     debug!("  branch {from:#010x} -> {to:#010x}");
                 }
                 return Err(MachineError::GuestFault(aligned));
+            }
+            if !self.mem.watch.is_empty() {
+                if let Some(wa) = self.mem.watch_hit.take() {
+                    debug!(
+                        "[watch] write to {wa:#010x} at pc={aligned:#010x} lr={:#010x}",
+                        self.cpu.reg_get(armv4t_emu::reg::LR)
+                    );
+                }
             }
             executed += 1;
         }
