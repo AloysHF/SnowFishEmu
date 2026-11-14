@@ -1223,6 +1223,12 @@ impl SnowFishMachine {
                 }
             }
         }
+        // SF_RESUME=1: re-deliver the app-activate event (selector 3)
+        // before the tick. The platform re-sends it when the app regains
+        // focus; some guests gate their per-screen stage logic on it.
+        if std::env::var_os("SF_RESUME").is_some() {
+            self.events.post(3, 0);
+        }
         self.app_call(10, 0, budget)?;
         if let Some(t) = self.timer {
             // The callback receives a platform-allocated result record: the
