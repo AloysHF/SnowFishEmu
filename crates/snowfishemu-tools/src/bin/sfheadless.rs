@@ -120,7 +120,9 @@ fn main() -> Result<()> {
     );
 
     for spec in &args.dump_mem {
-        let mut it = spec.split(':');
+        // Split into three parts only: the path itself may contain a drive
+        // letter and therefore more colons.
+        let mut it = spec.splitn(3, ':');
         let (Some(addr), Some(len), Some(path)) = (it.next(), it.next(), it.next()) else {
             eprintln!("--dump-mem wants addr:len:path, got {spec:?}");
             continue;
