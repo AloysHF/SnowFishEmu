@@ -12,16 +12,21 @@ their own menus instead of the billing wait screen.
 
 | Title | Status | Notes |
 |---|---|---|
-| 黄金矿工 (hjkg) | menu+payflow | Title screen and the main menu render and respond to keys; the pay-flow pages (screens 0/1/2/3) walk with the offline receipt recipe (see the debug environment reference); the last link is the dialog widget's 确认 action firing the send trigger |
-| 宇宙风暴 (yzfb) | boots | Title screen call-verified; gameplay sprites pending resource-link RE |
-| (终身)三国危城无双 | boots | The SDK send flow runs end to end (request built, SMS-task object created, response inbox read); the screen chain past the dialog needs deeper protocol layers |
-| 五子棋 (trunk) | boots | Single background fill, matching the platform's idle session |
-| 巨作RPG曹操冢 (Mengde) | boots | Waiting screen |
-| 曹操冢超豪华版 (Mengde i) | boots | Waiting screen (needs both res files served) |
-| 新星际撞球 (StarBall) | boots | Waiting screen |
-| 新鬼吹灯 (Mengde pe) | boots | Runs clean |
-| 胭脂戏游龙 (yzxyl) | boots | Waiting screen |
-| 永恒魔塔 (yonghengmota) | boots* | Faults at the same guest fetch as a bare platform session (title-side issue, not emulator) |
+| 黄金矿工 (hjkg) | renders + input | Full title screen (signboard art, 黄金矿工, the miner, 选项/开始 softkeys); keys walk the menu into the pay-flow pages |
+| 新鬼吹灯 (Mengde pe) | renders | Full title screen: cave background, the 鬼吹灯 logo, 拯救美少女, the menu rows and the softkey bar |
+| 宇宙风暴 (yzfb) | renders | "是否打开音乐?" prompt over the striped backdrop with the note icon and the 是 softkeys |
+| (终身)三国危城无双 | renders | SDK 温馨提示 waiting dialog: title bar, body panel, 确认/退出 |
+| 巨作RPG曹操冢 (Mengde) | renders | SDK 温馨提示 waiting dialog |
+| 曹操冢超豪华版 (Mengde i) | renders | SDK 温馨提示 waiting dialog |
+| 胭脂戏游龙 (yzxyl) | renders | SDK 温馨提示 waiting dialog |
+| 永恒魔塔 (yonghengmota) | prompt only | Clears to black, prints 是否开启音乐 with 是/否 softkeys; the artwork never reaches the bridge (the title issues no blit call at all) |
+| 五子棋 (trunk) | session screen | White page with the 确认/返回 softkeys: the title sits in the SDK session flow and has not entered its own menu |
+| 新星际撞球 (StarBall) | session screen | Same as 五子棋 |
+
+Every title now paints through the platform's UI timer: all ten arm
+`+0xAC` during create and drive their screens from the callback's
+selector-10 re-entry. The frame loop runs them on a millisecond clock
+(`FRAME_MS`), without which no title painted past its background colour.
 
 ## Known gaps
 
@@ -32,6 +37,20 @@ their own menus instead of the billing wait screen.
 - **Sprite resource linking** (宇宙风暴): the guest's sprite table
   entries stay null in gameplay; the resource-link pass needs further
   reverse engineering.
+- **The music prompt is a dead end** (永恒魔塔): after the prompt is
+  answered the title clears to black and stops painting, and its
+  artwork never passes through a blit slot — decompressed buffers are
+  discarded before they reach the display bridge.
+- **The session flow blocks 五子棋/新星际撞球**: both stop at the SDK's
+  login/session screen, which paints only the softkey row.
+- **Dialog body text** is missing in the 温馨提示 dialogs: the frame and
+  the title render, the message body is drawn by a path that emits no
+  text slot call.
+- **Label anchoring**: the SDK anchors some labels by their centre
+  column (dialog titles sit at `width / 2`) and others by their left
+  edge (softkeys sit at `width - 5`). The bridge keeps the literal
+  left-edge reading and slides a label back inside the surface, so
+  titles land right of centre.
 
 ## Reproducing
 

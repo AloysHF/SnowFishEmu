@@ -26,8 +26,12 @@ identifiers. Save states use the `SFEMSTAT` signature.
   logging, guest file I/O over the package container, and the LZ stream
   decompressor (bit-exact with the platform's decoder)
 - **GDI display bridge** — RGB565 framebuffer (240x320) with region
-  fills, palette/RGB bitmap blits with color-key transparency, and CJK
-  text rendering
+  fills, palette/RGB bitmap blits with color-key transparency, CJK text
+  rendering, and the pen/colour state the titles drive through the
+  canvas object
+- **UI timer service** — the repeating arm/callback pair every title
+  registers during create, pumped on a millisecond frame clock so the
+  guest's own 60-120 ms screen pumps fire at their designed rates
 - **Offline startup** — network/pay service queries are answered
   locally so applications reach their menus without retired servers;
   see [docs/Game-Compatibility.md](docs/Game-Compatibility.md)
@@ -84,8 +88,8 @@ Deploy the built core (`target/release/snowfishemu_libretro.dll`, or
 and the info file (`snowfishemu_libretro.info`) to the `info` directory,
 then load a `.app` as content.
 
-- Video: 240x320 XRGB8888. The core reports a 60 Hz pacing rate and the
-  guest advances its 20 Hz screen tick every third frame.
+- Video: 240x320 XRGB8888. The core reports a 60 Hz pacing rate; each
+  presented frame advances the guest's millisecond UI clock by 33 ms.
 - Audio: none (the platform exposes no audio service; the core submits
   silence so frontends pace on a steady clock).
 - Save states: supported. States carry a version tag and a content

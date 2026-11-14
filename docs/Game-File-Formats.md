@@ -99,15 +99,35 @@ executes through the root-table stubs unchanged.
 | `+0x064` | File seek |
 | `+0x068` | File close |
 | `+0x07C` | Log (format string at r0) |
+| `+0x0AC` | UI timer arm(owner, period ms, callback) |
 | `+0x108` | LZ decompression |
-| `+0x12C` | GDI fill(obj, x, y, w, h, color) |
-| `+0x15C` | GDI fill with canvas color |
+| `+0x12C` | GDI update(obj, x, y, w, h) — commit a rectangle |
+| `+0x130` / `+0x140` | Long-form fill variants (dialog chrome rows) |
+| `+0x134` | GDI blit(obj, bmp, x, y, flags) — bitmap at its own size |
+| `+0x154` | GDI text(obj, u16 string, x, y, font) |
+| `+0x15C` | GDI fill(obj, x, y, w, h) with the canvas pen |
+| `+0x180` | GDI set-color(obj, rgb888) |
 | `+0x184` | GDI clear / pen color |
 | `+0x194` | GDI bitmap register |
-| `+0x198` | GDI draw (bitmap descriptor blit) |
+| `+0x198` | GDI draw(obj, bmp, w, h, _, dx, dy) |
 | `+0x4C` | Returns 1 |
 | `+0x500` | Timer start (id, callback, context) |
 | `+0x524` | Stores the memory descriptor pointer, returns 1 |
+
+`+0x12C` takes five arguments; the word that follows the height is *not*
+a colour. Titles leave stale caller data there (code pointers, string
+pointers, the residue of an earlier call), so the slot is served as a
+dirty-rectangle commit: the guest has already drawn into the surface and
+is asking the platform to push that rectangle to the display.
+
+`+0x134` and `+0x198` consume the same bitmap descriptor; `+0x198` adds
+an explicit clip window, `+0x134` draws the bitmap at its own size.
+
+`+0x0AC` returns a handle and arms a repeating callback. The callback is
+a trampoline that treats r0 as the SDK's delayed-message record
+`(app block, message id, delay, flag)` and re-enters the app handler with
+selector 10; the platform therefore passes the record it finds in the
+image data segment, not the caller's context object.
 
 ### GDI bitmap descriptor
 
