@@ -6,7 +6,7 @@
 //! executes through the planted root-table stubs unchanged.
 
 use crate::consts::{
-    CODE_BASE, HEAP_BASE, STACK_TOP, STOP_ADDRESS, TIMER_JOB_ADDR, TIMER_JOB_SIZE,
+    CODE_BASE, FRAME_MS, HEAP_BASE, STACK_TOP, STOP_ADDRESS, TIMER_JOB_ADDR, TIMER_JOB_SIZE,
 };
 use crate::cpu::ArmCpu;
 use crate::gdi::Gdi;
@@ -203,6 +203,7 @@ pub struct SnowFishMachine {
     pub mem: GuestMem,
     pub cpu: ArmCpu,
     code_base: u32,
+    image_end: u32,
     wrappers: Vec<Wrapper>,
     handler: u32,
     file_slots: Vec<FileSlot>,
@@ -222,9 +223,26 @@ pub struct SnowFishMachine {
     fn_skips: Vec<(u32, u32)>,
     gdi: Gdi,
     timer: Option<GuestTimer>,
+    ui_timers: Vec<UiTimer>,
+    ui_clock_ms: u64,
     /// Persistent contents of the guest-writable service files (the SMS
     /// billing records), keyed by full path.
     named_files: std::collections::HashMap<String, Vec<u8>>,
+}
+
+/// A platform UI timer armed through slot +0xAC,
+/// `handle = arm(context, period_ms, callback)`.
+///
+/// This is the shared SDK's own message pump: every `period_ms` of
+/// emulated time the platform re-enters `callback`, and the callback is
+/// what dispatches the app handler's `selector 10` (the guest side picks
+/// the parameter — the message id it registered the pump under).
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct UiTimer {
+    pub period_ms: u32,
+    pub callback: u32,
+    pub context: u32,
+    pub due_ms: u64,
 }
 
 /// A guest-registered timer callback (platform slot +0x500,
@@ -343,6 +361,7 @@ impl SnowFishMachine {
             mem,
             cpu: ArmCpu::new(),
             code_base: CODE_BASE,
+            image_end: CODE_BASE + image_size,
             wrappers,
             handler: 0,
             file_slots: vec![FileSlot::default(); 4],
@@ -358,6 +377,8 @@ impl SnowFishMachine {
             fn_skips,
             gdi: Gdi::new(),
             timer: None,
+            ui_timers: Vec::new(),
+            ui_clock_ms: 0,
             named_files: std::collections::HashMap::new(),
         })
     }
@@ -376,7 +397,9 @@ impl SnowFishMachine {
     /// through the root-table stubs).
     fn hooked_slot_ret(&self, w: &Wrapper) -> Option<u32> {
         match w.slot {
-            0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 | 0x524 => Some(w.ret),
+            0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 | 0x524 | 0xAC => {
+                Some(w.ret)
+            }
             0x12C | 0x130 | 0x134 | 0x140 | 0x154 | 0x158 | 0x180 | 0x198 | 0x194 | 0x184
             | 0x15C | 0x010 => Some(w.ret),
             _ => None,
@@ -614,6 +637,46 @@ impl SnowFishMachine {
                 Some(u32::MAX) // fclose always returns -1
             }
             0x108 => Some(self.hook_lz(r(0), r(1), r(2), r(3))?),
+            0xAC => {
+                // arm(context, period_ms, callback) -> handle
+                //
+                // Every title in the corpus arms this repeating UI timer
+                // during create, then leans on it for all of its per-frame
+                // work: the SDK's callback re-enters the app handler with
+                // selector 10 and a message id of its own choosing (3 for
+                // the framework builds, 1 for the older ones). Leaving the
+                // slot unanswered keeps the app's screen stack empty, so
+                // the titles paint a bare background and stop.
+                //
+                // Not every call is a callback arm — some guests pass a
+                // message id instead of a code pointer — so anything that
+                // does not land in the mapped code range is answered with a
+                // handle but never pumped.
+                let (ctx, period, cb) = (r(0), r(1).max(1), r(2));
+                if cb < self.code_base || cb >= self.image_end {
+                    debug!(
+                        "[plat] +0xAC arm ctx={ctx:#010x} period={period}ms target={cb:#010x} (not code, not pumped)"
+                    );
+                    Some(0)
+                } else {
+                    if self.ui_timers.len() >= 8 {
+                        self.ui_timers.remove(0);
+                    }
+                    let handle = self.ui_timers.len() as u32 + 1;
+                    let record = self.find_message_record(period).unwrap_or(0);
+                    debug!("[plat] +0xAC record={record:#010x}");
+                    self.ui_timers.push(UiTimer {
+                        period_ms: period,
+                        callback: cb,
+                        context: if record != 0 { record } else { ctx },
+                        due_ms: self.ui_clock_ms + period as u64,
+                    });
+                    debug!(
+                        "[plat] +0xAC arm ctx={ctx:#010x} period={period}ms cb={cb:#010x} -> handle {handle}"
+                    );
+                    Some(handle)
+                }
+            }
             0x12C | 0x130 | 0x134 | 0x140 | 0x154 | 0x158 | 0x180 | 0x198 | 0x194 | 0x184
             | 0x15C | 0x010 => {
                 // GDI slots leave r0 untouched (the reference writes PC only).
@@ -649,6 +712,28 @@ impl SnowFishMachine {
             .read_u32(sp.wrapping_add(adj).wrapping_add(4 * n))?)
     }
 
+    /// The current pen colour of a GDI call: the canvas object carries a
+    /// packed RGB565 word at +0x2C and the RGB888 triple set by slot +0x180
+    /// at +0x28. Zero in the packed word means "unset", so the triple wins;
+    /// when neither is present the last colour pushed through +0x180 is used.
+    fn pen_color(&self, obj: u32) -> u16 {
+        if obj > 0x1000 {
+            if let Ok(c16) = self.mem.read_u16(obj + 0x2C) {
+                if c16 != 0 {
+                    return c16;
+                }
+            }
+            let mut b3 = [0u8; 3];
+            if self.mem.read(obj + 0x28, &mut b3).is_ok() {
+                let v = (b3[0] as u32) << 16 | (b3[1] as u32) << 8 | b3[2] as u32;
+                if v != 0 {
+                    return crate::gdi::rgb888_to_565(v);
+                }
+            }
+        }
+        self.gdi.fill_color()
+    }
+
     /// Executes one hooked GDI slot. Stack args follow the reference's
     /// `SP + adj + 4*n` layout; r0 stays untouched.
     fn exec_gdi(&mut self, slot: u32, ret: u32) -> Result<(), MachineError> {
@@ -656,7 +741,10 @@ impl SnowFishMachine {
         let r = |i: u8| self.cpu.reg_get(i);
         match slot {
             0x12C => {
-                // fill(obj, x, y, w, h, color)
+                // fill(obj, x, y, w, h, color). The colour arrives packed in
+                // the second stack word and is RGB565 — the projection in
+                // `op_fill` keeps the low half only, which is what the
+                // titles that hand over a word have in mind.
                 let adj = self.sp_adjust(ret);
                 let x = r(1) as i32;
                 let y = r(2) as i32;
@@ -814,21 +902,7 @@ impl SnowFishMachine {
                 let y = r(2) as i32;
                 let w = r(3) as i32;
                 let h = self.stack_arg(sp, adj, 1)? as i32;
-                let mut color = self.gdi.fill_color();
-                if r(0) > 0x1000 {
-                    match self.mem.read_u16(r(0) + 0x2C) {
-                        Ok(c16) if c16 != 0 => color = c16,
-                        _ => {
-                            let mut b3 = [0u8; 3];
-                            if self.mem.read(r(0) + 0x28, &mut b3).is_ok() {
-                                let v = (b3[0] as u32) << 16 | (b3[1] as u32) << 8 | b3[2] as u32;
-                                if v != 0 {
-                                    color = crate::gdi::rgb888_to_565(v);
-                                }
-                            }
-                        }
-                    }
-                }
+                let color = self.pen_color(r(0));
                 if self.trace {
                     let stack: Vec<u32> = (0..4u32)
                         .filter_map(|i| self.mem.read_u32(sp.wrapping_add(i * 4)).ok())
@@ -1252,6 +1326,76 @@ impl SnowFishMachine {
         Ok(())
     }
 
+    /// Locates the SDK's delayed-message record for `period`.
+    ///
+    /// Slot +0xAC only carries `(owner, period, callback)`, but the shared
+    /// SDK's callback is a trampoline that dereferences r0 as a record of
+    /// `(app block, message id, delay, flag)` and re-dispatches the app
+    /// handler with `(selector 10, message id, 0)`. The record lives in the
+    /// image's data section and is written before the arm, so the matching
+    /// entry — same app block, same delay — identifies it uniquely.
+    fn find_message_record(&self, period: u32) -> Option<u32> {
+        if self.handler == 0 {
+            return None;
+        }
+        let mut a = self.code_base;
+        while a + 16 <= self.image_end {
+            if self.mem.read_u32(a).ok() == Some(self.handler) {
+                let id = self.mem.read_u32(a + 4).ok()?;
+                let delay = self.mem.read_u32(a + 8).ok()?;
+                if delay == period && id < 0x100 {
+                    return Some(a);
+                }
+            }
+            a += 4;
+        }
+        None
+    }
+
+    /// Fires every UI timer (+0xAC) whose period has elapsed, then advances
+    /// the emulated clock by one frame.
+    ///
+    /// The guest callback runs on its own fresh frame (stack reset to the
+    /// caller-visible top, LR parked on the stop sentinel) and returns into
+    /// the frame loop, so it can freely reuse the guest stack.
+    fn fire_ui_timers(&mut self, budget: u64) -> Result<(), MachineError> {
+        if self.ui_timers.is_empty() {
+            self.ui_clock_ms += FRAME_MS;
+            return Ok(());
+        }
+        let now = self.ui_clock_ms + FRAME_MS;
+        self.ui_clock_ms = now;
+        // Iterate by index: the callback may arm or drop timers of its own.
+        let mut i = 0;
+        while i < self.ui_timers.len() {
+            let t = self.ui_timers[i];
+            if t.due_ms > now {
+                i += 1;
+                continue;
+            }
+            // Re-arm before the call so a callback that overwrites the slot
+            // cannot make the pump fire the same period twice.
+            let period = t.period_ms.max(1) as u64;
+            self.ui_timers[i].due_ms = now + period;
+            debug!(
+                "[plat] +0xAC fire cb={:#010x} ctx={:#010x} at {now}ms",
+                t.callback, t.context
+            );
+            self.cpu.reg_set(armv4t_emu::reg::SP, STACK_TOP);
+            self.cpu.reg_set(armv4t_emu::reg::LR, STOP_ADDRESS);
+            self.cpu.reg_set(armv4t_emu::reg::CPSR, 0x10);
+            self.cpu.reg_set(0, t.context);
+            self.cpu.reg_set(1, 0);
+            self.cpu.reg_set(2, 0);
+            self.cpu.reg_set(3, 0);
+            self.cpu.reg_set(armv4t_emu::reg::PC, t.callback);
+            self.run_until_return(budget)?;
+
+            i += 1;
+        }
+        Ok(())
+    }
+
     /// Advances one frame: pump queued events, deliver the frame tick
     /// (selector 10, the host paces at ~20 fps), then deliver the guest's
     /// registered timer callback (the platform's +0x500 service is a
@@ -1294,6 +1438,11 @@ impl SnowFishMachine {
         if std::env::var_os("SF_RESUME").is_some() {
             self.events.post(3, 0);
         }
+        self.fire_ui_timers(budget)?;
+        // The platform also delivers a bare frame tick. The corpus' own
+        // pumps gate their selector-10 work on the message id the SDK
+        // registered (3, or 1 for the older builds), so this call is what
+        // the titles that read the tick directly use, not the main path.
         self.app_call(10, 0, budget)?;
         if let Some(t) = self.timer {
             // The callback receives a platform-allocated result record: the
@@ -1740,6 +1889,77 @@ mod tests {
             m.mem.read_u32(plat::STUB_HEIGHT + 8).unwrap(),
             plat::SCREEN_HEIGHT
         );
+    }
+
+    /// Builds an image whose entry registers an app-handler block and whose
+    /// code at +0x18 is a callback that pushes r0 onto the guest stack and
+    /// returns — enough to observe a platform timer delivery.
+    fn build_ui_timer_image() -> Vec<u8> {
+        // The loader plants the platform root pointer at image end - 8, so
+        // the last two words are padding rather than code.
+        let words: [u32; 13] = [
+            0xE59F_2008, // 0x00: ldr r2, [pc, #8]  -> literal at 0x10
+            0xE581_2000, // 0x04: str r2, [r1]      ; register the app block
+            0xE12F_FF1E, // 0x08: bx lr
+            0xE1A0_0000, // 0x0C: nop
+            0x0000_0024, // 0x10: app block offset (relocated)
+            0xE12F_FF1E, // 0x14: handler: bx lr
+            0xE52D_0004, // 0x18: callback: str r0, [sp, #-4]!
+            0xE12F_FF1E, // 0x1C: callback: bx lr
+            0xE1A0_0000, // 0x20: nop
+            0x0000_0014, // 0x24: app block word 0 -> handler entry (relocated)
+            0xE1A0_0000, // 0x28: nop
+            0xE1A0_0000, // 0x2C: padding (root pointer planted at end - 8)
+            0xE1A0_0000, // 0x30: padding
+        ];
+        let mut code = Vec::new();
+        for w in words {
+            code.extend_from_slice(&w.to_le_bytes());
+        }
+        let mut v = Vec::new();
+        v.extend_from_slice(&0x1941_4653u32.to_le_bytes()); // magic
+        v.extend_from_slice(&0u32.to_le_bytes()); // ver
+        v.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        v.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        v.extend_from_slice(&0x20u32.to_le_bytes()); // hdr_len
+        v.extend_from_slice(&(code.len() as u32).to_le_bytes()); // c0
+        v.extend_from_slice(&0u32.to_le_bytes()); // c1
+        v.extend_from_slice(&2u32.to_le_bytes()); // reloc count
+        v.extend_from_slice(&code);
+        v.extend_from_slice(&0x10u32.to_le_bytes()); // literal at 0x10
+        v.extend_from_slice(&0x24u32.to_le_bytes()); // block word at 0x24
+        v
+    }
+
+    /// Slot +0xAC arms the platform's repeating UI timer and the frame loop
+    /// must enter the guest callback when its period elapses. Nothing in the
+    /// corpus painted past its background while the slot went unanswered —
+    /// the SDK re-enters the app handler with selector 10 from inside the
+    /// callback, so an unanswered arm leaves every screen stack empty.
+    #[test]
+    fn ui_timer_callback_runs_on_the_frame_clock() {
+        let mut m = SnowFishMachine::load(build_ui_timer_image(), None).unwrap();
+        m.boot(2000).unwrap();
+        let callback = CODE_BASE + 0x18;
+        m.ui_timers.push(UiTimer {
+            period_ms: 40,
+            callback,
+            context: 0x1234,
+            due_ms: 40,
+        });
+        // Frame 1 ends at 33 ms — before the 40 ms period.
+        m.run_frame(2000).unwrap();
+        assert_eq!(m.mem.read_u32(STACK_TOP - 4).unwrap(), 0, "not due yet");
+        // Frame 2 ends at 66 ms — the callback must have run with the
+        // recorded context in r0.
+        m.run_frame(2000).unwrap();
+        assert_eq!(m.mem.read_u32(STACK_TOP - 4).unwrap(), 0x1234);
+        // The period re-arms, so frame 3 is quiet again.
+        m.mem.write_u32(STACK_TOP - 4, 0).unwrap();
+        m.run_frame(2000).unwrap();
+        assert_eq!(m.mem.read_u32(STACK_TOP - 4).unwrap(), 0, "re-armed");
+        m.run_frame(2000).unwrap();
+        assert_eq!(m.mem.read_u32(STACK_TOP - 4).unwrap(), 0x1234);
     }
 
     /// Root slot +0x524 is the service lookup. The guests call through the

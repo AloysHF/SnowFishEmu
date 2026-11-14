@@ -37,3 +37,8 @@ pub const STOP_ADDRESS: u32 = 0x0054_1000;
 pub const TIMER_JOB_ADDR: u32 = STACK_TOP - 0x1000;
 /// Timer-callback result record size.
 pub const TIMER_JOB_SIZE: u32 = 0x100;
+
+/// Emulated duration of one rendered frame, in milliseconds. The platform
+/// times UI timers (+0xAC) against a millisecond clock; 30 Hz keeps the
+/// guest's own 60/80/90/100/120 ms pumps firing at their designed rates.
+pub const FRAME_MS: u64 = 33;
