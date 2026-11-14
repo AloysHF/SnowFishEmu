@@ -217,6 +217,8 @@ pub struct SnowFishMachine {
     // The bump pointer for the +0x0C memory service, starting at the
     // guest heap base.
     heap_next: u32,
+    // The response paths already injected once (SF_DCSMS).
+    dcsms_injected: std::collections::HashSet<String>,
     // Function-entry skips: (entry, r0) — when the PC reaches `entry` the
     // call returns immediately with r0. Used by the offline billing shim
     // to report the SDK's SMS send as accepted.
@@ -356,6 +358,7 @@ impl SnowFishMachine {
             last_pc: 0,
             branch_log: Vec::new(),
             heap_next: HEAP_BASE,
+            dcsms_injected: std::collections::HashSet::new(),
             fn_skips,
             gdi: Gdi::new(),
             timer: None,
@@ -862,9 +865,15 @@ impl SnowFishMachine {
             // positive so the gate check passes).
             // The response inbox (__dcsmsinfo_) is what the carrier would
             // write back; SF_DCSMS injects its bytes so the send handler's
-            // parse-and-compare gate can pass offline.
+            // parse-and-compare gate can pass offline. The injection
+            // happens once per path: after the guest consumes the record
+            // the inbox stays empty so the no-match path (which marks the
+            // flow processed) can run instead of an infinite match cycle.
             let mut stored = stored;
-            if stored.is_empty() && basename(&path).starts_with("__dcsmsinfo") {
+            if stored.is_empty()
+                && basename(&path).starts_with("__dcsmsinfo")
+                && !self.dcsms_injected.contains(&path)
+            {
                 if let Ok(hex) = std::env::var("SF_DCSMS") {
                     let bytes: Vec<u8> = hex
                         .split(',')
@@ -872,6 +881,7 @@ impl SnowFishMachine {
                         .collect();
                     debug!("[plat] injecting {} response bytes for {path}", bytes.len());
                     stored = bytes;
+                    self.dcsms_injected.insert(path.clone());
                 }
             }
             let size = stored.len();
