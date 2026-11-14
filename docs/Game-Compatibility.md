@@ -12,7 +12,7 @@ their own menus instead of the billing wait screen.
 
 | Title | Status | Notes |
 |---|---|---|
-| 黄金矿工 (hjkg) | menu | Full title screen and the main menu (开始游戏/游戏设置/游戏帮助/产品信息/关于我们/退出游戏) render and respond to keys; entering a level stops at the title's own purchase gate |
+| 黄金矿工 (hjkg) | menu+payflow | Title screen and the main menu render and respond to keys; the pay-flow pages (screens 0/1/2/3) walk with the offline receipt recipe (see the debug environment reference); the last link is the dialog widget's 确认 action firing the send trigger |
 | 宇宙风暴 (yzfb) | boots | Title screen call-verified; gameplay sprites pending resource-link RE |
 | (终身)三国危城无双 | boots | The SDK send flow runs end to end (request built, SMS-task object created, response inbox read); the screen chain past the dialog needs deeper protocol layers |
 | 五子棋 (trunk) | boots | Single background fill, matching the platform's idle session |
@@ -42,6 +42,18 @@ sfheadless <game.app> --frames 30 [--res <res.app>] [--dump-fb <dir>]
 ```
 
 `--dump-fb` writes per-frame RGB565 dumps for offline comparison.
+
+### The hjkg offline receipt recipe (screens 0 -> 1 -> 2 -> 3)
+
+```sh
+SF_FAKE_PAY=1 SF_4C="*:1" SF_FSKIP="118fc4:1" SF_DCSMS="ff,ff,ff,ef,ff,7c,ff,ff,ff,ff,ff,ff,ff,ff,ff,ff" SF_FORCE="12f578:5;12f5b4:1;131754:5;1317e4:38;12f5f0:1" sfheadless hjkg.app --frames 150
+```
+
+`SF_DCSMS` is the encoded response record (nibble-swap + invert of the
+plaintext `[BE dword len][len x BE halfwords] "8"` record — the encode
+is self-inverse). `SF_FORCE` seeds the queue head (5 = the pay-flow
+message type), the builder stage flag, the pay state, and the send
+pattern table that the callback's match loops consume.
 
 ### Debug environment variables
 
