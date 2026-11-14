@@ -152,6 +152,16 @@ fn basename(path: &str) -> &str {
     path.rsplit(['\\', '/']).next().unwrap_or(path)
 }
 
+/// Whether a path names one of the SDK's own service records.
+///
+/// Those are the files the platform store has to remember across handles:
+/// the `__`-prefixed billing records and the account record
+/// (`__sfssuid`/`ssu<id>`) the guest rewrites whenever it registers.
+fn service_file(path: &str) -> bool {
+    let base = basename(path);
+    base.starts_with("__") || matches!(vfile_kind(base), Some(0) | Some(1))
+}
+
 /// One open file slot served from container bytes.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct FileSlot {
@@ -228,6 +238,10 @@ pub struct SnowFishMachine {
     /// Persistent contents of the guest-writable service files (the SMS
     /// billing records), keyed by full path.
     named_files: std::collections::HashMap<String, Vec<u8>>,
+    /// Free-play provisioning (`SF_FREE_PLAY`): the platform answers as a
+    /// registered, billing-capable handset instead of an empty one. See
+    /// [`Self::set_free_play`].
+    free_play: bool,
 }
 
 /// A platform UI timer armed through slot +0xAC,
@@ -380,7 +394,29 @@ impl SnowFishMachine {
             ui_timers: Vec::new(),
             ui_clock_ms: 0,
             named_files: std::collections::HashMap::new(),
+            free_play: std::env::var_os("SF_FREE_PLAY").is_some_and(|v| v != "0"),
         })
+    }
+
+    /// Turns free-play provisioning on or off.
+    ///
+    /// The corpus consists of trial releases: at boot the shared SDK runs its
+    /// purchase service, which asks the platform whether the handset can be
+    /// billed over the carrier channel (`+0x4C`), looks the subscriber
+    /// identity up (`+0x524`), and probes the account record
+    /// (`__sfssuid`/`ssu<id>`) on every drive root. A platform that answers
+    /// "no" to any of those parks the title on a registration page.
+    ///
+    /// Free play answers the way a registered handset would. It does not
+    /// touch the guest's own state machine: the title still has to accept the
+    /// answers and open its own play state.
+    pub fn set_free_play(&mut self, on: bool) {
+        self.free_play = on;
+    }
+
+    /// Whether free-play provisioning is on.
+    pub fn free_play(&self) -> bool {
+        self.free_play
     }
 
     /// Guest address of the state byte (app record +0x16).
@@ -544,7 +580,10 @@ impl SnowFishMachine {
                     format!("fmt@0x{:X}", r(0))
                 };
                 if self.trace {
-                    info!("[plat] +0x7C logfmt=\"{msg}\" -> 0");
+                    info!(
+                        "[plat] +0x7C logfmt=\"{msg}\" lr={:#010x} -> 0",
+                        self.cpu.reg_get(armv4t_emu::reg::LR)
+                    );
                 } else {
                     debug!("[plat] +0x7C logfmt=\"{msg}\" -> 0");
                 }
@@ -565,6 +604,15 @@ impl SnowFishMachine {
                 //   lands in `*out` as a long table, so the object is worse
                 //   than nothing there. Keep the historical behaviour —
                 //   record the out-pointer and report success.
+                //
+                // The SIM lookup takes a third shape: the type/id pair is
+                // the SDK's own hash of the "subscriber identity" service,
+                // a zero return means "found", and `*out` must receive a
+                // *callable entry point* (the pay service jumps straight to
+                // `*out`) that returns the ICCID. Reporting an error here is
+                // what makes the SDK log `GETICCID err` and drop to the
+                // registration page, so free play answers it with the
+                // return-0 trampoline.
                 let out = r(2);
                 if r(0) <= 0x100 && out > 0x1000 {
                     self.mem.write_u32(out, plat::SERVICE_OBJ_ADDR)?;
@@ -574,29 +622,45 @@ impl SnowFishMachine {
                         r(1),
                         plat::SERVICE_OBJ_ADDR
                     );
+                    Some(1u32)
                 } else {
                     self.mem.write_u32(plat::STATE_PTR_ADDR, out)?;
-                    debug!(
-                        "[plat] +0x524 untargeted type={:#x} id={:#x} out={out:#010x}",
-                        r(0),
-                        r(1)
-                    );
+                    if self.free_play && out > 0x1000 {
+                        self.mem.write_u32(out, plat::STUB_ADDR)?;
+                        debug!(
+                            "[plat] +0x524 sim lookup type={:#x} id={:#x} out={out:#010x} -> getter",
+                            r(0),
+                            r(1)
+                        );
+                        Some(0u32)
+                    } else {
+                        debug!(
+                            "[plat] +0x524 untargeted type={:#x} id={:#x} out={out:#010x}",
+                            r(0),
+                            r(1)
+                        );
+                        Some(1u32)
+                    }
                 }
-                Some(1u32)
             }
             0x4C => {
                 let lr = self.cpu.reg_get(armv4t_emu::reg::LR);
                 debug!("[plat] +0x4C lr={lr:#010x}");
-                // 0 = "billing service present": CheckSms exits at once and
-                // the render dispatch selects the full screen-data block —
-                // the games' own menus come up instead of the billing wait
-                // screen. The loader's planted stub returns 1 ("absent"),
-                // which is what parks the titles on the pay dialog.
-                // SF_4C="lr:val;lr:val;*:val" (hex) overrides per call
-                // site — some guests gate their poll-timer registration on
-                // a non-zero result at one site and the paid-mode state on
-                // a zero result at another.
-                let mut base = 0u32;
+                // "Can this platform bill over the carrier channel?" — the
+                // SDK's pay service asks once at boot and every title gates
+                // its own state machine on the answer:
+                //
+                // * several titles park in a "no service" state when the
+                //   answer is zero (五子棋 boots straight to its pay page
+                //   instead of the publisher splash, 新星际撞球 pins its
+                //   `iGameState` at 102 and never reaches 2, the play state);
+                // * the pay service itself returns early when it reads zero,
+                //   skipping its whole SMS/purchase pass.
+                //
+                // The platform is a phone with a SIM, so the honest answer is
+                // a non-zero one.  SF_4C="lr:val;lr:val;*:val" (hex) overrides
+                // it per call site for experiments.
+                let mut base = 1u32;
                 let mut result = None;
                 if let Ok(policy) = std::env::var("SF_4C") {
                     // "*" sets the base value; a matching `lr:val` entry
@@ -993,6 +1057,12 @@ impl SnowFishMachine {
     /// `fopen(utf16_path, flags)` — refuses platform vfiles, otherwise
     /// serves container bytes (or the sibling resource file for `res`/
     /// `.pak` paths). Handles are 1..4.
+    ///
+    /// The account files (`__sfssuid` and `ssu<id>`) are the SDK's own
+    /// registration record: it probes every drive root for them at boot and
+    /// drops to the registration page when none answers. Free play backs them
+    /// with the in-memory service store, so a record the guest writes is read
+    /// back on the next boot instead of being refused.
     fn hook_fopen(&mut self, path_ptr: u32, flags: u32) -> Result<u32, MachineError> {
         let path = if path_ptr > 0x1000 {
             guest_utf16_to_ascii(&self.mem, path_ptr, 96)?
@@ -1000,9 +1070,14 @@ impl SnowFishMachine {
             String::new()
         };
         let free = self.file_slots.iter().position(|s| !s.in_use);
-        if let Some(kind) = vfile_kind(basename(&path)) {
-            debug!("[plat] +0x58 fopen \"{path}\" flags={flags} -> 0 (vfile/{kind}, refused)");
-            return Ok(0);
+        let base = basename(&path);
+        let kind = vfile_kind(base);
+        let account = self.free_play && matches!(kind, Some(0) | Some(1));
+        if let Some(kind) = kind {
+            if !account {
+                debug!("[plat] +0x58 fopen \"{path}\" flags={flags} -> 0 (vfile/{kind}, refused)");
+                return Ok(0);
+            }
         }
         let Some(idx) = free else {
             debug!("[plat] +0x58 fopen \"{path}\" flags={flags} -> 0 (table full)");
@@ -1018,7 +1093,7 @@ impl SnowFishMachine {
         // records, __dcsmsinfo_ the response inbox, __sfgpsav saves): back
         // them all with in-memory data so the guest reads back what it
         // wrote instead of the container bytes.
-        let writable = basename(&path).starts_with("__");
+        let writable = basename(&path).starts_with("__") || account;
         if writable {
             let stored = self.named_files.get(&path).cloned().unwrap_or_default();
             // The pay-info file is a tag-stream log the guest builds
@@ -1138,9 +1213,7 @@ impl SnowFishMachine {
             self.cpu.reg_get(armv4t_emu::reg::LR),
             chunk
         );
-        if !self.file_slots[idx].data.is_empty()
-            || basename(&self.file_slots[idx].name).starts_with("__sfsms")
-        {
+        if !self.file_slots[idx].data.is_empty() || service_file(&self.file_slots[idx].name) {
             let (name, offset) = {
                 let slot = &self.file_slots[idx];
                 (slot.name.clone(), slot.offset)
@@ -2056,7 +2129,8 @@ mod tests {
             .collect();
         assert!(!ink.is_empty(), "the label must land inside the surface");
         assert!(
-            ink.iter().all(|&(x, y)| (232..240).contains(&x) && (312..320).contains(&y)),
+            ink.iter()
+                .all(|&(x, y)| (232..240).contains(&x) && (312..320).contains(&y)),
             "every glyph pixel belongs to the box slid back to (232, 312)"
         );
     }
@@ -2206,6 +2280,106 @@ mod tests {
         assert_eq!(vfile_kind("mysave_save_1.dat"), Some(4));
         assert_eq!(vfile_kind("data.bin"), None);
         assert_eq!(basename("E:\\Application\\data.bin"), "data.bin");
+    }
+
+    /// `+0x4C` is the pay service's first question: can this handset bill
+    /// over the carrier channel? The platform has a SIM, so the honest answer
+    /// is yes; a zero makes the service exit before it looks anything up and
+    /// leaves most of the corpus parked on its pay page.
+    #[test]
+    fn billing_capable_slot_answers_for_a_phone() {
+        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        m.cpu.reg_set(0, 0);
+        m.exec_slot(0x4C, CODE_BASE).unwrap();
+        assert_eq!(m.cpu.reg_get(0), 1, "+0x4C must report a billing channel");
+    }
+
+    /// `+0x524` with the SDK's own hash instead of a small type id is the
+    /// subscriber-identity lookup: 0 means "found" and the out-pointer has to
+    /// receive a *callable* entry point (the pay service jumps straight to
+    /// it). Off free play the lookup reports "missing" and leaves the
+    /// out-pointer alone, which is what parks the titles on the registration
+    /// page.
+    #[test]
+    fn sim_lookup_is_answered_under_free_play() {
+        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let out = plat::ROOT_ADDR + 0x2200;
+        // type/id as the pay service passes them, out-pointer to a scratch word.
+        m.cpu.reg_set(0, 0x120D_E2BD);
+        m.cpu.reg_set(1, 0xCF14_D7B7);
+        m.cpu.reg_set(2, out);
+        m.exec_slot(0x524, CODE_BASE).unwrap();
+        assert_eq!(m.cpu.reg_get(0), 1, "no identity without free play");
+        assert_eq!(m.mem.read_u32(out).unwrap(), 0, "out-pointer stays alone");
+
+        m.set_free_play(true);
+        m.cpu.reg_set(0, 0x120D_E2BD);
+        m.cpu.reg_set(1, 0xCF14_D7B7);
+        m.cpu.reg_set(2, out);
+        m.exec_slot(0x524, CODE_BASE).unwrap();
+        assert_eq!(m.cpu.reg_get(0), 0, "free play finds the identity");
+        assert_eq!(
+            m.mem.read_u32(out).unwrap(),
+            plat::STUB_ADDR,
+            "the out-pointer must hold a callable entry point"
+        );
+    }
+
+    /// The account record (`__sfssuid`, `ssu<id>`) is the SDK's proof that
+    /// the handset registered once. Free play backs it with the in-memory
+    /// service store so the guest writes a record at boot and reads the same
+    /// bytes back; without free play the probe is refused, so every drive
+    /// root fails and the title drops to its registration page.
+    #[test]
+    fn account_record_files_are_served_under_free_play() {
+        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let path_at = plat::ROOT_ADDR + 0x3000;
+        let write_path = |m: &mut SnowFishMachine, s: &str| {
+            let mut bytes = Vec::new();
+            for unit in s.encode_utf16() {
+                bytes.extend_from_slice(&unit.to_le_bytes());
+            }
+            bytes.extend_from_slice(&[0, 0]);
+            m.mem.write(path_at, &bytes).unwrap();
+        };
+
+        write_path(&mut m, "E:\\Application\\__sfssuid");
+        m.cpu.reg_set(0, path_at);
+        m.cpu.reg_set(1, 0);
+        m.exec_slot(0x58, CODE_BASE).unwrap();
+        assert_eq!(m.cpu.reg_get(0), 0, "no account file without free play");
+
+        m.set_free_play(true);
+        m.cpu.reg_set(0, path_at);
+        m.cpu.reg_set(1, 0);
+        m.exec_slot(0x58, CODE_BASE).unwrap();
+        let handle = m.cpu.reg_get(0);
+        assert!(handle != 0, "free play serves the account record");
+
+        // Write a record through the handle, close it, and read it back.
+        let payload_at = plat::ROOT_ADDR + 0x3100;
+        let payload = [7u8, 0, 0, 0, 0xFC];
+        m.mem.write(payload_at, &payload).unwrap();
+        m.cpu.reg_set(0, handle);
+        m.cpu.reg_set(1, payload_at);
+        m.cpu.reg_set(2, payload.len() as u32);
+        m.exec_slot(0x60, CODE_BASE).unwrap();
+        m.cpu.reg_set(0, handle);
+        m.exec_slot(0x68, CODE_BASE).unwrap();
+
+        m.cpu.reg_set(0, path_at);
+        m.cpu.reg_set(1, 0);
+        m.exec_slot(0x58, CODE_BASE).unwrap();
+        let handle = m.cpu.reg_get(0);
+        assert!(handle != 0, "the record is still there after a close");
+        let read_at = plat::ROOT_ADDR + 0x3200;
+        m.cpu.reg_set(0, handle);
+        m.cpu.reg_set(1, read_at);
+        m.cpu.reg_set(2, payload.len() as u32);
+        m.exec_slot(0x5C, CODE_BASE).unwrap();
+        let mut back = [0u8; 5];
+        m.mem.read(read_at, &mut back).unwrap();
+        assert_eq!(back, payload, "the guest reads back what it wrote");
     }
 
     /// Save states round-trip the observable runtime state: frame count,

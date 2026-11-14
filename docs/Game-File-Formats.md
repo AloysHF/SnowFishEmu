@@ -110,15 +110,52 @@ executes through the root-table stubs unchanged.
 | `+0x184` | GDI clear / pen color |
 | `+0x194` | GDI bitmap register |
 | `+0x198` | GDI draw(obj, bmp, w, h, _, dx, dy) |
-| `+0x4C` | Returns 1 |
+| `+0x4C` | Carrier-billing capability query (1 = phone can bill) |
 | `+0x500` | Timer start (id, callback, context) |
-| `+0x524` | Stores the memory descriptor pointer, returns 1 |
+| `+0x524` | Service lookup (see below) |
 
 `+0x12C` takes five arguments; the word that follows the height is *not*
 a colour. Titles leave stale caller data there (code pointers, string
 pointers, the residue of an earlier call), so the slot is served as a
 dirty-rectangle commit: the guest has already drawn into the surface and
 is asking the platform to push that rectangle to the display.
+
+`+0x4C` is the purchase service's first question: *can this handset bill
+over the carrier channel?* The SDK asks once at boot and every title
+gates its own state machine on the answer. A zero makes
+`SFPaySvc_CheckSms` return before it looks anything up and leaves most of
+the corpus parked on its pay page, so the platform answers 1 — it is a
+phone with a SIM.
+
+`+0x524` is the generic service lookup and takes two shapes:
+
+| Call | Meaning | Return / out-pointer |
+|---|---|---|
+| small `type` (≤ 0x100) | service object request | 1, `*out` = object whose table entries are callable |
+| SDK hash as `type` | subscriber-identity (ICCID) lookup | 0 = found, `*out` = a *callable* entry point the guest jumps to; 1 = missing |
+
+The identity form matters because the pay service calls `*out` directly
+(`mov lr, pc; ldr pc, [*out]`) to fill its string buffer, and a 1 there
+makes the SDK log `GETICCID err` and drop to the registration page.
+
+### Account record files
+
+The registration state lives in two plain files the SDK probes on every
+drive root before it starts the purchase flow:
+
+| Name | Meaning |
+|---|---|
+| `__sfssuid` | Primary account record |
+| `ssu<digits>` | Per-title record (for example `ssu210`) |
+
+A record is a big-endian length dword followed by the payload, and the
+whole thing is byte-scrambled: each byte is nibble-swapped and then
+inverted (`b -> !swap_nibbles(b)`), which is self-inverse. A decoded
+payload starts with a record count and then fixed-size entries of five
+big-endian halves plus a `0xFC` terminator byte.
+
+`__sfnetinfo__` is a third platform file: the cached network descriptor.
+The SDK reads it before deciding to fetch one over the network.
 
 `+0x134` and `+0x198` consume the same bitmap descriptor; `+0x198` adds
 an explicit clip window, `+0x134` draws the bitmap at its own size.

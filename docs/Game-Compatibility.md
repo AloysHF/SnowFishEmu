@@ -5,8 +5,16 @@ All titles boot and execute; the notes describe what renders and where
 each title currently stops.
 
 The billing service reports "present" by default (the +0x4C slot
-returns 0): the SDK's boot pay check exits at once and the titles reach
-their own menus instead of the billing wait screen.
+returns 1): the platform is a handset with a SIM, so the SDK's pay
+service runs its whole SMS pass instead of exiting at the first check.
+Titles that still cannot finish it fall back to their own notice dialogs
+rather than the billing wait screen.
+
+`SF_FREE_PLAY=1` (or `sfheadless --free-play`) additionally answers the
+subscriber-identity lookup and backs the account record files with the
+service store — i.e. the platform claims to be a *registered* handset.
+It does not patch the guest: the title still has to accept the answers
+and open its own play state. See [Free-play provisioning](#free-play-provisioning).
 
 ## Corpus status
 
@@ -28,12 +36,67 @@ Every title now paints through the platform's UI timer: all ten arm
 selector-10 re-entry. The frame loop runs them on a millisecond clock
 (`FRAME_MS`), without which no title painted past its background colour.
 
+### Where a 240-frame key sweep ends
+
+The table above describes the first stable screen each title reaches.
+Driving the bring-up key replay for 240 frames moves most of them on:
+
+| Title | End state after 240 frames |
+|---|---|
+| 黄金矿工 | SDK 温馨提示 dialog (branch panel, no body text) |
+| 新鬼吹灯 | title screen artwork, unchanged |
+| 宇宙风暴 | black surface, no slot calls |
+| (终身)三国危城无双 | SDK 温馨提示 dialog |
+| 巨作RPG曹操冢 | SDK 温馨提示 dialog |
+| 曹操冢超豪华版 | SDK 温馨提示 dialog |
+| 胭脂戏游龙 | SDK 温馨提示 dialog |
+| 永恒魔塔 | guest call fault at `pc 0x00000000` |
+| 五子棋 | SDK 温馨提示 dialog |
+| 新星际撞球 | SDK 温馨提示 dialog |
+
+So the corpus converges on the SDK's own notice dialog: the titles boot,
+paint, take input, run the purchase service and then stop on a message
+the platform never answers. With `SF_FREE_PLAY=1` the same sweep turns
+those dialogs into the SDK's loading screen (五子棋: `读取中` over the
+dark page) or a blank surface — the gate moved from "ask the user" to
+"wait for the network", which is the next thing to answer.
+
+## Free-play provisioning
+
+`SF_FREE_PLAY=1` (or `sfheadless --free-play`) makes the platform
+describe a registered, billing-capable handset:
+
+| Slot / file | Without free play | With free play |
+|---|---|---|
+| `+0x4C` | 1 | 1 |
+| `+0x524` identity lookup | 1 (`*out` untouched) | 0, `*out` = callable entry point |
+| `__sfssuid`, `ssu<id>` | refused (probe fails everywhere) | served from the in-memory service store, guest writes read back |
+| `__sfnetinfo__` | refused | refused (still an open gap) |
+
+Nothing is forced into the guest: the titles still run their own pay
+service and decide for themselves whether to open the play state. What
+free play removes is the *platform's* three "no" answers, which are the
+reason the service stops early.
+
 ## Known gaps
 
 - **The purchase gate behind the menus** (hjkg): the menu's OK runs the
   SDK pay check whose "paid" outcome feeds the game's own state
   machine; completing the offline receipt chain into that state is the
   next step (see the protocol notes in the repository status file).
+- **The SDK network stack is unanswered**: `+0xE4`/`+0xE8`/`+0xEC`/
+  `+0xF0` (request post) and `+0x568`/`+0x570` (socket) run the planted
+  stub, so a pay request that reaches the network layer never gets a
+  response. With free play on, 五子棋 sits on `读取中` and 新星际撞球 on
+  its logo because of this, not because of the platform's answers.
+- **`__sfnetinfo__` is still refused**: the SDK reads the cached network
+  descriptor before posting, and re-deriving its record layout is what
+  would let the pay service skip the network round-trip entirely.
+- **Dialog body text** is missing in the 温馨提示 dialogs: the frame,
+  the title and the softkey row render, but the body is drawn through
+  `+0x14C` (an unimplemented content slot) and the text buffers the
+  softkeys point at are empty, so the message the titles are actually
+  showing cannot be read yet.
 - **Sprite resource linking** (宇宙风暴): the guest's sprite table
   entries stay null in gameplay; the resource-link pass needs further
   reverse engineering.
@@ -76,8 +139,10 @@ pattern table that the callback's match loops consume.
 
 ### Debug environment variables
 
-- `SF_4C="lr:val;*:val"` — override the +0x4C billing-present result
-  per call site (hex LRs; `*` sets the base, default 0)
+- `SF_4C="lr:val;*:val"` — override the +0x4C billing-capability result
+  per call site (hex LRs; `*` sets the base, default 1)
+- `SF_FREE_PLAY=1` — answer the purchase service as a registered handset
+  (`sfheadless --free-play` does the same)
 - `SF_SEED="addr:val;..."` — write guest words once after boot
 - `SF_FORCE="addr:val;..."` — write guest words every frame
 - `SF_VARS="addr,..."` — log guest words per frame around the tick

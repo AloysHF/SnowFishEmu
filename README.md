@@ -35,6 +35,11 @@ identifiers. Save states use the `SFEMSTAT` signature.
 - **Offline startup** — network/pay service queries are answered
   locally so applications reach their menus without retired servers;
   see [docs/Game-Compatibility.md](docs/Game-Compatibility.md)
+- **Free play** — `SF_FREE_PLAY=1` (or `--free-play`) makes the platform
+  answer the purchase service as a registered, billing-capable handset:
+  carrier billing present, subscriber identity found, and the
+  `__sfssuid`/`ssu<id>` account record backed by the service store. The
+  guest still runs its own flow; nothing is forced into its state
 - **RetroArch core** — the `snowfishemu_libretro` core runs the same
   machine under RetroArch and other libretro frontends
 
@@ -72,8 +77,11 @@ Headless bring-up harness (used by the test tooling; per-frame
 framebuffer dumps for offline analysis):
 
 ```sh
-sfheadless <path/to/game.app> --frames 30 [--res <res.app>] [--dump-fb <dir>] [--keys 10 --keys 5]
+sfheadless <path/to/game.app> --frames 30 [--res <res.app>] [--dump-fb <dir>] [--keys 10 --keys 5] [--free-play]
 ```
+
+`--free-play` is the same switch as `SF_FREE_PLAY=1`; `--dump-mem
+addr:len:path` (hex) writes a guest memory range after the run.
 
 Package inspector:
 

@@ -35,6 +35,10 @@ struct Args {
     /// hex len). Repeatable, e.g. `--dump-mem 60d5ec:400:heap.bin`.
     #[arg(long = "dump-mem")]
     dump_mem: Vec<String>,
+    /// Answer the purchase service as a registered, billing-capable handset
+    /// so trial titles reach their own play state (same as `SF_FREE_PLAY=1`).
+    #[arg(long)]
+    free_play: bool,
 }
 
 fn main() -> Result<()> {
@@ -47,6 +51,9 @@ fn main() -> Result<()> {
         None => None,
     };
     let mut m = SnowFishMachine::load(container, res)?;
+    if args.free_play {
+        m.set_free_play(true);
+    }
     m.boot(args.budget)?;
     // Mimic the platform bring-up: 5 idle ticks, LSK down+up, OK down+up,
     // then the remaining frames (key indices per the core's key table).
