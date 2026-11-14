@@ -433,7 +433,7 @@ impl SnowFishMachine {
     /// through the root-table stubs).
     fn hooked_slot_ret(&self, w: &Wrapper) -> Option<u32> {
         match w.slot {
-            0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 | 0x524 | 0xAC => {
+            0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 | 0x524 | 0xAC | 0xE4 => {
                 Some(w.ret)
             }
             0x12C | 0x130 | 0x134 | 0x140 | 0x14C | 0x154 | 0x158 | 0x180 | 0x198 | 0x194
@@ -590,6 +590,20 @@ impl SnowFishMachine {
                 Some(0u32)
             }
             0x58 => Some(self.hook_fopen(r(0), r(1))?),
+            0xE4 => {
+                // socket write(handle, buffer, length): the SDK compares the
+                // result against -1 for errors and otherwise treats it as the
+                // number of bytes actually sent. Answering zero claims that
+                // the whole request is still queued.
+                debug!(
+                    "[plat] +0xE4 write h={:#x} buf={:#010x} len={:#x} lr={:#010x}",
+                    r(0),
+                    r(1),
+                    r(2),
+                    self.cpu.reg_get(armv4t_emu::reg::LR)
+                );
+                Some(r(2))
+            }
             0x48 => Some(self.hook_sms_fetch(r(0), r(1))?),
             0x524 => {
                 // Service lookup with two observed call shapes:
@@ -2504,6 +2518,29 @@ mod tests {
             machine.deserialize(b"garbage!"),
             Err(crate::save::SaveStateError::BadSignature)
         ));
+    }
+
+    /// Socket slot +0xE4 is `write(handle, buffer, length)`. The SDK checks
+    /// the result against -1 and otherwise uses it as the byte count, so the
+    /// generic return-0 stub silently claims that no request was sent.
+    #[test]
+    fn socket_write_reports_the_byte_count() {
+        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let w = Wrapper {
+            slot: 0xE4,
+            hook: CODE_BASE,
+            ret: CODE_BASE + 0xC,
+        };
+        assert!(
+            m.hooked_slot_ret(&w).is_some(),
+            "+0xE4 must be served by the host"
+        );
+        m.cpu.reg_set(0, 0); // socket handle
+        m.cpu.reg_set(1, 0x6143E4); // request buffer
+        m.cpu.reg_set(2, 0x11F); // request length
+        m.exec_slot(0xE4, CODE_BASE + 0xC).unwrap();
+        assert_eq!(m.cpu.reg_get(0), 0x11F, "all bytes must be reported sent");
+        assert_eq!(m.cpu.reg_get(15), CODE_BASE + 0xC, "resume at the epilogue");
     }
 
     /// Restoring a state keeps the region allocations stable: pointers
