@@ -214,6 +214,9 @@ pub struct SnowFishMachine {
     trace: bool,
     last_pc: u32,
     branch_log: Vec<(u32, u32)>,
+    // The bump pointer for the +0x0C memory service, starting at the
+    // guest heap base.
+    heap_next: u32,
     // Function-entry skips: (entry, r0) — when the PC reaches `entry` the
     // call returns immediately with r0. Used by the offline billing shim
     // to report the SDK's SMS send as accepted.
@@ -352,6 +355,7 @@ impl SnowFishMachine {
             trace,
             last_pc: 0,
             branch_log: Vec::new(),
+            heap_next: HEAP_BASE,
             fn_skips,
             gdi: Gdi::new(),
             timer: None,
@@ -373,7 +377,7 @@ impl SnowFishMachine {
     /// through the root-table stubs).
     fn hooked_slot_ret(&self, w: &Wrapper) -> Option<u32> {
         match w.slot {
-            0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 => Some(w.ret),
+            0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 | 0x0C => Some(w.ret),
             0x12C | 0x130 | 0x134 | 0x140 | 0x154 | 0x158 | 0x180 | 0x198 | 0x194 | 0x184
             | 0x15C | 0x010 => Some(w.ret),
             _ => None,
@@ -507,6 +511,21 @@ impl SnowFishMachine {
     fn exec_slot(&mut self, slot: u32, ret: u32) -> Result<(), MachineError> {
         let r = |i: u8| self.cpu.reg_get(i);
         let result = match slot {
+            // +0x0C = the platform memory service (malloc). The loader's
+            // stub returns a canned low address, so the SDK's working
+            // structures land on the unmapped zero page and every write
+            // to them is dropped — the login/intro animations freeze.
+            // Serve a bump allocation from the guest heap instead.
+            0x0C => {
+                let size = r(0).max(4);
+                let ptr = self.heap_next;
+                self.heap_next = self
+                    .heap_next
+                    .wrapping_add((size + 0xF) & !0xF)
+                    .min(HEAP_BASE + 0xF_0000);
+                debug!("[plat] +0x0C malloc({size}) -> {ptr:#010x}");
+                Some(ptr)
+            }
             0x7C => {
                 let msg = if r(0) > 0x1000 {
                     guest_read_string(&self.mem, r(0), 128)?
