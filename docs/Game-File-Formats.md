@@ -104,6 +104,7 @@ executes through the root-table stubs unchanged.
 | `+0x12C` | GDI update(obj, x, y, w, h) — commit a rectangle |
 | `+0x130` / `+0x140` | Long-form fill variants (dialog chrome rows) |
 | `+0x134` | GDI blit(obj, bmp, x, y, flags) — bitmap at its own size |
+| `+0x14C` | GDI text run(obj, u16 string, first, count, x, y, flags) |
 | `+0x154` | GDI text(obj, u16 string, x, y, font) |
 | `+0x15C` | GDI fill(obj, x, y, w, h) with the canvas pen |
 | `+0x180` | GDI set-color(obj, rgb888) |
@@ -113,6 +114,17 @@ executes through the root-table stubs unchanged.
 | `+0x4C` | Carrier-billing capability query (1 = phone can bill) |
 | `+0x500` | Timer start (id, callback, context) |
 | `+0x524` | Service lookup (see below) |
+
+`+0x14C` is the sibling of `+0x154` used by dialog bodies. The guest has
+already computed its own line breaks — it walks the UTF-16 string,
+accumulates each cell's advance and breaks when the next cell would pass
+the right margin — so the call carries a *character range* rather than a
+pixel pointer: `first` is the index of the line's first code unit,
+`count` is its length, and the last two register arguments are the text
+origin the block was laid out at. The platform only has to write the run
+at that origin with the canvas pen; dropping the slot leaves the dialog
+frame painted and the body blank, which is what every notice looked like
+before it was served.
 
 `+0x12C` takes five arguments; the word that follows the height is *not*
 a colour. Titles leave stale caller data there (code pointers, string

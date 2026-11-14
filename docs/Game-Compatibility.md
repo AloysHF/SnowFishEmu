@@ -23,10 +23,10 @@ and open its own play state. See [Free-play provisioning](#free-play-provisionin
 | 黄金矿工 (hjkg) | renders + input | Full title screen (signboard art, 黄金矿工, the miner, 选项/开始 softkeys); keys walk the menu into the pay-flow pages |
 | 新鬼吹灯 (Mengde pe) | renders | Full title screen: cave background, the 鬼吹灯 logo, 拯救美少女, the menu rows and the softkey bar |
 | 宇宙风暴 (yzfb) | renders | "是否打开音乐?" prompt over the striped backdrop with the note icon and the 是 softkeys |
-| (终身)三国危城无双 | renders | SDK 温馨提示 waiting dialog: title bar, body panel, 确认/退出 |
-| 巨作RPG曹操冢 (Mengde) | renders | SDK 温馨提示 waiting dialog |
-| 曹操冢超豪华版 (Mengde i) | renders | SDK 温馨提示 waiting dialog |
-| 胭脂戏游龙 (yzxyl) | renders | SDK 温馨提示 waiting dialog |
+| (终身)三国危城无双 | renders | SDK 温馨提示 / 资源包下载中 |
+| 巨作RPG曹操冢 (Mengde) | renders | SDK 温馨提示 / 资源包下载中 |
+| 曹操冢超豪华版 (Mengde i) | renders | SDK 温馨提示 / 资源包下载中, 是/否 |
+| 胭脂戏游龙 (yzxyl) | renders | SDK 温馨提示 / 资源包下载中 |
 | 永恒魔塔 (yonghengmota) | prompt only | Clears to black, prints 是否开启音乐 with 是/否 softkeys; the artwork never reaches the bridge (the title issues no blit call at all) |
 | 五子棋 (trunk) | session screen | White page with the 确认/返回 softkeys: the title sits in the SDK session flow and has not entered its own menu |
 | 新星际撞球 (StarBall) | session screen | Same as 五子棋 |
@@ -43,16 +43,23 @@ Driving the bring-up key replay for 240 frames moves most of them on:
 
 | Title | End state after 240 frames |
 |---|---|
-| 黄金矿工 | SDK 温馨提示 dialog (branch panel, no body text) |
+| 黄金矿工 | 温馨提示 / 资费信息获取中……请稍候 (tariff lookup) |
 | 新鬼吹灯 | title screen artwork, unchanged |
 | 宇宙风暴 | black surface, no slot calls |
-| (终身)三国危城无双 | SDK 温馨提示 dialog |
-| 巨作RPG曹操冢 | SDK 温馨提示 dialog |
-| 曹操冢超豪华版 | SDK 温馨提示 dialog |
-| 胭脂戏游龙 | SDK 温馨提示 dialog |
+| (终身)三国危城无双 | 温馨提示 / 资源包下载中，请稍候 (resource pack) |
+| 巨作RPG曹操冢 | 温馨提示 / 资源包下载中，请稍候 |
+| 曹操冢超豪华版 | 温馨提示 / 资源包下载中，请稍候, 是/否 |
+| 胭脂戏游龙 | 温馨提示 / 资源包下载中，请稍候 |
 | 永恒魔塔 | guest call fault at `pc 0x00000000` |
-| 五子棋 | SDK 温馨提示 dialog |
-| 新星际撞球 | SDK 温馨提示 dialog |
+| 五子棋 | 温馨提示, empty body, 确认/返回 |
+| 新星际撞球 | 温馨提示 / 资费信息获取中 请稍候 |
+
+The dialog bodies are read through the `+0x14C` text-run slot, so the
+messages the SDK is showing are now legible. Two distinct waits appear:
+a **tariff lookup** (黄金矿工, 新星际撞球, and 五子棋 before its session
+page) and a **resource-pack download** (the three 曹操冢 builds and
+胭脂戏游龙). Both are network round trips, and both stay on screen
+indefinitely because nothing answers the request.
 
 So the corpus converges on the SDK's own notice dialog: the titles boot,
 paint, take input, run the purchase service and then stop on a message
@@ -96,11 +103,6 @@ reason the service stops early.
   240-frame key sweep, 永恒魔塔 takes a guest call fault at
   `pc 0x00000000` (it does not fault without free play), so the switch
   needs per-title validation before it can be enabled by default.
-- **Dialog body text** is missing in the 温馨提示 dialogs: the frame,
-  the title and the softkey row render, but the body is drawn through
-  `+0x14C` (an unimplemented content slot) and the text buffers the
-  softkeys point at are empty, so the message the titles are actually
-  showing cannot be read yet.
 - **Sprite resource linking** (宇宙风暴): the guest's sprite table
   entries stay null in gameplay; the resource-link pass needs further
   reverse engineering.
@@ -110,14 +112,16 @@ reason the service stops early.
   discarded before they reach the display bridge.
 - **The session flow blocks 五子棋/新星际撞球**: both stop at the SDK's
   login/session screen, which paints only the softkey row.
-- **Dialog body text** is missing in the 温馨提示 dialogs: the frame and
-  the title render, the message body is drawn by a path that emits no
-  text slot call.
 - **Label anchoring**: the SDK anchors some labels by their centre
   column (dialog titles sit at `width / 2`) and others by their left
   edge (softkeys sit at `width - 5`). The bridge keeps the literal
   left-edge reading and slides a label back inside the surface, so
   titles land right of centre.
+- **Some dialog labels are still empty**: `+0x14` hands the guest a
+  label for a menu item and is not served, so titles that resolve their
+  softkeys through it draw blank buttons (五子棋 shows an empty body and
+  two unlabelled keys, while 曹操冢 resolves its own strings and shows
+  确认/返回).
 
 ## Reproducing
 
