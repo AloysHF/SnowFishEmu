@@ -1053,6 +1053,11 @@ impl SnowFishMachine {
             info!("guest handler registered at {:#010x}", self.handler);
         }
         self.app_call(1, 0, budget)?;
+        // Selector 2 = the app-activate event. The guests' dispatch cases
+        // for it complete their boot state (hjkg sets its boot-completed
+        // flag and marks the pay-flow active here); without it the titles
+        // park with their game logic never starting.
+        self.app_call(2, 0, budget)?;
         self.app_call(3, 0, budget)?;
         Ok(())
     }
