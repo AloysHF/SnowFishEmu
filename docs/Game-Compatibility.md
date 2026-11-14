@@ -16,6 +16,13 @@ service store — i.e. the platform claims to be a *registered* handset.
 It does not patch the guest: the title still has to accept the answers
 and open its own play state. See [Free-play provisioning](#free-play-provisioning).
 
+Two more switches are available. The app-activate pump (selector 3) is on
+by default; `SF_NO_APP_PUMP=1` / `--no-app-pump` turns it off for
+diagnostics. `SF_OFFLINE_HTTP=1` / `--offline-http` answers the SDK's
+carrier-facing HTTP transactions locally and runs the SDK's own result
+parser. Both are described in
+[Game-File-Formats.md](Game-File-Formats.md#offline-http-responder-and-the-app-activate-pump).
+
 ## Corpus status
 
 | Title | Status | Notes |
@@ -28,8 +35,8 @@ and open its own play state. See [Free-play provisioning](#free-play-provisionin
 | 曹操冢超豪华版 (Mengde i) | renders | SDK 温馨提示 / 资源包下载中, 是/否 |
 | 胭脂戏游龙 (yzxyl) | renders | SDK 温馨提示 / 资源包下载中 |
 | 永恒魔塔 (yonghengmota) | prompt only | Clears to black, prints 是否开启音乐 with 是/否 softkeys; the artwork never reaches the bridge (the title issues no blit call at all) |
-| 五子棋 (trunk) | session screen | White page with the 确认/返回 softkeys: the title sits in the SDK session flow and has not entered its own menu |
-| 新星际撞球 (StarBall) | session screen | Same as 五子棋 |
+| 五子棋 (trunk) | **playable** | With `--free-play --no-keys` and six left-soft-key presses the title opens its own 開始遊戲 menu and then the wooden gobang board with a working cursor — no carrier page is left on screen |
+| 新星际撞球 (StarBall) | session screen | 资费信息获取中 请稍候; the SDK session flow still owns the screen |
 
 Every title now paints through the platform's UI timer: all ten arm
 `+0xAC` during create and drive their screens from the callback's
@@ -50,8 +57,8 @@ Driving the bring-up key replay for 240 frames moves most of them on:
 | 巨作RPG曹操冢 | 温馨提示 / 资源包下载中，请稍候 |
 | 曹操冢超豪华版 | 温馨提示 / 资源包下载中，请稍候, 是/否 |
 | 胭脂戏游龙 | 温馨提示 / 资源包下载中，请稍候 |
-| 永恒魔塔 | guest call fault at `pc 0x00000000` |
-| 五子棋 | 温馨提示, empty body, 确认/返回 |
+| 永恒魔塔 | black surface with 是/否 softkeys; no fault |
+| 五子棋 | white session page with 确认/返回 (an explicit LSK sequence reaches the board, see below) |
 | 新星际撞球 | 温馨提示 / 资费信息获取中 请稍候 |
 
 The dialog bodies are read through the `+0x14C` text-run slot, so the
@@ -61,12 +68,29 @@ page) and a **resource-pack download** (the three 曹操冢 builds and
 胭脂戏游龙). Both are network round trips, and both stay on screen
 indefinitely because nothing answers the request.
 
-So the corpus converges on the SDK's own notice dialog: the titles boot,
-paint, take input, run the purchase service and then stop on a message
-the platform never answers. With `SF_FREE_PLAY=1` the same sweep turns
-those dialogs into the SDK's loading screen (五子棋: `读取中` over the
-dark page) or a blank surface — the gate moved from "ask the user" to
-"wait for the network", which is the next thing to answer.
+With `--free-play --offline-http` the tariff wait is no longer a dead end:
+the SDK consumes the local response and moves on to its own follow-up
+dialog ("资源包下载失败，是否重试？…" with 确认/退出 for the three 曹操冢
+builds, 三国危城无双 and 胭脂戏游龙). Those titles still need the
+resource-pack path, but the HTTP transaction itself completes. All ten
+titles finish the 240-frame sweep without a guest fault, including
+永恒魔塔 under free play.
+
+### Reaching a playable screen (五子棋)
+
+The purchase/login chain is now bypassable without patching the guest.
+From a clean start the boot's selector 1 completes, the app's own screen
+state machine is active and the soft keys are consumed:
+
+```sh
+sfheadless <game.app> --frames 80 --no-keys --free-play \
+  --keys 10 --keys 10 --keys 10 --keys 10 --keys 10 --keys 10
+```
+
+Three left-soft-key presses show the 開始遊戲 menu; six show the gobang
+board. `--no-keys` matters: the harness's automatic bring-up replay also
+presses OK every ten frames and cycles the title back into the SDK
+session page.
 
 ## Free-play provisioning
 
@@ -76,14 +100,21 @@ describe a registered, billing-capable handset:
 | Slot / file | Without free play | With free play |
 |---|---|---|
 | `+0x4C` | 1 | 1 |
-| `+0x524` identity lookup | 1 (`*out` untouched) | 0, `*out` = callable entry point |
+| `+0x524` identity lookup | 1 (`*out` untouched) | 0, `*out` = dual-shape callable entry |
 | `__sfssuid`, `ssu<id>` | refused (probe fails everywhere) | served from the in-memory service store, guest writes read back |
 | `__sfnetinfo__` | refused | refused (still an open gap) |
+| SDK HTTP transaction | pending forever | locally answered with `--offline-http` |
+
+The identity entry has to be both directly callable and indexable as a
+method table. A bare code stub satisfies only the first shape: the other
+shape loads a neighbouring stub's literal word, executes platform data and
+aborts the whole boot event, leaving the app's active flag unset and its
+keys ignored. See
+[Game-File-Formats.md](Game-File-Formats.md) for the stublet layout.
 
 Nothing is forced into the guest: the titles still run their own pay
 service and decide for themselves whether to open the play state. What
-free play removes is the *platform's* three "no" answers, which are the
-reason the service stops early.
+free play removes is the *platform's* "no" answers.
 
 ## Known gaps
 
@@ -91,21 +122,22 @@ reason the service stops early.
   SDK pay check whose "paid" outcome feeds the game's own state
   machine; completing the offline receipt chain into that state is the
   next step (see the protocol notes in the repository status file).
-- **The SDK network stack is unanswered**: `+0xE4`/`+0xE8`/`+0xEC`/
-  `+0xF0` (request post) and `+0x568`/`+0x570` (socket) run the planted
-  stub, so a pay request that reaches the network layer never gets a
-  response. With free play on, 五子棋 sits on `读取中` and 新星际撞球 on
-  its logo because of this, not because of the platform's answers. The
-  charge itself is SMS-based (send to `10661098`, reply recorded in
-  `__dcsmsinfo_`, both reachable through the file service); it is the
-  HTTP tariff lookup in front of it that hangs.
-- **`__sfnetinfo__` is still refused**: the SDK reads the cached network
-  descriptor before posting, and re-deriving its record layout is what
-  would let the pay service skip the network round-trip entirely.
-- **Free play is not uniformly safe yet**: with `SF_FREE_PLAY=1` and the
-  240-frame key sweep, 永恒魔塔 takes a guest call fault at
-  `pc 0x00000000` (it does not fault without free play), so the switch
-  needs per-title validation before it can be enabled by default.
+- **The resource-pack path is still missing**: `--offline-http` now
+  completes the SDK's HTTP transactions (`SFSocketEx:Read`, `Close OK`,
+  `SFPaySvc_OnHttpReault`) but answers with an empty body. Titles that
+  ask for a resource pack therefore advance to their "download failed,
+  retry?" dialog instead of a play screen. Synthesising a valid tariff or
+  pack record would cross into inventing server data, so this remains an
+  explicit gap. The charge itself is SMS-based (send to `10661098`,
+  reply recorded in `__dcsmsinfo_`, both reachable through the file
+  service).
+- **`__sfnetinfo__` is still refused**: the SDK reads that retry counter
+  before posting; re-deriving its record layout would let the pay service
+  skip the network round-trip entirely.
+- **Free play stays opt-in**: the previously observed 永恒魔塔 fault at
+  `pc 0x00000000` no longer reproduces in the 240-frame four-way matrix
+  (all ten titles now finish without a guest fault), but the switch has not
+  yet been validated against every title's longer interaction path.
 - **Sprite resource linking** (宇宙风暴): the guest's sprite table
   entries stay null in gameplay; the resource-link pass needs further
   reverse engineering.
@@ -113,8 +145,9 @@ reason the service stops early.
   answered the title clears to black and stops painting, and its
   artwork never passes through a blit slot — decompressed buffers are
   discarded before they reach the display bridge.
-- **The session flow blocks 五子棋/新星际撞球**: both stop at the SDK's
-  login/session screen, which paints only the softkey row.
+- **新星际撞球 is still in the SDK session flow**: it stops at the
+  资费信息获取中 notice. 五子棋 is no longer blocked — a deterministic
+  soft-key sequence reaches its playable board.
 - **Label anchoring**: the SDK anchors some labels by their centre
   column (dialog titles sit at `width / 2`) and others by their left
   edge (softkeys sit at `width - 5`). The bridge keeps the literal
@@ -131,10 +164,13 @@ reason the service stops early.
 The headless harness drives the same machine without a window:
 
 ```sh
-sfheadless <game.app> --frames 30 [--res <res.app>] [--dump-fb <dir>]
+sfheadless <game.app> --frames 30 [--res <res.app>] [--dump-fb <dir>] \
+  [--free-play] [--offline-http] [--no-app-pump] [--no-keys] [--keys 10]
 ```
 
 `--dump-fb` writes per-frame RGB565 dumps for offline comparison.
+`--dump-mem addr:len:path` (hex) exports a guest memory range, including
+the framebuffer at `540720:25800`.
 
 ### The hjkg offline receipt recipe (screens 0 -> 1 -> 2 -> 3)
 
@@ -154,6 +190,10 @@ pattern table that the callback's match loops consume.
   per call site (hex LRs; `*` sets the base, default 1)
 - `SF_FREE_PLAY=1` — answer the purchase service as a registered handset
   (`sfheadless --free-play` does the same)
+- `SF_OFFLINE_HTTP=1` — answer the SDK's HTTP transactions locally
+  (`sfheadless --offline-http` does the same)
+- `SF_NO_APP_PUMP=1` — suppress the per-frame selector-3 event
+  (`sfheadless --no-app-pump` does the same)
 - `SF_SEED="addr:val;..."` — write guest words once after boot
 - `SF_FORCE="addr:val;..."` — write guest words every frame
 - `SF_VARS="addr,..."` — log guest words per frame around the tick

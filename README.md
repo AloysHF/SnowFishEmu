@@ -35,6 +35,16 @@ identifiers. Save states use the `SFEMSTAT` signature.
 - **Offline startup** — network/pay service queries are answered
   locally so applications reach their menus without retired servers;
   see [docs/Game-Compatibility.md](docs/Game-Compatibility.md)
+- **App-activate frame pump** — selector 3 (`EVT_APP_RESUME`) is posted
+  every frame by default; without it several titles never leave their
+  loading screen. `set_app_pump(false)` / `--no-app-pump` /
+  `SF_NO_APP_PUMP=1` disables it for diagnostics
+- **Offline HTTP responder** — `SF_OFFLINE_HTTP=1` (or `--offline-http`)
+  answers the SDK's carrier-facing HTTP transaction locally with a
+  payload-free `200 OK`, runs the SDK's own result parser and notifies its
+  registered completion callback for every transaction. It is off by
+  default so titles that never reach the network are untouched;
+  `set_offline_http(bool)` is the library equivalent
 - **Free play** — `SF_FREE_PLAY=1` (or `--free-play`) makes the platform
   answer the purchase service as a registered, billing-capable handset:
   carrier billing present, subscriber identity found, and the
@@ -77,11 +87,21 @@ Headless bring-up harness (used by the test tooling; per-frame
 framebuffer dumps for offline analysis):
 
 ```sh
-sfheadless <path/to/game.app> --frames 30 [--res <res.app>] [--dump-fb <dir>] [--keys 10 --keys 5] [--free-play]
+sfheadless <path/to/game.app> --frames 30 [--res <res.app>] [--dump-fb <dir>] [--keys 10 --keys 5] [--free-play] [--offline-http] [--no-app-pump] [--no-keys]
 ```
 
-`--free-play` is the same switch as `SF_FREE_PLAY=1`; `--dump-mem
-addr:len:path` (hex) writes a guest memory range after the run.
+`--free-play` is the same switch as `SF_FREE_PLAY=1`; `--offline-http` is
+the same as `SF_OFFLINE_HTTP=1`. `--no-keys` skips the automatic bring-up
+key replay so an explicit `--keys` sequence is the only input.
+`--dump-mem addr:len:path` (hex) writes a guest memory range after the run.
+
+A purchase-free session that reaches a title's own play screen can be
+driven entirely headlessly (repeat `--keys 10` six times for the gobang
+board):
+
+```sh
+sfheadless <game.app> --frames 80 --no-keys --free-play --keys 10 --keys 10 --keys 10 --keys 10 --keys 10 --keys 10
+```
 
 Package inspector:
 

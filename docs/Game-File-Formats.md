@@ -116,12 +116,16 @@ executes through the root-table stubs unchanged.
 | `+0x524` | Service lookup (see below) |
 | `+0x0C8` | Socket select(host, event record, handler, object) |
 | `+0x0CC` | Socket connect |
+| `+0x0D4` / `+0x0D8` / `+0x0DC` | Socket wrapper setup helpers |
+| `+0x0E0` | Socket recv(handle, buffer, length) -> bytes read |
 | `+0x0E4` | Socket write(handle, buffer, length) -> bytes written |
 | `+0x0E8` | Attach a socket to the asynchronous notifier |
+| `+0x0EC` | Look up the socket object attached to a handle |
 | `+0x0F0` | Open / select the data bearer (mode 0, 1 or 2) |
 | `+0x11C` | Read the current date/time into a guest struct |
 | `+0x568` | Report socket state (error code in r2) |
-| `+0x570` | Register the HTTP result callback |
+| `+0x56C` | Release/decrement an async request |
+| `+0x570` | Register an async request descriptor |
 
 `+0x14C` is the sibling of `+0x154` used by dialog bodies. The guest has
 already computed its own line breaks — it walks the UTF-16 string,
@@ -152,11 +156,24 @@ phone with a SIM.
 | Call | Meaning | Return / out-pointer |
 |---|---|---|
 | small `type` (≤ 0x100) | service object request | 1, `*out` = object whose table entries are callable |
-| SDK hash as `type` | subscriber-identity (ICCID) lookup | 0 = found, `*out` = a *callable* entry point the guest jumps to; 1 = missing |
+| SDK hash as `type` | subscriber-identity (ICCID) lookup | 0 = found, `*out` = a *callable* entry; 1 = missing |
 
-The identity form matters because the pay service calls `*out` directly
-(`mov lr, pc; ldr pc, [*out]`) to fill its string buffer, and a 1 there
-makes the SDK log `GETICCID err` and drop to the registration page.
+The identity form matters because a 1 makes the SDK log `GETICCID err`
+and drop to the registration page. The returned entry has to satisfy two
+different call shapes used by different revisions of the SDK:
+
+- `mov lr, pc; ldr pc, [entry]` — the entry itself is jumped to.
+- `ldr rX, [entry_holder]; mov lr, pc; ldr pc, [rX, #0x50]` — the entry is
+  treated as a method table and one of its words is jumped to.
+
+Handing back a bare code stub works for the first shape only. Indexing the
+shared stub area reads a neighbouring value trampoline's literal word
+(the canvas pointer), so the guest executes platform data and the whole
+boot event aborts at the stop sentinel — the title then never sets its
+own active flag and its screen state machine stops accepting keys. The
+platform therefore plants a dedicated stublet whose first two words are a
+return-0 trampoline and whose remaining words all point back at that
+trampoline, so both shapes land on real code.
 
 ### Account record files
 
@@ -192,13 +209,24 @@ return-0 stubs currently answer most of them.
 | Slot | Shape | Notes |
 |---|---|---|
 | `+0x0F0` | `bearer(mode)` | mode 1 or 2 from the pay retry state, 0/1/2 from the connection setup |
-| `+0x570` | `register(obj, &callback_slot, callback)` | `callback` is the completion handler the platform must invoke |
+| `+0x570` | `register(request_descriptor)` | r0 points at `[status, callback, context]`; status starts at `-2` (pending) |
 | `+0x0C8` | `select(host, event_record, handler, object)` | see below |
 | `+0x0CC` | `connect(..., &err)` | a zero result is treated as success |
-| `+0x0E8` | `attach(handle, object)` | called as a tail call after connect |
+| `+0x0E8` | `attach(handle, object)` | registers the socket for the async notifier |
+| `+0x0EC` | `lookup(handle)` | returns the object registered by `+0xE8`; returning 0 drops every async socket event |
 | `+0x0E4` | `write(handle, buffer, length)` | **returns the byte count**; -1 is the error sentinel |
+| `+0x0E0` | `recv(handle, buffer, length)` | **returns the byte count** and fills the guest buffer; 0 is EOF |
 | `+0x568` | `state(object, 0, err)` | `0x80001005` connected, `0x80001002` failed |
 | `+0x11C` | `get_date_time(struct)` | polled every frame |
+
+`+0x570` is the async completion registration, not a plain callback
+setter. The SDK reuses the same descriptor address for each new request,
+so a platform that stands in for the network has to treat a fresh
+registration after a consumed response as a new transaction, serve a full
+response through `+0xE0`, mark the descriptor's status done and then call
+the descriptor's callback. Calling the callback before the response has
+been consumed is invalid: the guest fetches a completed transaction
+object through the HTTP manager's vtable and jumps through a null entry.
 
 `+0x0C8` is a *synchronous* notifier. When the slot returns zero the SDK
 immediately calls `handler(object, event_record)`; the handler reads a
@@ -223,9 +251,32 @@ The registered completion callback fetches a *completed transaction
 object* through the HTTP manager's vtable, then checks its status word:
 200..299 enters the body parser, anything else closes the transaction and
 runs the failure handler. Calling that callback without a completed
-transaction is not valid — the guest jumps through a null vtable. This is
-why the trial titles stay on their wait screen: the request is written,
-but no response object ever arrives.
+transaction is not valid — the guest jumps through a null vtable. Without
+a local answer the request is written but no response object ever
+arrives, which is what historically parked titles on their wait screen.
+
+### Offline HTTP responder and the app-activate pump
+
+Two optional platform facilities close that loop:
+
+- The **offline HTTP responder** (`SF_OFFLINE_HTTP=1`,
+  `sfheadless --offline-http`, `set_offline_http(true)`) hooks only the
+  socket/notifier slots that are otherwise answered by the generic
+  return-0 stub. `+0xC8` reports a connected event record, `+0xE4`
+  reports the byte count, `+0xE8`/`+0xEC` keep the attached socket object,
+  and `+0xE0` serves a payload-free `HTTP/1.0 200 OK` followed by EOF.
+  Once the response has been fully read the frame loop marks the `+0x570`
+  descriptor done and re-enters the SDK's completion callback, which runs
+  its own result parser (`SFPaySvc_OnHttpReault`). An SDK session issues
+  more than one request and reuses the same descriptor address, so each
+  fresh registration starts a new transaction. The responder is disabled by
+  default and never synthesises server-side tariff data.
+- The **app-activate pump** posts selector 3 (`EVT_APP_RESUME`) every
+  frame. That selector re-arms the guest's 120 ms UI timer, refreshes its
+  date/time record and drives the screen state machine; without it some
+  titles stay on their loading screen even after the purchase flow has
+  completed. It is on by default and can be turned off with
+  `SF_NO_APP_PUMP=1`, `--no-app-pump` or `set_app_pump(false)`.
 
 `+0x134` and `+0x198` consume the same bitmap descriptor; `+0x198` adds
 an explicit clip window, `+0x134` draws the bitmap at its own size.
