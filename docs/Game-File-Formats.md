@@ -114,6 +114,14 @@ executes through the root-table stubs unchanged.
 | `+0x4C` | Carrier-billing capability query (1 = phone can bill) |
 | `+0x500` | Timer start (id, callback, context) |
 | `+0x524` | Service lookup (see below) |
+| `+0x0C8` | Socket select(host, event record, handler, object) |
+| `+0x0CC` | Socket connect |
+| `+0x0E4` | Socket write(handle, buffer, length) -> bytes written |
+| `+0x0E8` | Attach a socket to the asynchronous notifier |
+| `+0x0F0` | Open / select the data bearer (mode 0, 1 or 2) |
+| `+0x11C` | Read the current date/time into a guest struct |
+| `+0x568` | Report socket state (error code in r2) |
+| `+0x570` | Register the HTTP result callback |
 
 `+0x14C` is the sibling of `+0x154` used by dialog bodies. The guest has
 already computed its own line breaks — it walks the UTF-16 string,
@@ -166,8 +174,58 @@ inverted (`b -> !swap_nibbles(b)`), which is self-inverse. A decoded
 payload starts with a record count and then fixed-size entries of five
 big-endian halves plus a `0xFC` terminator byte.
 
-`__sfnetinfo__` is a third platform file: the cached network descriptor.
-The SDK reads it before deciding to fetch one over the network.
+`__sfnetinfo__` is a third platform file. Despite its name it does not
+contain a cached tariff: it is the purchase service's retry counter. Like
+the account records it is a byte-scrambled big-endian record. After
+decoding, the leading dword becomes the retry counter (clamped to zero if
+greater than 3) and the first payload byte is the "result callback is
+registered" flag. The SDK increments the counter on each post attempt and
+takes its own give-up branch once it passes two. The file also carries a
+`%4d-%2d-%2d %2d:%2d:%2d` date string used by the write side.
+
+### Network and socket slots
+
+The purchase service reaches the network through these slots in order.
+The shapes below are the ones the SDK actually calls; the generic
+return-0 stubs currently answer most of them.
+
+| Slot | Shape | Notes |
+|---|---|---|
+| `+0x0F0` | `bearer(mode)` | mode 1 or 2 from the pay retry state, 0/1/2 from the connection setup |
+| `+0x570` | `register(obj, &callback_slot, callback)` | `callback` is the completion handler the platform must invoke |
+| `+0x0C8` | `select(host, event_record, handler, object)` | see below |
+| `+0x0CC` | `connect(..., &err)` | a zero result is treated as success |
+| `+0x0E8` | `attach(handle, object)` | called as a tail call after connect |
+| `+0x0E4` | `write(handle, buffer, length)` | **returns the byte count**; -1 is the error sentinel |
+| `+0x568` | `state(object, 0, err)` | `0x80001005` connected, `0x80001002` failed |
+| `+0x11C` | `get_date_time(struct)` | polled every frame |
+
+`+0x0C8` is a *synchronous* notifier. When the slot returns zero the SDK
+immediately calls `handler(object, event_record)`; the handler reads a
+signed halfword at the start of the event record, where `1` means
+"connected" (the request is then built and written) and any other value
+routes to the socket-failure/retry path. A real platform re-enters that
+handler for each state change, so the event record is the delivery
+mechanism, not the slot's return value.
+
+The request the SDK writes is a normal HTTP/1.0 POST:
+
+```
+POST http://service2.appgames.cn/getmt.do?method=sendmt HTTP/1.0
+Host: service2.appgames.cn:80
+Content-Length: 52
+User-Agent: Nokia6600/... Series60/2.0 Profile/MIDP-2.0 Configuration/CLDC-1.0
+Connection: Keep-Alive
+Content-Type: Application/octet-stream
+```
+
+The registered completion callback fetches a *completed transaction
+object* through the HTTP manager's vtable, then checks its status word:
+200..299 enters the body parser, anything else closes the transaction and
+runs the failure handler. Calling that callback without a completed
+transaction is not valid — the guest jumps through a null vtable. This is
+why the trial titles stay on their wait screen: the request is written,
+but no response object ever arrives.
 
 `+0x134` and `+0x198` consume the same bitmap descriptor; `+0x198` adds
 an explicit clip window, `+0x134` draws the bitmap at its own size.
