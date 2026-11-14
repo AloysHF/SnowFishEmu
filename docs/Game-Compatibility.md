@@ -95,7 +95,10 @@ reason the service stops early.
   `+0xF0` (request post) and `+0x568`/`+0x570` (socket) run the planted
   stub, so a pay request that reaches the network layer never gets a
   response. With free play on, 五子棋 sits on `读取中` and 新星际撞球 on
-  its logo because of this, not because of the platform's answers.
+  its logo because of this, not because of the platform's answers. The
+  charge itself is SMS-based (send to `10661098`, reply recorded in
+  `__dcsmsinfo_`, both reachable through the file service); it is the
+  HTTP tariff lookup in front of it that hangs.
 - **`__sfnetinfo__` is still refused**: the SDK reads the cached network
   descriptor before posting, and re-deriving its record layout is what
   would let the pay service skip the network round-trip entirely.
