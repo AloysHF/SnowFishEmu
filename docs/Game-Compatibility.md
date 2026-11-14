@@ -88,7 +88,9 @@ sfheadless <game.app> --frames 80 --no-keys --free-play \
 ```
 
 Three left-soft-key presses show the 開始遊戲 menu; six show the gobang
-board. `--no-keys` matters: the harness's automatic bring-up replay also
+board. Input then works on the board: a directional key moves the cursor
+and OK places a black stone, with the 玩家 turn indicator updating.
+`--no-keys` matters: the harness's automatic bring-up replay also
 presses OK every ten frames and cycles the title back into the SDK
 session page.
 

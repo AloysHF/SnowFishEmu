@@ -97,7 +97,8 @@ key replay so an explicit `--keys` sequence is the only input.
 
 A purchase-free session that reaches a title's own play screen can be
 driven entirely headlessly (repeat `--keys 10` six times for the gobang
-board):
+board; a directional key then moves the cursor and `--keys 5` places a
+stone):
 
 ```sh
 sfheadless <game.app> --frames 80 --no-keys --free-play --keys 10 --keys 10 --keys 10 --keys 10 --keys 10 --keys 10
