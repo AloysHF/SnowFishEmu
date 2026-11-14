@@ -741,23 +741,27 @@ impl SnowFishMachine {
         let r = |i: u8| self.cpu.reg_get(i);
         match slot {
             0x12C => {
-                // fill(obj, x, y, w, h, color). The colour arrives packed in
-                // the second stack word and is RGB565 — the projection in
-                // `op_fill` keeps the low half only, which is what the
-                // titles that hand over a word have in mind.
+                // update(obj, x, y, w, h) — a dirty-rectangle commit, not a
+                // fill. The guest paints into the surface and then asks the
+                // platform to push that rectangle to the display; the second
+                // stack word is *not* a colour (every title in the corpus
+                // leaves stale stack contents there — code pointers, string
+                // pointers, zero), so reading it as RGB565 painted random
+                // colours over the frame. Our surface *is* the display, so
+                // presenting the rectangle costs nothing.
                 let adj = self.sp_adjust(ret);
                 let x = r(1) as i32;
                 let y = r(2) as i32;
                 let w = r(3) as i32;
                 let h = self.stack_arg(sp, adj, 1)? as i32;
-                let color = self.stack_arg(sp, adj, 2)?;
                 if self.trace {
+                    let stale = self.stack_arg(sp, adj, 2).unwrap_or(0);
                     debug!(
-                        "[gdi]+0x{slot:X} fill @{x},{y} {w}x{h} c={color:#010x} lr={:#010x}",
+                        "[gdi]+0x{slot:X} update rect {x},{y} {w}x{h} obj={:#010x} stale={stale:#010x} lr={:#010x}",
+                        r(0),
                         self.cpu.reg_get(armv4t_emu::reg::LR)
                     );
                 }
-                self.gdi.op_fill(&mut self.mem, x, y, w, h, color);
             }
             0x154 => {
                 // text(obj, str u16le, x, y, font) — the font selector is
@@ -1947,6 +1951,29 @@ mod tests {
             .filter(|&i| px[i] == 0xFF00_0000)
             .count();
         assert!(ink > 0, "'A' should be drawn in black, not white-on-white");
+    }
+
+    /// +0x12C commits a rectangle of the surface to the display; it does not
+    /// paint. The second stack word is *not* a colour — every title in the
+    /// corpus leaves stale caller data there (code pointers, string
+    /// pointers, zero) — so treating it as RGB565 scribbled a random colour
+    /// over the frame and erased every sprite drawn before the call.
+    #[test]
+    fn update_rect_leaves_the_surface_alone() {
+        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let sp = HEAP_BASE + 0x200;
+        m.cpu.reg_set(armv4t_emu::reg::SP, sp);
+        m.mem.write_u32(sp + 4, 320).unwrap(); // h (5th argument)
+        m.mem.write_u32(sp + 8, 0x4151_7000).unwrap(); // stale word
+        m.gdi.fill(&mut m.mem, 0, 0, 240, 320, 0xFFFF);
+        m.cpu.reg_set(0, HEAP_BASE);
+        m.cpu.reg_set(1, 0);
+        m.cpu.reg_set(2, 0);
+        m.cpu.reg_set(3, 240);
+        m.exec_gdi(0x12C, 0).unwrap();
+        let px = m.gdi.frame_pixels(&m.mem);
+        let bad = px.iter().filter(|&&p| p != WHITE).count();
+        assert_eq!(bad, 0, "committing a rectangle must not repaint it");
     }
 
     /// +0x134 is the five-argument blit — `draw(obj, bmp, x, y, flags)` — and
