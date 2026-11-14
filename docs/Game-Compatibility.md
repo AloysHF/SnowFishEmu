@@ -92,6 +92,10 @@ reason the service stops early.
 - **`__sfnetinfo__` is still refused**: the SDK reads the cached network
   descriptor before posting, and re-deriving its record layout is what
   would let the pay service skip the network round-trip entirely.
+- **Free play is not uniformly safe yet**: with `SF_FREE_PLAY=1` and the
+  240-frame key sweep, 永恒魔塔 takes a guest call fault at
+  `pc 0x00000000` (it does not fault without free play), so the switch
+  needs per-title validation before it can be enabled by default.
 - **Dialog body text** is missing in the 温馨提示 dialogs: the frame,
   the title and the softkey row render, but the body is drawn through
   `+0x14C` (an unimplemented content slot) and the text buffers the
