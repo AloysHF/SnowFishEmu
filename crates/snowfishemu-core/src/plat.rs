@@ -41,6 +41,19 @@ pub const STUB_PASSTHROUGH_ADDR: u32 = STUB_ADDR + 0x78;
 pub const MEMDESC_ADDR: u32 = PLAT_BASE + 0x25F20;
 /// Guest address of the cell the state-store stub writes r2 into.
 pub const STATE_PTR_ADDR: u32 = PLAT_BASE + 0x25F30;
+/// Guest address of the synthetic service object handed out by root slot
+/// +0x524 (`service(type, id, &out)`).
+///
+/// The guests do not just receive the pointer: they immediately call
+/// through `out->vtable[0x3C]`, so the object has to be a real guest
+/// structure with a callable method table. It lives in the slack above the
+/// memory descriptor, next to a table of plain return-0 trampolines.
+pub const SERVICE_OBJ_ADDR: u32 = PLAT_BASE + 0x25F40;
+/// Guest address of the synthetic service object's method table.
+pub const SERVICE_VTABLE_ADDR: u32 = PLAT_BASE + 0x25F80;
+/// Methods in the synthetic service object's table (the highest offset the
+/// guests index is +0x3C, so 16 entries cover it with head-room).
+pub const SERVICE_VTABLE_LEN: u32 = 24;
 
 /// Per-stub value trampolines: each returns a fixed constant in r0.
 pub const STUB_HEAP_BASE: u32 = STUB_ADDR + 0x08;
@@ -201,6 +214,16 @@ pub fn layout(mem: &mut crate::mem::GuestMem, code_base: u32, image_size: u32) {
     // --- memory descriptor -------------------------------------------------
     w(mem, MEMDESC_ADDR, 8);
     w(mem, MEMDESC_ADDR + 4, 0x1000);
+
+    // --- synthetic service object (root slot +0x524) -----------------------
+    // A guest that asks for a service immediately calls through the returned
+    // object, so the object's first word is a method table whose entries all
+    // point at the generic return-0 trampoline: the call is answered instead
+    // of jumping to 0.
+    for i in 0..SERVICE_VTABLE_LEN {
+        w(mem, SERVICE_VTABLE_ADDR + i * 4, STUB_ADDR);
+    }
+    w(mem, SERVICE_OBJ_ADDR, SERVICE_VTABLE_ADDR);
 
     // --- loader info block around the code image ---------------------------
     w(mem, code_base - 8, REG_ADDR);

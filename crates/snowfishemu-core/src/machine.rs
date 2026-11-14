@@ -376,7 +376,7 @@ impl SnowFishMachine {
     /// through the root-table stubs).
     fn hooked_slot_ret(&self, w: &Wrapper) -> Option<u32> {
         match w.slot {
-            0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 => Some(w.ret),
+            0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 | 0x524 => Some(w.ret),
             0x12C | 0x130 | 0x134 | 0x140 | 0x154 | 0x158 | 0x180 | 0x198 | 0x194 | 0x184
             | 0x15C | 0x010 => Some(w.ret),
             _ => None,
@@ -529,6 +529,38 @@ impl SnowFishMachine {
             }
             0x58 => Some(self.hook_fopen(r(0), r(1))?),
             0x48 => Some(self.hook_sms_fetch(r(0), r(1))?),
+            0x524 => {
+                // Service lookup with two observed call shapes:
+                //
+                // * `service(type, id, *out)` with a small numeric type —
+                //   the guests then call `(*out)->vtable[0x3C]` without
+                //   checking the result, so an unwritten out-pointer becomes
+                //   a jump to 0 (mota's boot). Hand back the synthetic
+                //   object so the call is answered.
+                // * A caller passing register garbage as the type (sanguo
+                //   reaches this slot with hashed leftovers) walks whatever
+                //   lands in `*out` as a long table, so the object is worse
+                //   than nothing there. Keep the historical behaviour —
+                //   record the out-pointer and report success.
+                let out = r(2);
+                if r(0) <= 0x100 && out > 0x1000 {
+                    self.mem.write_u32(out, plat::SERVICE_OBJ_ADDR)?;
+                    debug!(
+                        "[plat] +0x524 service type={:#x} id={:#x} out={out:#010x} -> {:#010x}",
+                        r(0),
+                        r(1),
+                        plat::SERVICE_OBJ_ADDR
+                    );
+                } else {
+                    self.mem.write_u32(plat::STATE_PTR_ADDR, out)?;
+                    debug!(
+                        "[plat] +0x524 untargeted type={:#x} id={:#x} out={out:#010x}",
+                        r(0),
+                        r(1)
+                    );
+                }
+                Some(1u32)
+            }
             0x4C => {
                 let lr = self.cpu.reg_get(armv4t_emu::reg::LR);
                 debug!("[plat] +0x4C lr={lr:#010x}");
@@ -1043,8 +1075,10 @@ impl SnowFishMachine {
         }
         self.file_slots[idx].offset += n;
         debug!(
-            "[plat] +0x5C fread h={handle} buf={buf:#x} size={len} -> {n} (pos={}/{})",
-            self.file_slots[idx].offset, self.file_slots[idx].size
+            "[plat] +0x5C fread h={handle} buf={buf:#x} size={len} -> {n} (pos={}/{}) lr={:#010x}",
+            self.file_slots[idx].offset,
+            self.file_slots[idx].size,
+            self.cpu.reg_get(armv4t_emu::reg::LR)
         );
         Ok(n as u32)
     }
@@ -1120,8 +1154,8 @@ impl SnowFishMachine {
     }
 
     /// Boots the guest: init (selector -1, registers the handler), then the
-    /// start (1) and first-tick (3) calls, mirroring the platform's boot
-    /// sequence.
+    /// create (1), activate (2) and first resume (3) calls, mirroring the
+    /// platform's boot sequence.
     pub fn boot(&mut self, budget: u64) -> Result<(), MachineError> {
         self.app_call(-1, 0, budget)?;
         if self.handler == 0 {
@@ -1131,9 +1165,8 @@ impl SnowFishMachine {
         }
         self.app_call(1, 0, budget)?;
         // Selector 2 = the app-activate event. The guests' dispatch cases
-        // for it complete their boot state (hjkg sets its boot-completed
-        // flag and marks the pay-flow active here); without it the titles
-        // park with their game logic never starting.
+        // for it complete their boot state; the resume call below follows it
+        // so the titles that report it as a pause get un-parked.
         self.app_call(2, 0, budget)?;
         self.app_call(3, 0, budget)?;
         Ok(())
@@ -1141,6 +1174,9 @@ impl SnowFishMachine {
 
     /// Drives one guest call: init (selector -1) or an event dispatch.
     pub fn app_call(&mut self, selector: i32, param: u32, budget: u64) -> Result<(), MachineError> {
+        if self.trace {
+            debug!("[app] call selector={selector} param={param:#x}");
+        }
         self.mem.write_u8(self.state_addr(), 2)?;
         self.cpu.reg_set(armv4t_emu::reg::SP, STACK_TOP);
         self.cpu.reg_set(armv4t_emu::reg::LR, STOP_ADDRESS);
@@ -1703,6 +1739,69 @@ mod tests {
         assert_eq!(
             m.mem.read_u32(plat::STUB_HEIGHT + 8).unwrap(),
             plat::SCREEN_HEIGHT
+        );
+    }
+
+    /// Root slot +0x524 is the service lookup. The guests call through the
+    /// object it hands back without checking the result, so the layout must
+    /// contain a callable method table — an unwritten out-pointer used to
+    /// become a jump to 0 at mota's boot.
+    #[test]
+    fn service_slot_hands_out_a_callable_object() {
+        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let w = Wrapper {
+            slot: 0x524,
+            hook: CODE_BASE,
+            ret: CODE_BASE + 0xC,
+        };
+        assert!(
+            m.hooked_slot_ret(&w).is_some(),
+            "+0x524 must be served by the host"
+        );
+
+        // Layout: object word -> method table, every entry -> return-0 stub.
+        assert_eq!(
+            m.mem.read_u32(plat::SERVICE_OBJ_ADDR).unwrap(),
+            plat::SERVICE_VTABLE_ADDR
+        );
+        for i in 0..plat::SERVICE_VTABLE_LEN {
+            assert_eq!(
+                m.mem.read_u32(plat::SERVICE_VTABLE_ADDR + i * 4).unwrap(),
+                plat::STUB_ADDR
+            );
+        }
+        assert_eq!(
+            m.mem.read_u32(plat::SERVICE_VTABLE_ADDR + 0x3C).unwrap(),
+            plat::STUB_ADDR,
+            "the guests call vtable+0x3C"
+        );
+        assert_eq!(
+            m.mem.read_u32(plat::STUB_ADDR).unwrap(),
+            0xE3A0_0000,
+            "the shared stub is `mov r0,#0`"
+        );
+
+        // Typed lookup: the out-pointer receives the object.
+        let out = plat::ROOT_ADDR + 0x2000;
+        m.cpu.reg_set(0, 0x30);
+        m.cpu.reg_set(1, 0x1219);
+        m.cpu.reg_set(2, out);
+        m.exec_slot(0x524, CODE_BASE).unwrap();
+        assert_eq!(m.mem.read_u32(out).unwrap(), plat::SERVICE_OBJ_ADDR);
+        assert_eq!(m.cpu.reg_get(0), 1);
+
+        // Untargeted call (register garbage as the type): the historical
+        // record-the-pointer behaviour, with the out-pointer left alone.
+        let junk_out = plat::ROOT_ADDR + 0x2100;
+        m.cpu.reg_set(0, 0x120D_E2BD);
+        m.cpu.reg_set(1, 0xCF14_D7B7);
+        m.cpu.reg_set(2, junk_out);
+        m.exec_slot(0x524, CODE_BASE).unwrap();
+        assert_eq!(m.mem.read_u32(junk_out).unwrap(), 0);
+        assert_eq!(
+            m.mem.read_u32(plat::STATE_PTR_ADDR).unwrap(),
+            junk_out,
+            "untargeted calls keep the legacy store"
         );
     }
 
