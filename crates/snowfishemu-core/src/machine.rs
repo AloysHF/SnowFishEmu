@@ -773,14 +773,15 @@ impl SnowFishMachine {
                         break;
                     }
                 }
+                // The pen color lives in the canvas object at +0x28 (the
+                // slot +0x180 store). Zero is a real color — black — so the
+                // field is used as-is; the white default only covers a
+                // missing object where the load fails.
                 let mut rgb24: u32 = 0xFFFFFF;
                 if r(0) > 0x1000 {
                     let mut b3 = [0u8; 3];
                     if self.mem.read(r(0) + 0x28, &mut b3).is_ok() {
-                        let v = (b3[0] as u32) << 16 | (b3[1] as u32) << 8 | b3[2] as u32;
-                        if v != 0 {
-                            rgb24 = v;
-                        }
+                        rgb24 = (b3[0] as u32) << 16 | (b3[1] as u32) << 8 | b3[2] as u32;
                     }
                 }
                 let color = crate::gdi::rgb888_to_565(rgb24);
@@ -1889,6 +1890,31 @@ mod tests {
             m.mem.read_u32(plat::STUB_HEIGHT + 8).unwrap(),
             plat::SCREEN_HEIGHT
         );
+    }
+
+    /// Text takes its pen colour from the canvas object at +0x28, and zero
+    /// there is a real colour — black. Treating it as "unset" and falling
+    /// back to white made every softkey label on a white dialog invisible.
+    #[test]
+    fn text_keeps_a_black_pen() {
+        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let obj = HEAP_BASE;
+        let text = HEAP_BASE + 0x100;
+        m.mem.write_u32(obj + 0x28, 0).unwrap(); // pen = black
+        m.mem.write_u16(text, 0x41).unwrap(); // 'A'
+        m.mem.write_u16(text + 2, 0).unwrap();
+        m.gdi.fill(&mut m.mem, 0, 0, 240, 320, 0xFFFF);
+        m.cpu.reg_set(0, obj);
+        m.cpu.reg_set(1, text);
+        m.cpu.reg_set(2, 10); // x
+        m.cpu.reg_set(3, 10); // y
+        m.exec_gdi(0x154, 0).unwrap();
+        let px = m.gdi.frame_pixels(&m.mem);
+        let ink = (0..8)
+            .flat_map(|row| (0..8).map(move |col| (10 + row) * 240 + 10 + col))
+            .filter(|&i| px[i] == 0xFF00_0000)
+            .count();
+        assert!(ink > 0, "'A' should be drawn in black, not white-on-white");
     }
 
     /// Builds an image whose entry registers an app-handler block and whose
