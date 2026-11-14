@@ -39,6 +39,13 @@ struct Args {
     /// so trial titles reach their own play state (same as `SF_FREE_PLAY=1`).
     #[arg(long)]
     free_play: bool,
+    /// Answer the SDK's carrier-facing HTTP request locally instead of
+    /// leaving the transaction pending (same as `SF_OFFLINE_HTTP=1`).
+    #[arg(long)]
+    offline_http: bool,
+    /// Suppress the per-frame app-activate/resume event (diagnostic only).
+    #[arg(long)]
+    no_app_pump: bool,
 }
 
 fn main() -> Result<()> {
@@ -53,6 +60,12 @@ fn main() -> Result<()> {
     let mut m = SnowFishMachine::load(container, res)?;
     if args.free_play {
         m.set_free_play(true);
+    }
+    if args.offline_http {
+        m.set_offline_http(true);
+    }
+    if args.no_app_pump {
+        m.set_app_pump(false);
     }
     m.boot(args.budget)?;
     // Mimic the platform bring-up: 5 idle ticks, LSK down+up, OK down+up,
