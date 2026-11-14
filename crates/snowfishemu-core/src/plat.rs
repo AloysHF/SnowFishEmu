@@ -55,6 +55,22 @@ pub const SERVICE_VTABLE_ADDR: u32 = PLAT_BASE + 0x25F80;
 /// guests index is +0x3C, so 16 entries cover it with head-room).
 pub const SERVICE_VTABLE_LEN: u32 = 24;
 
+/// Guest address of the callable service entry handed out by root slot
+/// +0x524 for hashed (SIM/ICCID-style) lookups.
+///
+/// Two SDK revisions disagree about what the returned value is. One jumps
+/// straight to it (`ldr pc, [out]`), the other treats it as a method table
+/// and loads `entry[0x50]` before calling. A bare code stub fails the second
+/// shape: indexing into the shared stub area reads one of the value
+/// trampolines' literal words, and the guest ends up executing platform data
+/// instead of returning. This stublet satisfies both shapes: its first two
+/// words are a return-0 trampoline, and every later word points back at that
+/// trampoline.
+pub const SERVICE_CALLABLE_ADDR: u32 = SERVICE_VTABLE_ADDR + 0x100;
+/// Number of 4-byte words in the callable stublet (covers method offsets
+/// up to +0x7C).
+pub const SERVICE_CALLABLE_LEN: u32 = 32;
+
 /// Per-stub value trampolines: each returns a fixed constant in r0.
 pub const STUB_HEAP_BASE: u32 = STUB_ADDR + 0x08;
 pub const STUB_CODE_BASE: u32 = STUB_ADDR + 0x18;
@@ -225,6 +241,12 @@ pub fn layout(mem: &mut crate::mem::GuestMem, code_base: u32, image_size: u32) {
     }
     w(mem, SERVICE_OBJ_ADDR, SERVICE_VTABLE_ADDR);
 
+    // --- callable service entry (hashed +0x524 lookups) --------------------
+    wb(mem, SERVICE_CALLABLE_ADDR, &STUB_RET0);
+    for i in 2..SERVICE_CALLABLE_LEN {
+        w(mem, SERVICE_CALLABLE_ADDR + i * 4, SERVICE_CALLABLE_ADDR);
+    }
+
     // --- loader info block around the code image ---------------------------
     w(mem, code_base - 8, REG_ADDR);
     w(mem, code_base - 4, ROOT_ADDR);
@@ -287,5 +309,35 @@ mod tests {
         assert_eq!(mem.read_u32(CODE_BASE + image_size - 8).unwrap(), ROOT_ADDR);
         assert_eq!(mem.read_u32(CODE_BASE + 0xC0).unwrap(), ROOT_ADDR);
         assert_eq!(mem.read_u32(CODE_BASE + 0xBC).unwrap(), MEMDESC_ADDR);
+    }
+
+    /// The hashed service lookup hands out one value that has to survive
+    /// both a direct `ldr pc, [entry]` and a virtual `ldr pc, [entry + k]`.
+    /// Indexing the shared code stub instead reads `STUB_CANVAS`'s literal
+    /// word, which sends the guest into platform data and aborts the boot
+    /// event; the dedicated stublet keeps every method offset callable.
+    #[test]
+    fn callable_service_entry_answers_direct_and_virtual_calls() {
+        let mut mem = GuestMem::new(0x10000);
+        layout(&mut mem, CODE_BASE, 0x1000);
+
+        let mut head = [0u8; 8];
+        mem.read(SERVICE_CALLABLE_ADDR, &mut head).unwrap();
+        assert_eq!(
+            head, STUB_RET0,
+            "direct calls must land on the return-0 trampoline"
+        );
+        assert_ne!(SERVICE_CALLABLE_ADDR, STUB_ADDR);
+        for i in 2..SERVICE_CALLABLE_LEN {
+            assert_eq!(
+                mem.read_u32(SERVICE_CALLABLE_ADDR + i * 4).unwrap(),
+                SERVICE_CALLABLE_ADDR,
+                "method offset {:#x} must resolve to code",
+                i * 4
+            );
+        }
+        // The concrete failure mode: indexing the shared stub area yields a
+        // canvas pointer rather than a callable address.
+        assert_eq!(mem.read_u32(STUB_ADDR + 0x50).unwrap(), CANVAS_ADDR);
     }
 }

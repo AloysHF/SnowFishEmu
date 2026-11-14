@@ -202,6 +202,40 @@ impl EventQueue {
     }
 }
 
+/// State of the optional offline HTTP responder.
+///
+/// The shared SDK opens one socket, writes its request through +0xE4, then
+/// reads the whole response through +0xE0 before its completion callback is
+/// allowed to run. On a real handset the carrier-facing endpoint answers;
+/// here the platform can stand in for that endpoint locally. The responder
+/// is inert unless enabled.
+#[derive(Default)]
+struct HttpResponder {
+    enabled: bool,
+    response: Vec<u8>,
+    pos: usize,
+    /// Async request descriptor handed to +0x570: `[status, callback, arg]`.
+    request: Option<u32>,
+    /// `(handle, socket object)` registered through +0xE8.
+    attached: Option<(u32, u32)>,
+    notified: bool,
+}
+
+impl HttpResponder {
+    /// A well-formed, payload-free HTTP/1.0 answer. The SDK only needs the
+    /// status line and an explicit zero-length body to finish the
+    /// transaction; synthesising a tariff record would invent server data
+    /// the emulator cannot know.
+    fn response_bytes() -> Vec<u8> {
+        b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+    }
+
+    /// Whether a response was served, fully read and reported to the guest.
+    fn transaction_done(&self) -> bool {
+        self.notified && !self.response.is_empty() && self.pos >= self.response.len()
+    }
+}
+
 /// MTK key codes for the 32 logical input slots.
 pub const KEY_MAP: [u8; 32] = [
     0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x01, 0x03, 0x00, 0x04, 0x05, 0x06,
@@ -242,6 +276,12 @@ pub struct SnowFishMachine {
     /// registered, billing-capable handset instead of an empty one. See
     /// [`Self::set_free_play`].
     free_play: bool,
+    /// Optional local stand-in for the SDK's carrier-facing HTTP endpoint.
+    /// See [`Self::set_offline_http`].
+    http: HttpResponder,
+    /// Re-deliver the app-activate/resume event on each frame. See
+    /// [`Self::set_app_pump`].
+    app_pump: bool,
 }
 
 /// A platform UI timer armed through slot +0xAC,
@@ -395,6 +435,11 @@ impl SnowFishMachine {
             ui_clock_ms: 0,
             named_files: std::collections::HashMap::new(),
             free_play: std::env::var_os("SF_FREE_PLAY").is_some_and(|v| v != "0"),
+            http: HttpResponder {
+                enabled: std::env::var_os("SF_OFFLINE_HTTP").is_some_and(|v| v != "0"),
+                ..HttpResponder::default()
+            },
+            app_pump: std::env::var_os("SF_NO_APP_PUMP").is_none(),
         })
     }
 
@@ -419,6 +464,37 @@ impl SnowFishMachine {
         self.free_play
     }
 
+    /// Enables the local HTTP responder (`SF_OFFLINE_HTTP=1`).
+    ///
+    /// The SDK's billing endpoint is long gone. With this switch the
+    /// platform answers the socket read path itself with a payload-free
+    /// `200 OK` and delivers the async completion notification the SDK
+    /// registered through +0x570, so the guest's own HTTP result parser
+    /// runs instead of the transaction hanging forever.
+    pub fn set_offline_http(&mut self, on: bool) {
+        self.http.enabled = on;
+    }
+
+    /// Whether the local HTTP responder is on.
+    pub fn offline_http(&self) -> bool {
+        self.http.enabled
+    }
+
+    /// Enables or disables the per-frame app-activate/resume pump.
+    ///
+    /// The shared SDK only advances its screen state machine (and repaints)
+    /// on selector 3. A foregrounded handset keeps that event active on the
+    /// frame cadence; disabling the pump is useful when diagnosing guests
+    /// that should not receive repeated activations.
+    pub fn set_app_pump(&mut self, on: bool) {
+        self.app_pump = on;
+    }
+
+    /// Whether the app-activate/resume pump is on.
+    pub fn app_pump(&self) -> bool {
+        self.app_pump
+    }
+
     /// Guest address of the state byte (app record +0x16).
     pub fn state_addr(&self) -> u32 {
         APP_RECORD_ADDR + 0x16
@@ -432,6 +508,17 @@ impl SnowFishMachine {
     /// Slots implemented natively here (everything else runs natively
     /// through the root-table stubs).
     fn hooked_slot_ret(&self, w: &Wrapper) -> Option<u32> {
+        // The offline responder needs the socket/notifier slots that are
+        // otherwise answered by the generic return-0 stub. Keep them on
+        // that stub when the responder is off so other titles are untouched.
+        if self.http.enabled
+            && matches!(
+                w.slot,
+                0xC8 | 0xCC | 0xD4 | 0xD8 | 0xDC | 0xE0 | 0xE8 | 0xEC | 0xF0 | 0x568 | 0x570
+            )
+        {
+            return Some(w.ret);
+        }
         match w.slot {
             0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 | 0x524 | 0xAC | 0xE4 => {
                 Some(w.ret)
@@ -604,6 +691,91 @@ impl SnowFishMachine {
                 );
                 Some(r(2))
             }
+            // --- offline HTTP responder ---------------------------------
+            // +0xC8 select(host, event record, handler, object) is a
+            // synchronous notifier: a zero return makes the SDK call the
+            // handler immediately. The handler reads a signed halfword at
+            // the start of the event record, where 1 means "connected".
+            0xC8 => {
+                let ev = r(1);
+                if ev > 0x1000 {
+                    self.mem.write_u16(ev, 1)?;
+                }
+                debug!(
+                    "[plat] +0xC8 select host={:#x} ev={ev:#010x} handler={:#010x} obj={:#010x}",
+                    r(0),
+                    r(2),
+                    r(3)
+                );
+                Some(0)
+            }
+            // connect / setup / state queries: a connected socket with no
+            // error is enough for the synchronous SDK request path.
+            0xCC | 0xD4 | 0xD8 | 0xDC | 0xF0 | 0x568 => Some(0),
+            // +0xE8(handle, socket object) registers the object with the
+            // async notifier; +0xEC(handle) looks it back up. The generic
+            // stub returned zero here, which made the event dispatcher
+            // silently drop every asynchronous socket event.
+            0xE8 => {
+                self.http.attached = Some((r(0), r(1)));
+                debug!("[plat] +0xE8 attach h={:#x} obj={:#010x}", r(0), r(1));
+                Some(0)
+            }
+            0xEC => {
+                let obj = self
+                    .http
+                    .attached
+                    .filter(|(h, _)| *h == r(0))
+                    .map(|(_, o)| o)
+                    .unwrap_or(0);
+                debug!("[plat] +0xEC lookup h={:#x} -> {obj:#010x}", r(0));
+                Some(obj)
+            }
+            // +0x570 receives a three-word async request descriptor:
+            // [status (-1 pending), callback, context]. A real platform's
+            // network thread writes the status and calls the callback once
+            // the transaction completes; no guest code does it for us.
+            // The SDK reuses the same descriptor for each new request, so a
+            // registration after a consumed transaction starts a fresh one.
+            0x570 => {
+                if self.http.transaction_done() {
+                    self.http.response.clear();
+                    self.http.pos = 0;
+                    self.http.notified = false;
+                }
+                self.http.request = Some(r(0));
+                debug!(
+                    "[plat] +0x570 req={:#010x} status={:#x} cb={:#010x} arg={:#x}",
+                    r(0),
+                    self.mem.read_u32(r(0)).unwrap_or(0),
+                    self.mem.read_u32(r(0) + 4).unwrap_or(0),
+                    self.mem.read_u32(r(0) + 8).unwrap_or(0)
+                );
+                Some(0)
+            }
+            // +0xE0 is recv(handle, buffer, length). The SDK reads the
+            // response right after writing the request, then closes the
+            // HTTP/1.0 connection; a zero-length second read is the EOF.
+            0xE0 => {
+                if self.http.response.is_empty() {
+                    self.http.response = HttpResponder::response_bytes();
+                }
+                let buf = r(1);
+                let want = r(2) as usize;
+                let left = self.http.response.len().saturating_sub(self.http.pos);
+                let n = want.min(left);
+                if n > 0 && buf > 0x1000 {
+                    self.mem
+                        .write(buf, &self.http.response[self.http.pos..self.http.pos + n])?;
+                }
+                self.http.pos += n;
+                debug!(
+                    "[plat] +0xE0 recv buf={buf:#010x} want={want:#x} -> {n} (pos={}/{})",
+                    self.http.pos,
+                    self.http.response.len()
+                );
+                Some(n as u32)
+            }
             0x48 => Some(self.hook_sms_fetch(r(0), r(1))?),
             0x524 => {
                 // Service lookup with two observed call shapes:
@@ -620,13 +792,14 @@ impl SnowFishMachine {
                 //   record the out-pointer and report success.
                 //
                 // The SIM lookup takes a third shape: the type/id pair is
-                // the SDK's own hash of the "subscriber identity" service,
-                // a zero return means "found", and `*out` must receive a
-                // *callable entry point* (the pay service jumps straight to
-                // `*out`) that returns the ICCID. Reporting an error here is
-                // what makes the SDK log `GETICCID err` and drop to the
-                // registration page, so free play answers it with the
-                // return-0 trampoline.
+                // the SDK's own hash of the "subscriber identity" service;
+                // a zero return means "found". Some SDK revisions call the
+                // returned value directly, others load `value[0x50]` as a
+                // virtual method, so the entry must be both executable and
+                // indexable (see SERVICE_CALLABLE_ADDR). Reporting an error
+                // here makes the SDK log `GETICCID err` and drop to the
+                // registration page, so free play answers it with that
+                // dual-shape trampoline.
                 let out = r(2);
                 if r(0) <= 0x100 && out > 0x1000 {
                     self.mem.write_u32(out, plat::SERVICE_OBJ_ADDR)?;
@@ -640,9 +813,9 @@ impl SnowFishMachine {
                 } else {
                     self.mem.write_u32(plat::STATE_PTR_ADDR, out)?;
                     if self.free_play && out > 0x1000 {
-                        self.mem.write_u32(out, plat::STUB_ADDR)?;
+                        self.mem.write_u32(out, plat::SERVICE_CALLABLE_ADDR)?;
                         debug!(
-                            "[plat] +0x524 sim lookup type={:#x} id={:#x} out={out:#010x} -> getter",
+                            "[plat] +0x524 sim lookup type={:#x} id={:#x} out={out:#010x} -> callable entry",
                             r(0),
                             r(1)
                         );
@@ -1579,6 +1752,28 @@ impl SnowFishMachine {
         Ok(())
     }
 
+    /// Completes the pending local HTTP transaction.
+    ///
+    /// The request descriptor registered through +0x570 carries a status
+    /// word, a callback and a context. A real platform's network thread
+    /// marks the request done and calls the callback once the response has
+    /// been consumed; the guest never polls the descriptor itself. Returns
+    /// `(callback, context)` so the frame loop can re-enter the guest.
+    fn deliver_http_completion(&mut self) -> Option<(u32, u32)> {
+        if !self.http.enabled || self.http.notified || self.http.response.is_empty() {
+            return None;
+        }
+        if self.http.pos < self.http.response.len() {
+            return None;
+        }
+        let req = self.http.request?;
+        let cb = self.mem.read_u32(req + 4).ok()?;
+        let arg = self.mem.read_u32(req + 8).ok()?;
+        let _ = self.mem.write_u32(req, 0);
+        self.http.notified = true;
+        Some((cb, arg))
+    }
+
     /// Advances one frame: pump queued events, deliver the frame tick
     /// (selector 10, the host paces at ~20 fps), then deliver the guest's
     /// registered timer callback (the platform's +0x500 service is a
@@ -1600,6 +1795,32 @@ impl SnowFishMachine {
                 }
             }
         }
+        // The shared SDK gates its UI state machine (and every repaint) on
+        // the app-activate/resume event, selector 3. A foregrounded handset
+        // keeps that state active on the frame cadence. Without it the
+        // titles draw their boot splash once and then freeze.
+        // SF_NO_APP_PUMP=1 (or `set_app_pump(false)`) disables it for
+        // experiments; SF_RESUME=1 is the historical spelling of the same
+        // forced-on switch.
+        if self.app_pump || std::env::var_os("SF_RESUME").is_some() {
+            self.events.post(3, 0);
+        }
+        // A local HTTP transaction that finished during boot has to be
+        // reported through the SDK's own completion callback before the
+        // frame's UI work runs.
+        if let Some((cb, arg)) = self.deliver_http_completion() {
+            debug!("[plat] HTTP result callback {cb:#010x} arg={arg:#x}");
+            if cb > 0x1000 {
+                self.cpu.reg_set(armv4t_emu::reg::SP, STACK_TOP);
+                self.cpu.reg_set(armv4t_emu::reg::LR, STOP_ADDRESS);
+                self.cpu.reg_set(armv4t_emu::reg::CPSR, 0x10);
+                self.cpu.reg_set(0, arg);
+                self.cpu.reg_set(1, 0);
+                self.cpu.reg_set(2, 0);
+                self.cpu.reg_set(armv4t_emu::reg::PC, cb);
+                self.run_until_return(budget)?;
+            }
+        }
         self.pump(budget)?;
         // SF_FORCE="addr:val;..." (hex): write guest words EVERY frame
         // before the tick — for variables the guest's own flow clears but
@@ -1615,12 +1836,8 @@ impl SnowFishMachine {
                 }
             }
         }
-        // SF_RESUME=1: re-deliver the app-activate event (selector 3)
-        // before the tick. The platform re-sends it when the app regains
-        // focus; some guests gate their per-screen stage logic on it.
-        if std::env::var_os("SF_RESUME").is_some() {
-            self.events.post(3, 0);
-        }
+        // Selector 3 is posted at the top of the frame (see above), so it
+        // is pumped together with the key events of this frame.
         self.fire_ui_timers(budget)?;
         // The platform also delivers a bare frame tick. The corpus' own
         // pumps gate their selector-10 work on the message id the SDK
@@ -2386,10 +2603,10 @@ mod tests {
 
     /// `+0x524` with the SDK's own hash instead of a small type id is the
     /// subscriber-identity lookup: 0 means "found" and the out-pointer has to
-    /// receive a *callable* entry point (the pay service jumps straight to
-    /// it). Off free play the lookup reports "missing" and leaves the
-    /// out-pointer alone, which is what parks the titles on the registration
-    /// page.
+    /// receive an entry the pay service can both call directly and index as
+    /// a method table. Off free play the lookup reports "missing" and leaves
+    /// the out-pointer alone, which is what parks the titles on the
+    /// registration page.
     #[test]
     fn sim_lookup_is_answered_under_free_play() {
         let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
@@ -2408,11 +2625,39 @@ mod tests {
         m.cpu.reg_set(2, out);
         m.exec_slot(0x524, CODE_BASE).unwrap();
         assert_eq!(m.cpu.reg_get(0), 0, "free play finds the identity");
+        let entry = m.mem.read_u32(out).unwrap();
         assert_eq!(
-            m.mem.read_u32(out).unwrap(),
-            plat::STUB_ADDR,
-            "the out-pointer must hold a callable entry point"
+            entry,
+            plat::SERVICE_CALLABLE_ADDR,
+            "the out-pointer must hold the dual-shape entry"
         );
+        // Shape A: `ldr pc, [entry]` must land on executable code.
+        let first = m.mem.read_u32(entry).unwrap();
+        assert_eq!(
+            first,
+            u32::from_le_bytes(plat::STUB_RET0[..4].try_into().unwrap()),
+            "direct calls must reach the return-0 trampoline"
+        );
+        assert_eq!(
+            m.mem.read_u32(entry + 4).unwrap(),
+            u32::from_le_bytes(plat::STUB_RET0[4..].try_into().unwrap()),
+            "the trampoline must actually return"
+        );
+        // Shape B: `ldr pc, [entry + 0x50]` must resolve to that same code,
+        // not to a literal word from the shared stub area. Handing out the
+        // bare STUB_ADDR fails here and aborts the whole boot event.
+        assert_eq!(
+            m.mem.read_u32(entry + 0x50).unwrap(),
+            entry,
+            "virtual calls must resolve to the callable trampoline"
+        );
+        for off in [0x18u32, 0x3C, 0x54, 0x7C] {
+            assert_eq!(
+                m.mem.read_u32(entry + off).unwrap(),
+                entry,
+                "method offset {off:#x} must resolve too"
+            );
+        }
     }
 
     /// The account record (`__sfssuid`, `ssu<id>`) is the SDK's proof that
@@ -2541,6 +2786,196 @@ mod tests {
         m.exec_slot(0xE4, CODE_BASE + 0xC).unwrap();
         assert_eq!(m.cpu.reg_get(0), 0x11F, "all bytes must be reported sent");
         assert_eq!(m.cpu.reg_get(15), CODE_BASE + 0xC, "resume at the epilogue");
+    }
+
+    /// Builds an image whose app handler accumulates every delivered
+    /// selector into a word in the platform region. Two relocations set up
+    /// the app block and its handler entry; the recording address is an
+    /// absolute platform address and needs no relocation.
+    fn build_recording_image() -> Vec<u8> {
+        const RECORD_ADDR: u32 = 0x0054_1000;
+        let words: [u32; 18] = [
+            0xE59F_2008, // 0x00: ldr r2, [pc, #8] -> literal at 0x10
+            0xE581_2000, // 0x04: str r2, [r1]     ; register the app block
+            0xE12F_FF1E, // 0x08: bx lr
+            0xE1A0_0000, // 0x0C: nop
+            0x0000_0034, // 0x10: app block offset (relocated)
+            0xE59F_2010, // 0x14: handler: ldr r2, [pc, #0x10] -> literal at 0x2C
+            0xE592_3000, // 0x18: ldr r3, [r2]
+            0xE083_3001, // 0x1C: add r3, r3, r1  ; r1 is the selector
+            0xE582_3000, // 0x20: str r3, [r2]
+            0xE12F_FF1E, // 0x24: bx lr
+            0xE1A0_0000, // 0x28: nop
+            RECORD_ADDR, // 0x2C: recording word
+            0xE1A0_0000, // 0x30: nop
+            0x0000_0014, // 0x34: app block word 0 -> handler (relocated)
+            0xE1A0_0000, // 0x38: nop
+            0xE1A0_0000, // 0x3C: nop
+            0xE1A0_0000, // 0x40: padding (root pointer planted at end - 8)
+            0xE1A0_0000, // 0x44: padding
+        ];
+        let mut code = Vec::new();
+        for w in words {
+            code.extend_from_slice(&w.to_le_bytes());
+        }
+        let mut v = Vec::new();
+        v.extend_from_slice(&0x1941_4653u32.to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes()); // ver
+        v.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        v.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        v.extend_from_slice(&0x20u32.to_le_bytes()); // hdr_len
+        v.extend_from_slice(&(code.len() as u32).to_le_bytes()); // c0
+        v.extend_from_slice(&0u32.to_le_bytes()); // c1
+        v.extend_from_slice(&2u32.to_le_bytes()); // reloc count
+        v.extend_from_slice(&code);
+        v.extend_from_slice(&0x10u32.to_le_bytes());
+        v.extend_from_slice(&0x34u32.to_le_bytes());
+        v
+    }
+
+    /// The SDK gates its screen state machine on the app-activate/resume
+    /// event. Without the per-frame pump a title draws its boot splash once
+    /// and never repaints; with it, selector 3 reaches the guest each frame.
+    #[test]
+    fn frame_pump_delivers_the_resume_event() {
+        const PROBE: u32 = 0x0054_1000;
+        let mut m = SnowFishMachine::load(build_recording_image(), None).unwrap();
+        m.boot(2000).unwrap();
+        m.mem.write_u32(PROBE, 0).unwrap();
+        m.events.events.clear();
+        m.run_frame(2000).unwrap();
+        // selector 3 (pump) + selector 10 (bare frame tick).
+        assert_eq!(m.mem.read_u32(PROBE).unwrap(), 13);
+
+        m.set_app_pump(false);
+        m.mem.write_u32(PROBE, 0).unwrap();
+        m.events.events.clear();
+        m.run_frame(2000).unwrap();
+        assert_eq!(m.mem.read_u32(PROBE).unwrap(), 10);
+    }
+
+    /// The offline responder must leave every network slot on the generic
+    /// stub until it is explicitly enabled.
+    #[test]
+    fn network_slots_stay_generic_when_the_responder_is_off() {
+        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        for slot in [0xC8, 0xE0, 0xEC, 0x570] {
+            let w = Wrapper {
+                slot,
+                hook: CODE_BASE,
+                ret: CODE_BASE + 0xC,
+            };
+            assert!(m.hooked_slot_ret(&w).is_none(), "+{slot:#x} stays native");
+        }
+        m.set_offline_http(true);
+        for slot in [0xC8, 0xE0, 0xEC, 0x570] {
+            let w = Wrapper {
+                slot,
+                hook: CODE_BASE,
+                ret: CODE_BASE + 0xC,
+            };
+            assert!(m.hooked_slot_ret(&w).is_some(), "+{slot:#x} is served");
+        }
+    }
+
+    /// +0xE8 registers the socket object with the asynchronous notifier and
+    /// +0xEC looks it back up. Returning zero (the generic stub) made the
+    /// SDK's event dispatcher drop every asynchronous socket event.
+    #[test]
+    fn offline_socket_notifier_looks_up_the_attached_object() {
+        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        m.set_offline_http(true);
+        m.cpu.reg_set(0, 7); // handle
+        m.cpu.reg_set(1, 0x0061_429C); // socket object
+        m.exec_slot(0xE8, CODE_BASE + 0xC).unwrap();
+        m.cpu.reg_set(0, 7);
+        m.exec_slot(0xEC, CODE_BASE + 0xC).unwrap();
+        assert_eq!(m.cpu.reg_get(0), 0x0061_429C);
+        m.cpu.reg_set(0, 8); // a different handle
+        m.exec_slot(0xEC, CODE_BASE + 0xC).unwrap();
+        assert_eq!(m.cpu.reg_get(0), 0);
+    }
+
+    /// The socket read path must return the full HTTP response and its byte
+    /// count, then report EOF once the response has been consumed.
+    #[test]
+    fn offline_http_read_serves_a_complete_response() {
+        const BUF: u32 = 0x0054_1200;
+        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        m.set_offline_http(true);
+        m.cpu.reg_set(0, 0);
+        m.cpu.reg_set(1, BUF);
+        m.cpu.reg_set(2, 0x800);
+        m.exec_slot(0xE0, CODE_BASE + 0xC).unwrap();
+        let n = m.cpu.reg_get(0) as usize;
+        assert!(n > 32);
+        let mut bytes = vec![0u8; n];
+        m.mem.read(BUF, &mut bytes).unwrap();
+        assert!(bytes.starts_with(b"HTTP/1.0 200 OK\r\n"));
+        assert!(bytes.windows(4).any(|w| w == b"\r\n\r\n"));
+        m.cpu.reg_set(1, BUF);
+        m.cpu.reg_set(2, 0x800);
+        m.exec_slot(0xE0, CODE_BASE + 0xC).unwrap();
+        assert_eq!(m.cpu.reg_get(0), 0, "HTTP/1.0 closes after the response");
+    }
+
+    /// +0x570 hands the platform an async request descriptor
+    /// `[status, callback, context]`. Once the response has been consumed
+    /// the platform marks the request done and returns the guest callback
+    /// so the SDK's own result parser runs.
+    #[test]
+    fn offline_http_completion_notifies_the_registered_callback() {
+        const REQ: u32 = 0x0054_1300;
+        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        m.set_offline_http(true);
+        m.mem.write_u32(REQ, u32::MAX).unwrap();
+        m.mem.write_u32(REQ + 4, 0x0011_76C0).unwrap();
+        m.mem.write_u32(REQ + 8, 0x2A).unwrap();
+        m.cpu.reg_set(0, REQ);
+        m.exec_slot(0x570, CODE_BASE + 0xC).unwrap();
+        assert!(m.deliver_http_completion().is_none(), "no response yet");
+        m.cpu.reg_set(1, 0x0054_1400);
+        m.cpu.reg_set(2, 0x800);
+        m.exec_slot(0xE0, CODE_BASE + 0xC).unwrap();
+        assert_eq!(m.deliver_http_completion(), Some((0x0011_76C0, 0x2A)));
+        assert_eq!(m.mem.read_u32(REQ).unwrap(), 0, "status is marked done");
+        assert!(m.deliver_http_completion().is_none(), "notify only once");
+    }
+
+    /// The SDK issues more than one HTTP request per session and reuses the
+    /// same descriptor address. Registering a new request after the previous
+    /// response was consumed must serve a fresh response and deliver a
+    /// second completion instead of an immediate EOF.
+    #[test]
+    fn offline_http_serves_each_registered_transaction() {
+        const REQ: u32 = 0x0054_1300;
+        const BUF: u32 = 0x0054_1400;
+        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        m.set_offline_http(true);
+        m.mem.write_u32(REQ, u32::MAX).unwrap();
+        m.mem.write_u32(REQ + 4, 0x0011_76C0).unwrap();
+        m.mem.write_u32(REQ + 8, 0x2A).unwrap();
+
+        let transact = |m: &mut SnowFishMachine| {
+            m.cpu.reg_set(0, REQ);
+            m.exec_slot(0x570, CODE_BASE + 0xC).unwrap();
+            m.cpu.reg_set(1, BUF);
+            m.cpu.reg_set(2, 0x800);
+            m.exec_slot(0xE0, CODE_BASE + 0xC).unwrap();
+            m.cpu.reg_get(0) as usize
+        };
+
+        let first = transact(&mut m);
+        assert!(first > 32);
+        assert_eq!(m.deliver_http_completion(), Some((0x0011_76C0, 0x2A)));
+        m.mem.write_u32(REQ, u32::MAX).unwrap();
+        let second = transact(&mut m);
+        assert_eq!(second, first, "the second request gets a full response");
+        assert_eq!(
+            m.deliver_http_completion(),
+            Some((0x0011_76C0, 0x2A)),
+            "the second transaction reports completion too"
+        );
     }
 
     /// Restoring a state keeps the region allocations stable: pointers
