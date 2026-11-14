@@ -299,6 +299,24 @@ impl SnowFishMachine {
         let mut mem = GuestMem::new(image.header.image_size());
         let image_size = image.header.image_size();
         mem.write(CODE_BASE, &image.code)?;
+        // SF_PATCH="addr:insn,addr:insn" (hex): overwrite guest code words
+        // after load. Lets an experiment fix a call argument (e.g. the
+        // stage value a builder call passes) without editing the binary.
+        if let Ok(patches) = std::env::var("SF_PATCH") {
+            for pair in patches.split(',') {
+                if let Some((a, v)) = pair.split_once(':') {
+                    if let (Ok(addr), Ok(word)) =
+                        (u32::from_str_radix(a, 16), u32::from_str_radix(v, 16))
+                    {
+                        let off = addr.wrapping_sub(CODE_BASE) as usize;
+                        if off + 4 <= image.code.len() {
+                            mem.write(addr, &word.to_le_bytes())?;
+                            debug!("[plat] patched {addr:#010x} <- {word:#010x}");
+                        }
+                    }
+                }
+            }
+        }
         plat::layout(&mut mem, CODE_BASE, image_size);
         let wrappers = scan_wrappers(&image.code);
         info!(
