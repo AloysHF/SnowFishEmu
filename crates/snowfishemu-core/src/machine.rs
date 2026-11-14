@@ -807,6 +807,20 @@ impl SnowFishMachine {
             // parse. Start empty and let the guest's own registration
             // flow fill it (the write hook forces the leading dword
             // positive so the gate check passes).
+            // The response inbox (__dcsmsinfo_) is what the carrier would
+            // write back; SF_DCSMS injects its bytes so the send handler's
+            // parse-and-compare gate can pass offline.
+            let mut stored = stored;
+            if stored.is_empty() && basename(&path).starts_with("__dcsmsinfo") {
+                if let Ok(hex) = std::env::var("SF_DCSMS") {
+                    let bytes: Vec<u8> = hex
+                        .split(',')
+                        .filter_map(|b| u8::from_str_radix(b, 16).ok())
+                        .collect();
+                    debug!("[plat] injecting {} response bytes for {path}", bytes.len());
+                    stored = bytes;
+                }
+            }
             let size = stored.len();
             // flags bit 0 = write intent: start an empty record; otherwise
             // serve the previously written contents for reading.
