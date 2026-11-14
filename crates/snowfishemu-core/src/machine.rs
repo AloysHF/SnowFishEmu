@@ -436,8 +436,8 @@ impl SnowFishMachine {
             0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 | 0x524 | 0xAC => {
                 Some(w.ret)
             }
-            0x12C | 0x130 | 0x134 | 0x140 | 0x154 | 0x158 | 0x180 | 0x198 | 0x194 | 0x184
-            | 0x15C | 0x010 => Some(w.ret),
+            0x12C | 0x130 | 0x134 | 0x140 | 0x14C | 0x154 | 0x158 | 0x180 | 0x198 | 0x194
+            | 0x184 | 0x15C | 0x010 => Some(w.ret),
             _ => None,
         }
     }
@@ -741,8 +741,8 @@ impl SnowFishMachine {
                     Some(handle)
                 }
             }
-            0x12C | 0x130 | 0x134 | 0x140 | 0x154 | 0x158 | 0x180 | 0x198 | 0x194 | 0x184
-            | 0x15C | 0x010 => {
+            0x12C | 0x130 | 0x134 | 0x140 | 0x14C | 0x154 | 0x158 | 0x180 | 0x198 | 0x194
+            | 0x184 | 0x15C | 0x010 => {
                 // GDI slots leave r0 untouched (the reference writes PC only).
                 self.exec_gdi(slot, ret)?;
                 None
@@ -878,6 +878,45 @@ impl SnowFishMachine {
                         chars.len(),
                         self.stack_arg(sp, self.sp_adjust(ret), 1).unwrap_or(0)
                     );
+                }
+                self.gdi.op_text(&mut self.mem, &chars, x, y, color);
+            }
+            0x14C => {
+                // textrun(obj, str u16le, first, count, x, y, flags) —
+                // the wrapped-line renderer behind every dialog body.
+                //
+                // The guest measures its own line breaks: it walks the
+                // UTF-16 string, accumulates the cell advance of each code
+                // point, and when the next cell would pass the right margin
+                // it calls this slot with the index of the first character
+                // of the finished line and that line's length.  `x`/`y` are
+                // the text origin the guest laid the block out at, so the
+                // run is a plain anchored write; without this slot the
+                // dialog chrome is painted but its body stays blank, which
+                // is what every trial title looked like before.
+                let adj = self.sp_adjust(ret);
+                let str_ptr = r(1);
+                let first = r(2);
+                let count = r(3);
+                let x = self.stack_arg(sp, adj, 1)? as i32;
+                let y = self.stack_arg(sp, adj, 2)? as i32;
+                let mut chars = Vec::with_capacity(count.min(512) as usize);
+                for i in 0..count.min(512) {
+                    let v = self
+                        .mem
+                        .read_u16(str_ptr.wrapping_add((first + i).wrapping_mul(2)))?;
+                    if v == 0 {
+                        break;
+                    }
+                    chars.push(v);
+                }
+                let color = self.pen_color(r(0));
+                if self.trace {
+                    let text: String = chars
+                        .iter()
+                        .filter_map(|&c| char::from_u32(c as u32))
+                        .collect();
+                    debug!("[gdi]+0x{slot:X} textrun @{x},{y} n={count} c={color:#06x} \"{text}\"");
                 }
                 self.gdi.op_text(&mut self.mem, &chars, x, y, color);
             }
@@ -2102,6 +2141,43 @@ mod tests {
         assert_eq!(px[20 * 240 + 10], RED, "first pixel of the blit");
         assert_eq!(px[23 * 240 + 13], RED, "last pixel of the blit");
         assert_eq!(px[20 * 240 + 14], WHITE, "nothing past the bitmap");
+    }
+
+    /// Dialog bodies are drawn by `+0x14C`, which carries a character range
+    /// plus the text origin instead of a pixel pointer. Skipping the slot
+    /// paints the dialog frame and leaves the body blank, which is exactly
+    /// how every trial title's notice looked before.
+    #[test]
+    fn text_runs_land_at_the_guests_origin() {
+        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let obj = HEAP_BASE;
+        let text = HEAP_BASE + 0x100;
+        let sp = HEAP_BASE + 0x400;
+        m.mem.write_u32(obj + 0x28, 0x00FF_0000).unwrap(); // red pen
+        m.mem.write_u16(obj + 0x2C, 0xF800).unwrap();
+        // "AB" — the run starts at index 0 and covers both cells.
+        m.mem.write_u16(text, 0x41).unwrap();
+        m.mem.write_u16(text + 2, 0x42).unwrap();
+        m.mem.write_u16(text + 4, 0).unwrap();
+        m.gdi.fill(&mut m.mem, 0, 0, 240, 320, 0xFFFF);
+        // Stack args 5/6 are the origin; sp_adjust() reads 0 at ret = 0, so
+        // the first argument sits one word above sp.
+        m.mem.write_u32(sp + 4, 30).unwrap();
+        m.mem.write_u32(sp + 8, 40).unwrap();
+        m.cpu.reg_set(armv4t_emu::reg::SP, sp);
+        m.cpu.reg_set(0, obj);
+        m.cpu.reg_set(1, text);
+        m.cpu.reg_set(2, 0);
+        m.cpu.reg_set(3, 2);
+        m.exec_gdi(0x14C, 0).unwrap();
+        let px = m.gdi.frame_pixels(&m.mem);
+        let inked = (40..48)
+            .flat_map(|y| (30..46).map(move |x| (x, y)))
+            .filter(|&(x, y)| px[(y * 240 + x) as usize] == RED)
+            .count();
+        assert!(inked > 0, "the run must be inked at the guest's origin");
+        assert_eq!(px[20 * 240 + 20], WHITE, "nothing above the run");
+        assert_eq!(px[60 * 240 + 30], WHITE, "nothing below the run");
     }
 
     /// Softkey labels are anchored to the surface edges: the right-hand one
