@@ -789,6 +789,20 @@ impl SnowFishMachine {
                     }
                 }
                 let color = crate::gdi::rgb888_to_565(rgb24);
+                // Softkey labels are anchored to the surface edges: the
+                // right-hand one is placed at `width - 5` and the bottom row
+                // at `height + n`, i.e. one full cell past the last row. The
+                // platform slides such a label back inside the surface
+                // instead of clipping it away, which is what makes the last
+                // row and the right-hand label readable.
+                let (tw, th) = crate::gdi::Gdi::text_extent(&chars);
+                let x = x - tw / 2;
+                let x = x.clamp(0, (plat::FB_WIDTH as i32 - tw).max(0));
+                let y = if th > 0 && y + th > plat::FB_HEIGHT as i32 {
+                    (plat::FB_HEIGHT as i32 - th).max(0)
+                } else {
+                    y
+                };
                 if self.trace {
                     let text: String = chars
                         .iter()
@@ -796,8 +810,9 @@ impl SnowFishMachine {
                         .filter_map(|&c| char::from_u32(c as u32))
                         .collect();
                     debug!(
-                        "[gdi]+0x{slot:X} text @{x},{y} c={color:#06x} len={} \"{text}\"",
-                        chars.len()
+                        "[gdi]+0x{slot:X} text @{x},{y} c={color:#06x} len={} font={:#x} \"{text}\"",
+                        chars.len(),
+                        self.stack_arg(sp, self.sp_adjust(ret), 1).unwrap_or(0)
                     );
                 }
                 self.gdi.op_text(&mut self.mem, &chars, x, y, color);
@@ -883,7 +898,18 @@ impl SnowFishMachine {
                 }
                 self.gdi.op_fill2(&mut self.mem, x, y, 240, 8, color);
             }
-            _ => {}
+            _ => {
+                if self.trace {
+                    debug!(
+                        "[gdi]+0x{slot:X} unhandled r0={:#010x} r1={:#010x} r2={:#010x} r3={:#010x} lr={:#010x}",
+                        r(0),
+                        r(1),
+                        r(2),
+                        r(3),
+                        self.cpu.reg_get(armv4t_emu::reg::LR)
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -2003,6 +2029,36 @@ mod tests {
         assert_eq!(px[20 * 240 + 10], RED, "first pixel of the blit");
         assert_eq!(px[23 * 240 + 13], RED, "last pixel of the blit");
         assert_eq!(px[20 * 240 + 14], WHITE, "nothing past the bitmap");
+    }
+
+    /// Softkey labels are anchored to the surface edges: the right-hand one
+    /// lands on `width - 5` and the bottom row on `height + n`, one cell past
+    /// the last row. Clipping them away loses every softkey label in the
+    /// corpus, so the platform slides a label back inside instead.
+    #[test]
+    fn labels_are_slid_back_onto_the_surface() {
+        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let obj = HEAP_BASE;
+        let text = HEAP_BASE + 0x100;
+        m.mem.write_u32(obj + 0x28, 0x00FF_FFFF).unwrap(); // white pen
+        m.mem.write_u16(text, 0x41).unwrap(); // 'A'
+        m.mem.write_u16(text + 2, 0).unwrap();
+        m.gdi.fill(&mut m.mem, 0, 0, 240, 320, 0);
+        m.cpu.reg_set(0, obj);
+        m.cpu.reg_set(1, text);
+        m.cpu.reg_set(2, 236); // one cell past the right edge
+        m.cpu.reg_set(3, 320); // one cell past the last row
+        m.exec_gdi(0x154, 0).unwrap();
+        let px = m.gdi.frame_pixels(&m.mem);
+        let ink: Vec<(i32, i32)> = (0..320)
+            .flat_map(|y| (0..240).map(move |x| (x, y)))
+            .filter(|&(x, y)| px[(y * 240 + x) as usize] != 0xFF00_0000)
+            .collect();
+        assert!(!ink.is_empty(), "the label must land inside the surface");
+        assert!(
+            ink.iter().all(|&(x, y)| (232..240).contains(&x) && (312..320).contains(&y)),
+            "every glyph pixel belongs to the box slid back to (232, 312)"
+        );
     }
 
     /// Builds an image whose entry registers an app-handler block and whose

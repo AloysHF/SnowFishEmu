@@ -300,6 +300,33 @@ impl Gdi {
         }
     }
 
+    /// Advance width of one text cell: 8 for ASCII and control cells, 16
+    /// for wide (CJK) code points.
+    fn cell_width(ch: u16) -> i32 {
+        if ch <= 0x4DFF {
+            8
+        } else {
+            16
+        }
+    }
+
+    /// Extent of a `+0x154` label as `(width, height)`, so the caller can
+    /// keep it on the surface before drawing.
+    pub fn text_extent(chars: &[u16]) -> (i32, i32) {
+        let mut w = 0;
+        let mut h = 8;
+        for &ch in chars {
+            if ch == 0 {
+                break;
+            }
+            w += Self::cell_width(ch);
+            if ch > 0x4DFF {
+                h = 16;
+            }
+        }
+        (w, h)
+    }
+
     /// `+0x154 text(obj, str, x, y, font)` — UTF-16 string with transparent
     /// background. ASCII uses the embedded 8x8 font (advance 8); other
     /// characters use the embedded Unicode font (advance 16). Returns the
