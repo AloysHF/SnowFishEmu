@@ -214,9 +214,6 @@ pub struct SnowFishMachine {
     trace: bool,
     last_pc: u32,
     branch_log: Vec<(u32, u32)>,
-    // The bump pointer for the +0x0C memory service, starting at the
-    // guest heap base.
-    heap_next: u32,
     // The response paths already injected once (SF_DCSMS).
     dcsms_injected: std::collections::HashSet<String>,
     // Function-entry skips: (entry, r0) — when the PC reaches `entry` the
@@ -357,7 +354,6 @@ impl SnowFishMachine {
             trace,
             last_pc: 0,
             branch_log: Vec::new(),
-            heap_next: HEAP_BASE,
             dcsms_injected: std::collections::HashSet::new(),
             fn_skips,
             gdi: Gdi::new(),
@@ -380,7 +376,7 @@ impl SnowFishMachine {
     /// through the root-table stubs).
     fn hooked_slot_ret(&self, w: &Wrapper) -> Option<u32> {
         match w.slot {
-            0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 | 0x0C => Some(w.ret),
+            0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 => Some(w.ret),
             0x12C | 0x130 | 0x134 | 0x140 | 0x154 | 0x158 | 0x180 | 0x198 | 0x194 | 0x184
             | 0x15C | 0x010 => Some(w.ret),
             _ => None,
@@ -514,21 +510,10 @@ impl SnowFishMachine {
     fn exec_slot(&mut self, slot: u32, ret: u32) -> Result<(), MachineError> {
         let r = |i: u8| self.cpu.reg_get(i);
         let result = match slot {
-            // +0x0C = the platform memory service (malloc). The loader's
-            // stub returns a canned low address, so the SDK's working
-            // structures land on the unmapped zero page and every write
-            // to them is dropped — the login/intro animations freeze.
-            // Serve a bump allocation from the guest heap instead.
-            0x0C => {
-                let size = r(0).max(4);
-                let ptr = self.heap_next;
-                self.heap_next = self
-                    .heap_next
-                    .wrapping_add((size + 0xF) & !0xF)
-                    .min(HEAP_BASE + 0xF_0000);
-                debug!("[plat] +0x0C malloc({size}) -> {ptr:#010x}");
-                Some(ptr)
-            }
+            // +0x0C is the screen-height query (returns 320 through the
+            // planted value stub). Serving it as a heap allocator made the
+            // guests' canvas geometry globals hold heap pointers, which
+            // collapsed every dialog fill to a degenerate rectangle.
             0x7C => {
                 let msg = if r(0) > 0x1000 {
                     guest_read_string(&self.mem, r(0), 128)?
@@ -647,7 +632,10 @@ impl SnowFishMachine {
                 let h = self.stack_arg(sp, adj, 1)? as i32;
                 let color = self.stack_arg(sp, adj, 2)?;
                 if self.trace {
-                    debug!("[gdi]+0x{slot:X} fill @{x},{y} {w}x{h} c={color:#010x}");
+                    debug!(
+                        "[gdi]+0x{slot:X} fill @{x},{y} {w}x{h} c={color:#010x} lr={:#010x}",
+                        self.cpu.reg_get(armv4t_emu::reg::LR)
+                    );
                 }
                 self.gdi.op_fill(&mut self.mem, x, y, w, h, color);
             }
@@ -735,6 +723,15 @@ impl SnowFishMachine {
                 if self.mem.read(data, &mut buf).is_err() {
                     return Ok(());
                 }
+                if self.trace {
+                    let pal_head: Vec<u16> = (0..8u32)
+                        .filter_map(|i| self.mem.read_u16(pal.wrapping_add(i * 2)).ok())
+                        .collect();
+                    debug!(
+                        "[gdi] draw input pal8={pal_head:x?} first={:02x?}",
+                        &buf[..8.min(buf.len())]
+                    );
+                }
                 self.gdi.op_draw(
                     &mut self.mem,
                     &buf,
@@ -801,8 +798,11 @@ impl SnowFishMachine {
                     }
                 }
                 if self.trace {
+                    let stack: Vec<u32> = (0..4u32)
+                        .filter_map(|i| self.mem.read_u32(sp.wrapping_add(i * 4)).ok())
+                        .collect();
                     debug!(
-                        "[gdi]+0x{slot:X} fill2 @{x},{y} {w}x{h} c={color:#06x} lr={:#010x}",
+                        "[gdi]+0x{slot:X} fill2 @{x},{y} {w}x{h} c={color:#06x} lr={:#010x} sp={sp:#010x} adj={adj} stk={stack:x?}",
                         self.cpu.reg_get(armv4t_emu::reg::LR)
                     );
                 }
@@ -1476,6 +1476,16 @@ impl SnowFishMachine {
                 );
             }
         }
+        // Generic per-frame variable watch, independent of the timer
+        // service so guests that never register one are observable too.
+        if let Ok(vars) = std::env::var("SF_VARS") {
+            let vals: Vec<String> = vars
+                .split(',')
+                .filter_map(|a| u32::from_str_radix(a, 16).ok())
+                .map(|a| format!("{a:#x}={:#x}", self.mem.read_u32(a).unwrap_or(0xFFFF_FFFF)))
+                .collect();
+            debug!("[plat] frame {} vars: {}", self.frame_count, vals.join(" "));
+        }
         self.frame_count += 1;
         Ok(())
     }
@@ -1527,6 +1537,11 @@ impl SnowFishMachine {
     /// Heap base (the guest's scratch window for decompression).
     pub fn heap_base(&self) -> u32 {
         HEAP_BASE
+    }
+
+    /// Copies a guest memory range out for inspection (debug tooling).
+    pub fn dump_memory(&self, addr: u32, len: u32) -> Option<Vec<u8>> {
+        self.mem.slice(addr, len).ok().map(<[u8]>::to_vec)
     }
 
     /// Content fingerprint over the container and resource bytes; save
@@ -1663,6 +1678,32 @@ mod tests {
         assert_eq!(w[0].slot, 0x7C);
         assert_eq!(w[0].hook, CODE_BASE);
         assert_eq!(w[0].ret, CODE_BASE + 0xC);
+    }
+
+    /// +0x0C answers the screen height: the machine must leave the slot on
+    /// the planted value stub instead of serving it as a heap allocator.
+    /// Intercepting it made the guests' canvas geometry globals hold heap
+    /// pointers, which collapsed every dialog fill to a 0-height rect.
+    #[test]
+    fn screen_height_slot_runs_the_planted_stub() {
+        let m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let w = Wrapper {
+            slot: 0x0C,
+            hook: CODE_BASE,
+            ret: CODE_BASE + 0xC,
+        };
+        assert!(
+            m.hooked_slot_ret(&w).is_none(),
+            "+0x0C must not be intercepted"
+        );
+        assert_eq!(
+            m.mem.read_u32(plat::ROOT_ADDR + 0x0C).unwrap(),
+            plat::STUB_HEIGHT
+        );
+        assert_eq!(
+            m.mem.read_u32(plat::STUB_HEIGHT + 8).unwrap(),
+            plat::SCREEN_HEIGHT
+        );
     }
 
     #[test]

@@ -31,6 +31,10 @@ struct Args {
     /// Directory for per-frame framebuffer dumps.
     #[arg(long)]
     dump_fb: Option<PathBuf>,
+    /// Dump a guest memory range after the run: `addr:len:path` (hex addr,
+    /// hex len). Repeatable, e.g. `--dump-mem 60d5ec:400:heap.bin`.
+    #[arg(long = "dump-mem")]
+    dump_mem: Vec<String>,
 }
 
 fn main() -> Result<()> {
@@ -114,6 +118,26 @@ fn main() -> Result<()> {
         fb.len(),
         fb.iter().filter(|&&p| p & 0xFFFFFF != 0).count()
     );
+
+    for spec in &args.dump_mem {
+        let mut it = spec.split(':');
+        let (Some(addr), Some(len), Some(path)) = (it.next(), it.next(), it.next()) else {
+            eprintln!("--dump-mem wants addr:len:path, got {spec:?}");
+            continue;
+        };
+        let (Ok(addr), Ok(len)) = (u32::from_str_radix(addr, 16), u32::from_str_radix(len, 16))
+        else {
+            eprintln!("--dump-mem address/length must be hex: {spec:?}");
+            continue;
+        };
+        match m.dump_memory(addr, len) {
+            Some(bytes) => {
+                std::fs::write(path, &bytes)?;
+                eprintln!("dumped {len:#x} bytes at {addr:#010x} -> {path}");
+            }
+            None => eprintln!("--dump-mem range {addr:#010x}+{len:#x} is unmapped"),
+        }
+    }
 
     Ok(())
 }
