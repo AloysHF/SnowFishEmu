@@ -806,66 +806,16 @@ impl SnowFishMachine {
                 let h = self.stack_arg(sp, adj, 2)? as i32;
                 let dx = self.stack_arg(sp, adj, 4)? as i32;
                 let dy = self.stack_arg(sp, adj, 5)? as i32;
-                if self.trace {
-                    debug!("[gdi]+0x198 draw bmp@{bmp_ptr:#x} clip {w}x{h} @({dx},{dy})");
-                }
-                if bmp_ptr <= 0x1000 || w == 0 || h == 0 || w > 0x400 || h > 0x400 {
-                    return Ok(());
-                }
-                let mut hdr = [0u8; 0x14];
-                if self.mem.read(bmp_ptr, &mut hdr).is_err() {
-                    return Ok(());
-                }
-                let sw = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as i32;
-                let sh = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as i32;
-                let key = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
-                let pal = u32::from_le_bytes([hdr[12], hdr[13], hdr[14], hdr[15]]);
-                let data = u32::from_le_bytes([hdr[16], hdr[17], hdr[18], hdr[19]]);
-                if self.trace {
-                    debug!(
-                        "[gdi] draw desc {bmp_ptr:#x}: sw={sw} sh={sh} key={key:#x} pal={pal:#x} data={data:#x}"
-                    );
-                }
-                let data = if data > 0x1000 && data <= 0x7F_FFFF {
-                    data
-                } else {
-                    self.mem.read_u32(bmp_ptr.wrapping_add(0x14))?
-                };
-                let pal_mode = pal > 0x1000 && pal <= 0x7F_FFFF;
-                let nbytes = if pal_mode {
-                    (sw * sh) as usize
-                } else {
-                    (sw * sh * 2) as usize
-                };
-                if sw <= 0 || sh <= 0 || nbytes == 0 || nbytes > 0x80000 {
-                    return Ok(());
-                }
-                let mut buf = vec![0u8; nbytes];
-                if self.mem.read(data, &mut buf).is_err() {
-                    return Ok(());
-                }
-                if self.trace {
-                    let pal_head: Vec<u16> = (0..8u32)
-                        .filter_map(|i| self.mem.read_u16(pal.wrapping_add(i * 2)).ok())
-                        .collect();
-                    debug!(
-                        "[gdi] draw input pal8={pal_head:x?} first={:02x?}",
-                        &buf[..8.min(buf.len())]
-                    );
-                }
-                self.gdi.op_draw(
-                    &mut self.mem,
-                    &buf,
-                    sw,
-                    sh,
-                    key,
-                    pal_mode,
-                    w,
-                    h,
-                    dx,
-                    dy,
-                    pal,
-                );
+                self.draw_bitmap(slot, bmp_ptr, Some((w, h)), dx, dy)?;
+            }
+            0x134 => {
+                // blit(obj, bmp, x, y, flags) — the five-argument form of
+                // +0x198: the bitmap is drawn at its own size, so the
+                // descriptor supplies the clip window.
+                let bmp_ptr = r(1);
+                let dx = r(2) as i32;
+                let dy = r(3) as i32;
+                self.draw_bitmap(slot, bmp_ptr, None, dx, dy)?;
             }
             0x194 => {
                 self.gdi.op_bmp();
@@ -931,6 +881,82 @@ impl SnowFishMachine {
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    /// Blits a bitmap descriptor (`sw, sh, key, pal, data`) onto the canvas.
+    /// `clip` is the `(w, h)` window the caller asked for; `None` keeps the
+    /// bitmap's own size, which is what the five-argument `+0x134` form does.
+    fn draw_bitmap(
+        &mut self,
+        slot: u32,
+        bmp_ptr: u32,
+        clip: Option<(i32, i32)>,
+        dx: i32,
+        dy: i32,
+    ) -> Result<(), MachineError> {
+        if bmp_ptr <= 0x1000 {
+            return Ok(());
+        }
+        let mut hdr = [0u8; 0x14];
+        if self.mem.read(bmp_ptr, &mut hdr).is_err() {
+            return Ok(());
+        }
+        let sw = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as i32;
+        let sh = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as i32;
+        let key = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
+        let pal = u32::from_le_bytes([hdr[12], hdr[13], hdr[14], hdr[15]]);
+        let data = u32::from_le_bytes([hdr[16], hdr[17], hdr[18], hdr[19]]);
+        let (w, h) = clip.unwrap_or((sw, sh));
+        if self.trace {
+            debug!(
+                "[gdi]+0x{slot:X} blit obj={:#010x} bmp@{bmp_ptr:#x} sw={sw} sh={sh} key={key:#x} pal={pal:#x} data={data:#x} clip={w}x{h} @({dx},{dy})",
+                self.cpu.reg_get(0)
+            );
+        }
+        if w <= 0 || h <= 0 || w > 0x400 || h > 0x400 {
+            return Ok(());
+        }
+        let data = if data > 0x1000 && data <= 0x7F_FFFF {
+            data
+        } else {
+            self.mem.read_u32(bmp_ptr.wrapping_add(0x14))?
+        };
+        let pal_mode = pal > 0x1000 && pal <= 0x7F_FFFF;
+        let nbytes = if pal_mode {
+            (sw * sh) as usize
+        } else {
+            (sw * sh * 2) as usize
+        };
+        if sw <= 0 || sh <= 0 || nbytes == 0 || nbytes > 0x80000 {
+            return Ok(());
+        }
+        let mut buf = vec![0u8; nbytes];
+        if self.mem.read(data, &mut buf).is_err() {
+            return Ok(());
+        }
+        if self.trace {
+            let pal_head: Vec<u16> = (0..8u32)
+                .filter_map(|i| self.mem.read_u16(pal.wrapping_add(i * 2)).ok())
+                .collect();
+            debug!(
+                "[gdi] blit input pal8={pal_head:x?} first={:02x?}",
+                &buf[..8.min(buf.len())]
+            );
+        }
+        self.gdi.op_draw(
+            &mut self.mem,
+            &buf,
+            sw,
+            sh,
+            key,
+            pal_mode,
+            w,
+            h,
+            dx,
+            dy,
+            pal,
+        );
         Ok(())
     }
 
@@ -1791,6 +1817,12 @@ impl SnowFishMachine {
 mod tests {
     use super::*;
 
+    /// RGB565 white as `frame_pixels` expands it (5/6/5 bits spread over
+    /// the 8-bit RGB fields, so the high bit of red lands in bit 23).
+    const WHITE: u32 = 0xFFF8_FCF8;
+    /// RGB565 red (0xF800) as `frame_pixels` expands it.
+    const RED: u32 = 0xFFF8_0000;
+
     /// Builds a minimal .app whose "entry" immediately registers a handler
     /// (written to the args slot) and returns to the sentinel, then an
     /// event handler that returns immediately.
@@ -1915,6 +1947,35 @@ mod tests {
             .filter(|&i| px[i] == 0xFF00_0000)
             .count();
         assert!(ink > 0, "'A' should be drawn in black, not white-on-white");
+    }
+
+    /// +0x134 is the five-argument blit — `draw(obj, bmp, x, y, flags)` — and
+    /// the clip window is the bitmap's own size. It used to be a silent
+    /// no-op, which left every title that paints through it with nothing but
+    /// its background.
+    #[test]
+    fn blit_draws_the_bitmap_at_its_own_size() {
+        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let desc = HEAP_BASE;
+        let data = HEAP_BASE + 0x100;
+        m.mem.write_u32(desc, 4).unwrap(); // sw
+        m.mem.write_u32(desc + 4, 4).unwrap(); // sh
+        m.mem.write_u32(desc + 8, 0).unwrap(); // key: none
+        m.mem.write_u32(desc + 12, 0).unwrap(); // pal: none
+        m.mem.write_u32(desc + 16, data).unwrap(); // pixels
+        for i in 0..16u32 {
+            m.mem.write_u16(data + i * 2, 0xF800).unwrap(); // red
+        }
+        m.gdi.fill(&mut m.mem, 0, 0, 240, 320, 0xFFFF);
+        m.cpu.reg_set(0, HEAP_BASE + 0x300);
+        m.cpu.reg_set(1, desc);
+        m.cpu.reg_set(2, 10);
+        m.cpu.reg_set(3, 20);
+        m.exec_gdi(0x134, 0).unwrap();
+        let px = m.gdi.frame_pixels(&m.mem);
+        assert_eq!(px[20 * 240 + 10], RED, "first pixel of the blit");
+        assert_eq!(px[23 * 240 + 13], RED, "last pixel of the blit");
+        assert_eq!(px[20 * 240 + 14], WHITE, "nothing past the bitmap");
     }
 
     /// Builds an image whose entry registers an app-handler block and whose
