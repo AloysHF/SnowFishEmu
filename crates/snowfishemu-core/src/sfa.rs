@@ -141,6 +141,130 @@ impl SfaImage {
     }
 }
 
+/// A resource package carried inside a resource container.
+///
+/// The resource containers (`*Res*.app`) are the publisher's resource-pack
+/// generators. Their code segment stores the pack they produce as a
+/// length-prefixed blob: a little-endian `u32` byte count followed by that
+/// many bytes of pack data. The pack itself opens with the fixed header
+/// `u16 1, u16 1, u16 6, u16 count` — the guest's reader checks exactly
+/// that shape, so the header doubles as the marker that identifies the
+/// blob without naming any particular title.
+///
+/// The generator also embeds the file name it writes the pack under as a
+/// UTF-16 string ending in `.pak`, and the blob follows that name in the
+/// code segment. Both are needed to answer the guest: the name selects the
+/// pack a download request asks for, the blob is the pack itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourcePack {
+    /// The pack file name the container declares, e.g. `fooRes_QVGA.pak`.
+    pub name: String,
+    /// The pack bytes, without the length prefix.
+    pub bytes: Vec<u8>,
+    /// The fourth header word: the number of entries the pack declares.
+    pub entries: u16,
+}
+
+impl ResourcePack {
+    /// The header shape every resource pack starts with.
+    const HEADER: [u16; 3] = [1, 1, 6];
+
+    /// Finds the largest resource pack inside a parsed container.
+    pub fn find_in(image: &SfaImage) -> Option<Self> {
+        Self::find_all_in(image).into_iter().max_by_key(|p| p.bytes.len())
+    }
+
+    /// Finds every resource pack inside a parsed container, largest first.
+    ///
+    /// A container names the pack it carries as a UTF-16 file name ending in
+    /// `.pak` and stores the pack itself as a length-prefixed blob that
+    /// follows the name. Each blob is paired with the closest name written
+    /// before it, so a container carrying several packs still resolves them
+    /// in order.
+    pub fn find_all_in(image: &SfaImage) -> Vec<Self> {
+        let names = find_pack_names(&image.code);
+        let mut taken = vec![false; names.len()];
+        let mut out = Vec::new();
+        for (offset, bytes, entries) in pack_blobs(&image.code) {
+            // The name that belongs to this blob is the closest one written
+            // before it; a name stored inside a payload never precedes the
+            // blob it belongs to.
+            let mut best: Option<usize> = None;
+            for (i, (name_offset, _)) in names.iter().enumerate() {
+                if taken[i] || *name_offset >= offset {
+                    continue;
+                }
+                if best.is_none_or(|b| names[b].0 < *name_offset) {
+                    best = Some(i);
+                }
+            }
+            let Some(i) = best else { continue };
+            taken[i] = true;
+            out.push(Self {
+                name: names[i].1.clone(),
+                bytes,
+                entries,
+            });
+        }
+        out.sort_by_key(|p| std::cmp::Reverse(p.bytes.len()));
+        out
+    }
+}
+
+/// Finds the UTF-16 file names ending in `.pak` a code segment declares.
+///
+/// The resource generator writes the name of the pack it produces as a
+/// UTF-16 string, so the name is read back from the container instead of
+/// being derived from the container's file name.
+fn find_pack_names(code: &[u8]) -> Vec<(usize, String)> {
+    let mut names = Vec::new();
+    let mut i = 0usize;
+    while i + 1 < code.len() {
+        if code[i + 1] == 0 && (0x20..0x7e).contains(&code[i]) {
+            let start = i;
+            let mut text = String::new();
+            let mut j = i;
+            while j + 1 < code.len() && code[j + 1] == 0 && (0x20..0x7e).contains(&code[j]) {
+                text.push(code[j] as char);
+                j += 2;
+            }
+            if text.len() >= 4 && text.to_ascii_lowercase().ends_with(".pak") {
+                names.push((start, text));
+            }
+            i = j.max(i + 2);
+            continue;
+        }
+        i += 1;
+    }
+    names
+}
+
+/// Finds the length-prefixed pack blobs a code segment carries.
+///
+/// Each blob is a little-endian `u32` byte count followed by that many
+/// bytes of pack data whose first three words are the fixed pack header.
+fn pack_blobs(code: &[u8]) -> Vec<(usize, Vec<u8>, u16)> {
+    let mut out = Vec::new();
+    for i in 0..code.len().saturating_sub(12) {
+        let len = u32::from_le_bytes([code[i], code[i + 1], code[i + 2], code[i + 3]]) as usize;
+        if len < 16 || i + 4 + len > code.len() {
+            continue;
+        }
+        let payload = &code[i + 4..i + 4 + len];
+        let head = [
+            u16::from_le_bytes([payload[0], payload[1]]),
+            u16::from_le_bytes([payload[2], payload[3]]),
+            u16::from_le_bytes([payload[4], payload[5]]),
+        ];
+        if head != ResourcePack::HEADER {
+            continue;
+        }
+        let entries = u16::from_le_bytes([payload[6], payload[7]]);
+        out.push((i, payload.to_vec(), entries));
+    }
+    out
+}
+
 // Mirrors the reference loader's validation order: length, magic, version,
 // reserved pair, header length, then total-size coverage.
 fn parse_header(data: &[u8]) -> Result<SfaHeader, SfaError> {
