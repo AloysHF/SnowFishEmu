@@ -13,7 +13,7 @@ use crate::gdi::Gdi;
 use crate::lz;
 use crate::mem::GuestMem;
 use crate::plat::{self, APP_RECORD_ADDR};
-use crate::sfa::SfaImage;
+use crate::sfa::{ResourcePack, SfaImage};
 use log::{debug, info, warn};
 use thiserror::Error;
 
@@ -162,6 +162,28 @@ fn service_file(path: &str) -> bool {
     base.starts_with("__") || matches!(vfile_kind(base), Some(0) | Some(1))
 }
 
+/// Where a file slot's bytes come from.
+///
+/// The distinction matters because a guest that writes a file has to read
+/// the same bytes back: the resource-package download writes the package
+/// to disk and then re-opens it to check its size, so a write has to land
+/// in memory and be served by the following read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) enum SlotBacking {
+    /// Slot is free.
+    #[default]
+    None,
+    /// Guest-writable memory file; contents are what the guest wrote.
+    Memory,
+    /// Read-only view of the loaded game container.
+    Container,
+    /// Read-only view of the loaded resource container.
+    Res,
+    /// Read-only view of a resource pack extracted from a resource
+    /// container, identified by its index in the machine's pack table.
+    Pack(usize),
+}
+
 /// One open file slot served from container bytes.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct FileSlot {
@@ -169,9 +191,11 @@ pub(crate) struct FileSlot {
     pub(crate) offset: usize,
     pub(crate) size: usize,
     pub(crate) name: String,
-    /// In-memory backing store for writable service files (empty for the
+    /// In-memory backing store for writable files (empty for the
     /// container/res-backed read-only slots).
     pub(crate) data: Vec<u8>,
+    /// Which store backs this slot.
+    pub(crate) backing: SlotBacking,
 }
 
 /// Queued guest event.
@@ -219,6 +243,18 @@ struct HttpResponder {
     /// `(handle, socket object)` registered through +0xE8.
     attached: Option<(u32, u32)>,
     notified: bool,
+    /// When set, a request whose path contains `asset_match` is answered with
+    /// these local bytes instead of the payload-free 200. This is how a
+    /// side-loaded resource package (a real local file, not invented server
+    /// data) is delivered for the download the SDK would otherwise make.
+    asset: Vec<u8>,
+    asset_match: String,
+    serve_asset: bool,
+    /// The resource pack the current request asks for, if any.
+    ///
+    /// The guest names the pack in the request path; the pack table maps
+    /// that name to the bytes the publisher's container carries.
+    pack: Option<usize>,
 }
 
 impl HttpResponder {
@@ -228,6 +264,28 @@ impl HttpResponder {
     /// the emulator cannot know.
     fn response_bytes() -> Vec<u8> {
         b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+    }
+
+    /// Build the response for the current transaction: if the request matched
+    /// a resource pack, serve its bytes; otherwise the empty 200 or the
+    /// side-loaded asset.
+    fn build_response(&mut self, packs: &[ResourcePack]) {
+        let body: &[u8] = match self.pack {
+            Some(index) => packs.get(index).map(|p| p.bytes.as_slice()).unwrap_or(&[]),
+            None if self.serve_asset => self.asset.as_slice(),
+            None => &[],
+        };
+        if body.is_empty() {
+            self.response = Self::response_bytes();
+            return;
+        }
+        let head = format!(
+            "HTTP/1.0 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let mut response = head.into_bytes();
+        response.extend_from_slice(body);
+        self.response = response;
     }
 
     /// Whether a response was served, fully read and reported to the guest.
@@ -252,7 +310,14 @@ pub struct SnowFishMachine {
     handler: u32,
     file_slots: Vec<FileSlot>,
     container: Vec<u8>,
-    res_data: Option<Vec<u8>>,
+    /// The resource containers supplied next to the package. Each one is a
+    /// publisher resource-pack generator; the packs they carry are served
+    /// in place of the carrier download the guest would otherwise make.
+    res_containers: Vec<Vec<u8>>,
+    /// Resource packs extracted from the resource containers, largest first.
+    /// Every pack keeps the file name its container declares, so a request
+    /// can be answered with the pack it actually asks for.
+    res_packs: Vec<ResourcePack>,
     events: EventQueue,
     frame_count: u64,
     lz_calls: u64,
@@ -350,7 +415,15 @@ impl GuestTimer {
 
 impl SnowFishMachine {
     /// Loads a package (the whole `.app` container) and prepares the guest.
-    pub fn load(container: Vec<u8>, res_data: Option<Vec<u8>>) -> Result<Self, MachineError> {
+    ///
+    /// `res_containers` are the publisher resource containers that ship next
+    /// to the package. Each carries the resource pack the guest would
+    /// otherwise download from the carrier endpoint; the packs are extracted
+    /// here so the platform can serve the real bytes offline.
+    pub fn load(
+        container: Vec<u8>,
+        res_containers: &[Vec<u8>],
+    ) -> Result<Self, MachineError> {
         // Static function-entry skips: SF_FSKIP="addr:r0;addr:r0" (hex).
         // When the guest PC reaches `addr` the call returns at once with
         // r0 = `val`. Used by the offline billing shim to report the SDK's
@@ -411,6 +484,25 @@ impl SnowFishMachine {
                 .join(" ")
         );
         let trace = std::env::var_os("SF_TRACE").is_some();
+        // The resource container carries the resource packs the guest would
+        // otherwise download; extract them so the platform can serve the
+        // real bytes offline.
+        let mut res_packs: Vec<ResourcePack> = Vec::new();
+        for data in res_containers {
+            let Ok(img) = SfaImage::parse(data) else {
+                continue;
+            };
+            res_packs.extend(ResourcePack::find_all_in(&img));
+        }
+        // Two containers may declare the same pack name; the larger one
+        // wins, so the guest always sees the most complete copy.
+        res_packs.sort_by(|a, b| {
+            b.bytes
+                .len()
+                .cmp(&a.bytes.len())
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        res_packs.dedup_by(|a, b| a.name == b.name);
         Ok(Self {
             mem,
             cpu: ArmCpu::new(),
@@ -420,7 +512,8 @@ impl SnowFishMachine {
             handler: 0,
             file_slots: vec![FileSlot::default(); 4],
             container,
-            res_data,
+            res_containers: res_containers.to_vec(),
+            res_packs,
             events: EventQueue::default(),
             frame_count: 0,
             lz_calls: 0,
@@ -437,10 +530,35 @@ impl SnowFishMachine {
             free_play: std::env::var_os("SF_FREE_PLAY").is_some_and(|v| v != "0"),
             http: HttpResponder {
                 enabled: std::env::var_os("SF_OFFLINE_HTTP").is_some_and(|v| v != "0"),
+                asset: std::env::var_os("SF_SERVE_ASSET")
+                    .and_then(|p| std::fs::read(p).ok())
+                    .unwrap_or_default(),
+                asset_match: std::env::var("SF_SERVE_MATCH").unwrap_or_else(|_| ".pak".into()),
                 ..HttpResponder::default()
             },
             app_pump: std::env::var_os("SF_NO_APP_PUMP").is_none(),
         })
+    }
+
+    /// Finds the resource pack a request path asks for.
+    ///
+    /// The guest names the pack in the request path, e.g.
+    /// `.../GM_PAK/<name>.pak`. The pack table holds the name every
+    /// publisher container declares, so the request is matched by name
+    /// rather than by position.
+    fn pack_for_request(&self, request: &str) -> Option<usize> {
+        self.res_packs
+            .iter()
+            .position(|pack| request.to_ascii_lowercase().contains(&pack.name.to_ascii_lowercase()))
+    }
+
+    /// The resource packs the platform can serve, with the names the
+    /// publisher containers declare for them.
+    pub fn resource_packs(&self) -> Vec<(String, usize)> {
+        self.res_packs
+            .iter()
+            .map(|p| (p.name.clone(), p.bytes.len()))
+            .collect()
     }
 
     /// Turns free-play provisioning on or off.
@@ -478,6 +596,25 @@ impl SnowFishMachine {
     /// Whether the local HTTP responder is on.
     pub fn offline_http(&self) -> bool {
         self.http.enabled
+    }
+
+    /// Side-loads a local file to answer download requests whose path contains
+    /// `asset_match` (default `.pak`). This stands in for the carrier endpoint
+    /// that would push a resource package, using a real local artifact rather
+    /// than fabricated server data. Pass empty bytes to disable.
+    pub fn set_serve_asset(&mut self, data: Vec<u8>) {
+        self.http.asset = data;
+    }
+
+    /// Sets the substring a request path must contain for the side-loaded asset
+    /// to be served (default `.pak`).
+    pub fn set_serve_asset_match(&mut self, match_str: String) {
+        self.http.asset_match = match_str;
+    }
+
+    /// The currently side-loaded asset bytes, if any.
+    pub fn serve_asset(&self) -> &[u8] {
+        &self.http.asset
     }
 
     /// Enables or disables the per-frame app-activate/resume pump.
@@ -655,6 +792,16 @@ impl SnowFishMachine {
     /// Executes one hooked platform slot natively and resumes at `ret`.
     fn exec_slot(&mut self, slot: u32, ret: u32) -> Result<(), MachineError> {
         let r = |i: u8| self.cpu.reg_get(i);
+        if std::env::var_os("SF_SLOTLOG").is_some() {
+            debug!(
+                "[slot] +{slot:#x} r0={:#x} r1={:#x} r2={:#x} r3={:#x} lr={:#010x}",
+                r(0),
+                r(1),
+                r(2),
+                r(3),
+                self.cpu.reg_get(armv4t_emu::reg::LR)
+            );
+        }
         let result = match slot {
             // +0x0C is the screen-height query (returns 320 through the
             // planted value stub). Serving it as a heap allocator made the
@@ -689,6 +836,49 @@ impl SnowFishMachine {
                     r(2),
                     self.cpu.reg_get(armv4t_emu::reg::LR)
                 );
+                if self.http.enabled {
+                    let mut bytes = vec![0u8; (r(2) as usize).min(400)];
+                    if self.mem.read(r(1), &mut bytes).is_ok() {
+                        let text: String = bytes
+                            .iter()
+                            .map(|&b| {
+                                if (0x20..0x7f).contains(&b) {
+                                    b as char
+                                } else {
+                                    '.'
+                                }
+                            })
+                            .collect();
+                        debug!("[http] request: {text}");
+                        let hex: String = bytes
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<Vec<_>>()
+                            .join("");
+                        debug!("[http] request hex: {hex}");
+                        // A request names the resource pack it wants; the
+                        // pack table answers with the bytes the publisher's
+                        // container carries for that exact name.
+                        self.http.pack = self.pack_for_request(&text);
+                        if let Some(index) = self.http.pack {
+                            debug!(
+                                "[http] request matches resource pack {:?} ({} bytes), will serve it",
+                                self.res_packs[index].name,
+                                self.res_packs[index].bytes.len()
+                            );
+                            self.http.serve_asset = true;
+                        } else if !self.http.asset.is_empty()
+                            && !self.http.asset_match.is_empty()
+                            && text.contains(&self.http.asset_match)
+                        {
+                            debug!(
+                                "[http] request matches asset filter {:?}, will serve side-loaded bytes",
+                                self.http.asset_match
+                            );
+                            self.http.serve_asset = true;
+                        }
+                    }
+                }
                 Some(r(2))
             }
             // --- offline HTTP responder ---------------------------------
@@ -742,6 +932,8 @@ impl SnowFishMachine {
                     self.http.response.clear();
                     self.http.pos = 0;
                     self.http.notified = false;
+                    self.http.serve_asset = false;
+                    self.http.pack = None;
                 }
                 self.http.request = Some(r(0));
                 debug!(
@@ -758,7 +950,7 @@ impl SnowFishMachine {
             // HTTP/1.0 connection; a zero-length second read is the EOF.
             0xE0 => {
                 if self.http.response.is_empty() {
-                    self.http.response = HttpResponder::response_bytes();
+                    self.http.build_response(&self.res_packs);
                 }
                 let buf = r(1);
                 let want = r(2) as usize;
@@ -1298,7 +1490,7 @@ impl SnowFishMachine {
         let free = self.file_slots.iter().position(|s| !s.in_use);
         let base = basename(&path);
         let kind = vfile_kind(base);
-        let account = self.free_play && matches!(kind, Some(0) | Some(1));
+        let account = self.free_play && matches!(kind, Some(0) | Some(1) | Some(2) | Some(4));
         if let Some(kind) = kind {
             if !account {
                 debug!("[plat] +0x58 fopen \"{path}\" flags={flags} -> 0 (vfile/{kind}, refused)");
@@ -1310,17 +1502,38 @@ impl SnowFishMachine {
             return Ok(0);
         };
         let lower = path.to_ascii_lowercase();
-        let special = self
-            .res_data
-            .as_ref()
-            .is_some_and(|_| !path.is_empty() && (lower.contains(".pak") || lower.contains("res")));
+        // A resource pack the guest asks for by name: the publisher's
+        // container carries that pack, so the guest is served the pack
+        // itself rather than the container that holds it.
+        let pack = self
+            .res_packs
+            .iter()
+            .position(|p| p.name.eq_ignore_ascii_case(base));
+        let special = !self.res_containers.is_empty()
+            && !path.is_empty()
+            && (lower.contains(".pak") || lower.contains("res"));
         // The SMS-billing service keeps its request/response records in
         // guest-visible files (`__`-prefixed names: __sfsms* request
         // records, __dcsmsinfo_ the response inbox, __sfgpsav saves): back
         // them all with in-memory data so the guest reads back what it
         // wrote instead of the container bytes.
-        let writable = basename(&path).starts_with("__") || account;
-        if writable {
+        let base_lower = basename(&path).to_ascii_lowercase();
+        let writable = basename(&path).starts_with("__")
+            || account
+            || base_lower.ends_with(".sav")
+            || (base_lower.ends_with(".dat") && base_lower != "game.dat");
+        // A write-intent open (flags 5 = read/write) must land in memory,
+        // whatever the path looks like. The guest downloads a resource
+        // package, writes it out and then re-opens it to check the size;
+        // if the write is dropped the file it reads back is the wrong one
+        // and the size check fails.
+        let write_intent = flags & 1 != 0;
+        // A file the guest already wrote is served back from memory, not
+        // from the container: the guest re-opens the resource package it
+        // just downloaded to check its size, and the container bytes would
+        // answer with the wrong length.
+        let written = !write_intent && self.named_files.get(&path).is_some_and(|d| !d.is_empty());
+        if writable || write_intent || written {
             let stored = self.named_files.get(&path).cloned().unwrap_or_default();
             // The pay-info file is a tag-stream log the guest builds
             // itself; pre-creating a synthetic record breaks the stream
@@ -1351,7 +1564,7 @@ impl SnowFishMachine {
             let size = stored.len();
             // flags bit 0 = write intent: start an empty record; otherwise
             // serve the previously written contents for reading.
-            let data = if flags & 1 != 0 { Vec::new() } else { stored };
+            let data = if write_intent { Vec::new() } else { stored };
             debug!(
                 "[plat] +0x58 fopen \"{path}\" flags={flags} -> h={} (writable, {} bytes; store={})",
                 idx + 1,
@@ -1364,12 +1577,23 @@ impl SnowFishMachine {
                 size,
                 name: path.clone(),
                 data,
+                backing: SlotBacking::Memory,
             };
             return Ok(idx as u32 + 1);
         }
-        let (data, size) = match (&self.res_data, special) {
-            (Some(res), true) => (0u8, res.len()),
-            _ => (1u8, self.container.len()),
+        // A path the platform does not know is the guest's own file: the
+        // save slot it probes on every drive root before it starts a new
+        // game. The container bytes are *not* that file's content, and
+        // serving them makes the guest validate the package image as a
+        // save record and report "invalid save" (无效存档). Such a file
+        // starts empty and is filled in by the guest's own writes.
+        let (backing, size) = match pack {
+            Some(index) => (SlotBacking::Pack(index), self.res_packs[index].bytes.len()),
+            None if special => (
+                SlotBacking::Res,
+                self.res_containers[0].len(),
+            ),
+            None => (SlotBacking::Memory, 0),
         };
         self.file_slots[idx] = FileSlot {
             in_use: true,
@@ -1381,11 +1605,12 @@ impl SnowFishMachine {
                 path.clone()
             },
             data: Vec::new(),
+            backing,
         };
         debug!(
             "[plat] +0x58 fopen \"{path}\" flags={flags} -> h={} (size={size}{})",
             idx + 1,
-            if data == 0 { " RES" } else { "" }
+            if backing == SlotBacking::Res { " RES" } else { "" }
         );
         Ok(idx as u32 + 1)
     }
@@ -1439,7 +1664,11 @@ impl SnowFishMachine {
             self.cpu.reg_get(armv4t_emu::reg::LR),
             chunk
         );
-        if !self.file_slots[idx].data.is_empty() || service_file(&self.file_slots[idx].name) {
+        // A write always lands in the in-memory file, whatever the slot's
+        // backing: the guest writes the file and then reads it back.
+        if self.file_slots[idx].backing == SlotBacking::Memory
+            || service_file(&self.file_slots[idx].name)
+        {
             let (name, offset) = {
                 let slot = &self.file_slots[idx];
                 (slot.name.clone(), slot.offset)
@@ -1473,7 +1702,7 @@ impl SnowFishMachine {
             return Ok(0);
         }
         let idx = (handle - 1) as usize;
-        if !self.file_slots[idx].data.is_empty() {
+        if self.file_slots[idx].backing == SlotBacking::Memory {
             let slot = &self.file_slots[idx];
             let avail = slot.data.len().saturating_sub(slot.offset);
             let n = (len as usize).min(avail);
@@ -1491,15 +1720,13 @@ impl SnowFishMachine {
         let n = (len as usize).min(avail);
         if n > 0 && buf > 0x1000 {
             let src_off = self.file_slots[idx].offset;
-            let uses_res = self.res_data.is_some()
-                && self.file_slots[idx]
-                    .name
-                    .to_ascii_lowercase()
-                    .contains("res");
-            let data: &[u8] = if uses_res {
-                &self.res_data.as_deref().unwrap()[src_off..src_off + n]
-            } else {
-                &self.container[src_off..src_off + n]
+            let backing = self.file_slots[idx].backing;
+            let data: &[u8] = match backing {
+                SlotBacking::Pack(index) => {
+                    &self.res_packs[index].bytes[src_off..src_off + n]
+                }
+                SlotBacking::Res => &self.res_containers[0][src_off..src_off + n],
+                _ => &self.container[src_off..src_off + n],
             };
             self.mem.write(buf, data)?;
         }
@@ -1767,6 +1994,12 @@ impl SnowFishMachine {
             return None;
         }
         let req = self.http.request?;
+        debug!(
+            "[http] deliver req={req:#010x} pos={} len={} status={:#x}",
+            self.http.pos,
+            self.http.response.len(),
+            self.mem.read_u32(req).unwrap_or(0)
+        );
         let cb = self.mem.read_u32(req + 4).ok()?;
         let arg = self.mem.read_u32(req + 8).ok()?;
         let _ = self.mem.write_u32(req, 0);
@@ -2132,8 +2365,10 @@ impl SnowFishMachine {
     /// Content fingerprint over the container and resource bytes; save
     /// states carry it so they are only restored into matching content.
     fn content_fingerprint(&self) -> u64 {
-        let res: &[u8] = self.res_data.as_deref().unwrap_or(&[]);
-        crate::save::content_fingerprint([&self.container, res])
+        let containers: Vec<&[u8]> = self.res_containers.iter().map(|c| c.as_slice()).collect();
+        crate::save::content_fingerprint(
+            std::iter::once(self.container.as_slice()).chain(containers),
+        )
     }
 
     /// Full-state snapshot as a versioned, self-checking blob.
@@ -2248,7 +2483,7 @@ mod tests {
     #[test]
     fn boots_and_registers_handler() {
         let container = build_test_image();
-        let mut m = SnowFishMachine::load(container, None).unwrap();
+        let mut m = SnowFishMachine::load(container, &[]).unwrap();
         m.boot(1000).unwrap();
         assert_ne!(m.handler, 0, "handler registered");
         assert_eq!(m.state().unwrap(), 3);
@@ -2277,7 +2512,7 @@ mod tests {
     /// pointers, which collapsed every dialog fill to a 0-height rect.
     #[test]
     fn screen_height_slot_runs_the_planted_stub() {
-        let m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         let w = Wrapper {
             slot: 0x0C,
             hook: CODE_BASE,
@@ -2302,7 +2537,7 @@ mod tests {
     /// back to white made every softkey label on a white dialog invisible.
     #[test]
     fn text_keeps_a_black_pen() {
-        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         let obj = HEAP_BASE;
         let text = HEAP_BASE + 0x100;
         m.mem.write_u32(obj + 0x28, 0).unwrap(); // pen = black
@@ -2329,7 +2564,7 @@ mod tests {
     /// over the frame and erased every sprite drawn before the call.
     #[test]
     fn update_rect_leaves_the_surface_alone() {
-        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         let sp = HEAP_BASE + 0x200;
         m.cpu.reg_set(armv4t_emu::reg::SP, sp);
         m.mem.write_u32(sp + 4, 320).unwrap(); // h (5th argument)
@@ -2351,7 +2586,7 @@ mod tests {
     /// its background.
     #[test]
     fn blit_draws_the_bitmap_at_its_own_size() {
-        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         let desc = HEAP_BASE;
         let data = HEAP_BASE + 0x100;
         m.mem.write_u32(desc, 4).unwrap(); // sw
@@ -2380,7 +2615,7 @@ mod tests {
     /// how every trial title's notice looked before.
     #[test]
     fn text_runs_land_at_the_guests_origin() {
-        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         let obj = HEAP_BASE;
         let text = HEAP_BASE + 0x100;
         let sp = HEAP_BASE + 0x400;
@@ -2417,7 +2652,7 @@ mod tests {
     /// corpus, so the platform slides a label back inside instead.
     #[test]
     fn labels_are_slid_back_onto_the_surface() {
-        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         let obj = HEAP_BASE;
         let text = HEAP_BASE + 0x100;
         m.mem.write_u32(obj + 0x28, 0x00FF_FFFF).unwrap(); // white pen
@@ -2489,7 +2724,7 @@ mod tests {
     /// callback, so an unanswered arm leaves every screen stack empty.
     #[test]
     fn ui_timer_callback_runs_on_the_frame_clock() {
-        let mut m = SnowFishMachine::load(build_ui_timer_image(), None).unwrap();
+        let mut m = SnowFishMachine::load(build_ui_timer_image(), &[]).unwrap();
         m.boot(2000).unwrap();
         let callback = CODE_BASE + 0x18;
         m.ui_timers.push(UiTimer {
@@ -2519,7 +2754,7 @@ mod tests {
     /// become a jump to 0 at mota's boot.
     #[test]
     fn service_slot_hands_out_a_callable_object() {
-        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         let w = Wrapper {
             slot: 0x524,
             hook: CODE_BASE,
@@ -2595,7 +2830,7 @@ mod tests {
     /// leaves most of the corpus parked on its pay page.
     #[test]
     fn billing_capable_slot_answers_for_a_phone() {
-        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         m.cpu.reg_set(0, 0);
         m.exec_slot(0x4C, CODE_BASE).unwrap();
         assert_eq!(m.cpu.reg_get(0), 1, "+0x4C must report a billing channel");
@@ -2609,7 +2844,7 @@ mod tests {
     /// registration page.
     #[test]
     fn sim_lookup_is_answered_under_free_play() {
-        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         let out = plat::ROOT_ADDR + 0x2200;
         // type/id as the pay service passes them, out-pointer to a scratch word.
         m.cpu.reg_set(0, 0x120D_E2BD);
@@ -2667,7 +2902,7 @@ mod tests {
     /// root fails and the title drops to its registration page.
     #[test]
     fn account_record_files_are_served_under_free_play() {
-        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         let path_at = plat::ROOT_ADDR + 0x3000;
         let write_path = |m: &mut SnowFishMachine, s: &str| {
             let mut bytes = Vec::new();
@@ -2717,12 +2952,82 @@ mod tests {
         assert_eq!(back, payload, "the guest reads back what it wrote");
     }
 
+    /// A path the platform does not know is the guest's own file — the
+    /// save slot it probes on every drive root before starting a new game.
+    /// It must read as empty: serving the package image as its content
+    /// makes the guest validate the container bytes as a save record and
+    /// report "invalid save" (无效存档) instead of starting a new game.
+    #[test]
+    fn unknown_paths_read_as_empty_guest_files() {
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        let path_at = plat::ROOT_ADDR + 0x3000;
+        let mut bytes = Vec::new();
+        for unit in "E:////Application////TRUNK_SAV".encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        bytes.extend_from_slice(&[0, 0]);
+        m.mem.write(path_at, &bytes).unwrap();
+        m.cpu.reg_set(0, path_at);
+        m.cpu.reg_set(1, 0);
+        m.exec_slot(0x58, CODE_BASE).unwrap();
+        let handle = m.cpu.reg_get(0);
+        assert!(handle != 0, "the guest's own file is opened");
+        assert_eq!(
+            m.file_slots[(handle - 1) as usize].size,
+            0,
+            "an unwritten guest file reads as empty, not as the package image"
+        );
+    }
+
+    /// The guest's own file must accept writes and hand them back on the
+    /// next open, so a game can create and later reload its save slot.
+    #[test]
+    fn unknown_paths_round_trip_the_guests_own_writes() {
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        let path_at = plat::ROOT_ADDR + 0x3000;
+        let mut bytes = Vec::new();
+        for unit in "E:////Application////TRUNK_SAV".encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        bytes.extend_from_slice(&[0, 0]);
+        m.mem.write(path_at, &bytes).unwrap();
+        m.cpu.reg_set(0, path_at);
+        m.cpu.reg_set(1, 0);
+        m.exec_slot(0x58, CODE_BASE).unwrap();
+        let handle = m.cpu.reg_get(0);
+        assert!(handle != 0);
+
+        let payload_at = plat::ROOT_ADDR + 0x3100;
+        let payload = [3u8, 1, 4, 1, 5];
+        m.mem.write(payload_at, &payload).unwrap();
+        m.cpu.reg_set(0, handle);
+        m.cpu.reg_set(1, payload_at);
+        m.cpu.reg_set(2, payload.len() as u32);
+        m.exec_slot(0x60, CODE_BASE).unwrap();
+        m.cpu.reg_set(0, handle);
+        m.exec_slot(0x68, CODE_BASE).unwrap();
+
+        m.cpu.reg_set(0, path_at);
+        m.cpu.reg_set(1, 0);
+        m.exec_slot(0x58, CODE_BASE).unwrap();
+        let handle = m.cpu.reg_get(0);
+        assert!(handle != 0);
+        let read_at = plat::ROOT_ADDR + 0x3200;
+        m.cpu.reg_set(0, handle);
+        m.cpu.reg_set(1, read_at);
+        m.cpu.reg_set(2, payload.len() as u32);
+        m.exec_slot(0x5C, CODE_BASE).unwrap();
+        let mut back = [0u8; 5];
+        m.mem.read(read_at, &mut back).unwrap();
+        assert_eq!(back, payload, "the guest reloads what it saved");
+    }
+
     /// Save states round-trip the observable runtime state: frame count,
     /// handler, and guest memory survive serialize -> deserialize.
     #[test]
     fn save_state_round_trips_runtime_state() {
         let container = build_test_image();
-        let mut machine = SnowFishMachine::load(container, None).unwrap();
+        let mut machine = SnowFishMachine::load(container, &[]).unwrap();
         machine.boot(1000).unwrap();
         machine.app_call(6, 0x08, 1000).unwrap();
         let blob = machine.serialize();
@@ -2746,12 +3051,12 @@ mod tests {
     /// without touching the running machine.
     #[test]
     fn save_state_rejects_foreign_content() {
-        let mut machine = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let mut machine = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         machine.boot(1000).unwrap();
         let blob = machine.serialize();
 
         // Flip a container byte to fake a different package.
-        let mut other = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let mut other = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         other.container[0x30] ^= 0xFF;
         assert!(matches!(
             other.deserialize(&blob),
@@ -2770,7 +3075,7 @@ mod tests {
     /// generic return-0 stub silently claims that no request was sent.
     #[test]
     fn socket_write_reports_the_byte_count() {
-        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         let w = Wrapper {
             slot: 0xE4,
             hook: CODE_BASE,
@@ -2839,7 +3144,7 @@ mod tests {
     #[test]
     fn frame_pump_delivers_the_resume_event() {
         const PROBE: u32 = 0x0054_1000;
-        let mut m = SnowFishMachine::load(build_recording_image(), None).unwrap();
+        let mut m = SnowFishMachine::load(build_recording_image(), &[]).unwrap();
         m.boot(2000).unwrap();
         m.mem.write_u32(PROBE, 0).unwrap();
         m.events.events.clear();
@@ -2858,7 +3163,7 @@ mod tests {
     /// stub until it is explicitly enabled.
     #[test]
     fn network_slots_stay_generic_when_the_responder_is_off() {
-        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         for slot in [0xC8, 0xE0, 0xEC, 0x570] {
             let w = Wrapper {
                 slot,
@@ -2883,7 +3188,7 @@ mod tests {
     /// SDK's event dispatcher drop every asynchronous socket event.
     #[test]
     fn offline_socket_notifier_looks_up_the_attached_object() {
-        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         m.set_offline_http(true);
         m.cpu.reg_set(0, 7); // handle
         m.cpu.reg_set(1, 0x0061_429C); // socket object
@@ -2901,7 +3206,7 @@ mod tests {
     #[test]
     fn offline_http_read_serves_a_complete_response() {
         const BUF: u32 = 0x0054_1200;
-        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         m.set_offline_http(true);
         m.cpu.reg_set(0, 0);
         m.cpu.reg_set(1, BUF);
@@ -2926,7 +3231,7 @@ mod tests {
     #[test]
     fn offline_http_completion_notifies_the_registered_callback() {
         const REQ: u32 = 0x0054_1300;
-        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         m.set_offline_http(true);
         m.mem.write_u32(REQ, u32::MAX).unwrap();
         m.mem.write_u32(REQ + 4, 0x0011_76C0).unwrap();
@@ -2950,7 +3255,7 @@ mod tests {
     fn offline_http_serves_each_registered_transaction() {
         const REQ: u32 = 0x0054_1300;
         const BUF: u32 = 0x0054_1400;
-        let mut m = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         m.set_offline_http(true);
         m.mem.write_u32(REQ, u32::MAX).unwrap();
         m.mem.write_u32(REQ + 4, 0x0011_76C0).unwrap();
@@ -2982,7 +3287,7 @@ mod tests {
     /// handed out before the restore still address the same guest memory.
     #[test]
     fn save_state_restore_keeps_region_pointers_valid() {
-        let mut machine = SnowFishMachine::load(build_test_image(), None).unwrap();
+        let mut machine = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         machine.boot(1000).unwrap();
         let ptr = machine
             .mem

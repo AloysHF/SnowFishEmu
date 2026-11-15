@@ -57,7 +57,7 @@ pub(crate) struct MachineState {
 }
 
 /// FNV-1a 64-bit content fingerprint over the container and resource bytes.
-pub(crate) fn content_fingerprint(parts: [&[u8]; 2]) -> u64 {
+pub(crate) fn content_fingerprint<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for part in parts {
         for &byte in part {
@@ -117,9 +117,9 @@ mod tests {
 
     #[test]
     fn fingerprint_is_stable_and_input_sensitive() {
-        let a = content_fingerprint([b"hello", b""]);
-        let b = content_fingerprint([b"hello", b""]);
-        let c = content_fingerprint([b"hellp", b""]);
+        let a = content_fingerprint([b"hello".as_slice(), b"".as_slice()]);
+        let b = content_fingerprint([b"hello".as_slice(), b"".as_slice()]);
+        let c = content_fingerprint([b"hellp".as_slice(), b"".as_slice()]);
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
