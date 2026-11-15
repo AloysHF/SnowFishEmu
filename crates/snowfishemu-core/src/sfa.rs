@@ -408,6 +408,152 @@ mod tests {
         ));
     }
 
+    /// Builds a publisher container that declares `name` and carries one
+    /// pack of `entries` entries behind it.
+    ///
+    /// The layout is the one the resource generator writes: the UTF-16
+    /// file name first, then the pack as a length-prefixed blob whose
+    /// header is the fixed `1, 1, 6, count` shape.
+    fn build_pack_container(name: &str, entries: u16, body_len: usize) -> Vec<u8> {
+        let mut code = Vec::new();
+        for unit in name.encode_utf16() {
+            code.extend_from_slice(&unit.to_le_bytes());
+        }
+        code.extend_from_slice(&[0, 0]);
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&6u16.to_le_bytes());
+        payload.extend_from_slice(&entries.to_le_bytes());
+        payload.resize(4 + body_len, 0x5A);
+        code.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        code.extend_from_slice(&payload);
+        build(MAGIC_SFA, 0, &code, &[])
+    }
+
+    /// A pack blob is paired with the file name the container declares for
+    /// it, and the name is what selects the pack a download request asks
+    /// for. The pairing rule is positional: the name is the closest one
+    /// written before the blob.
+    #[test]
+    fn pack_blob_is_paired_with_the_declared_name() {
+        let data = build_pack_container("FooRes_QVGA.pak", 7, 64);
+        let img = SfaImage::parse(&data).unwrap();
+        let packs = ResourcePack::find_all_in(&img);
+        assert_eq!(packs.len(), 1, "one pack in the container");
+        assert_eq!(packs[0].name, "FooRes_QVGA.pak");
+        assert_eq!(packs[0].entries, 7);
+        assert_eq!(
+            packs[0].bytes.len(),
+            4 + 64,
+            "the pack keeps its payload without the length prefix"
+        );
+        assert_eq!(&packs[0].bytes[0..8], &[1, 0, 1, 0, 6, 0, 7, 0]);
+    }
+
+    /// A container that carries several packs resolves them in the order
+    /// it writes them: each blob takes the name that precedes it, so the
+    /// names never swap between packs.
+    #[test]
+    fn several_packs_keep_their_own_names() {
+        let mut code = Vec::new();
+        for (name, entries, body) in [
+            ("FirstRes_QVGA.pak", 3u16, 32usize),
+            ("SecondRes_QVGA.pak", 5u16, 96),
+        ] {
+            for unit in name.encode_utf16() {
+                code.extend_from_slice(&unit.to_le_bytes());
+            }
+            code.extend_from_slice(&[0, 0]);
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&1u16.to_le_bytes());
+            payload.extend_from_slice(&1u16.to_le_bytes());
+            payload.extend_from_slice(&6u16.to_le_bytes());
+            payload.extend_from_slice(&entries.to_le_bytes());
+            payload.resize(4 + body, 0x5A);
+            code.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            code.extend_from_slice(&payload);
+        }
+        let data = build(MAGIC_SFA, 0, &code, &[]);
+        let img = SfaImage::parse(&data).unwrap();
+        let packs = ResourcePack::find_all_in(&img);
+        assert_eq!(packs.len(), 2);
+        // Sorted largest first, each with its own name.
+        assert_eq!(packs[0].name, "SecondRes_QVGA.pak");
+        assert_eq!(packs[0].entries, 5);
+        assert_eq!(packs[1].name, "FirstRes_QVGA.pak");
+        assert_eq!(packs[1].entries, 3);
+    }
+
+    /// The pairing is positional: the name a pack answers to is the
+    /// closest one written before the pack's blob, never one written
+    /// after it. A container that lists a name and then a blob pairs
+    /// them; a blob with no name in front of it has no pack.
+    #[test]
+    fn a_pack_takes_the_closest_name_written_before_it() {
+        let mut code = Vec::new();
+        // Two names in a row, then one blob: the blob belongs to the
+        // second (closest) name.
+        for name in ["OldRes_QVGA.pak", "NewRes_QVGA.pak"] {
+            for unit in name.encode_utf16() {
+                code.extend_from_slice(&unit.to_le_bytes());
+            }
+            code.extend_from_slice(&[0, 0]);
+        }
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&6u16.to_le_bytes());
+        payload.extend_from_slice(&2u16.to_le_bytes());
+        payload.resize(4 + 16, 0x5A);
+        code.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        code.extend_from_slice(&payload);
+        let data = build(MAGIC_SFA, 0, &code, &[]);
+        let img = SfaImage::parse(&data).unwrap();
+        let packs = ResourcePack::find_all_in(&img);
+        assert_eq!(packs.len(), 1);
+        assert_eq!(packs[0].name, "NewRes_QVGA.pak");
+
+        // A blob with no name in front of it is not a pack: the name
+        // comes after the data and cannot belong to it.
+        let mut code = Vec::new();
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&6u16.to_le_bytes());
+        payload.extend_from_slice(&2u16.to_le_bytes());
+        payload.resize(4 + 16, 0x5A);
+        code.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        code.extend_from_slice(&payload);
+        for unit in "LateRes_QVGA.pak".encode_utf16() {
+            code.extend_from_slice(&unit.to_le_bytes());
+        }
+        code.extend_from_slice(&[0, 0]);
+        let data = build(MAGIC_SFA, 0, &code, &[]);
+        let img = SfaImage::parse(&data).unwrap();
+        assert!(
+            ResourcePack::find_all_in(&img).is_empty(),
+            "a name written after the blob does not belong to it"
+        );
+    }
+
+    /// A blob whose header does not have the fixed pack shape is not a
+    /// pack, whatever name precedes it.
+    #[test]
+    fn a_blob_without_the_pack_header_is_not_a_pack() {
+        let mut code = Vec::new();
+        for unit in "BogusRes_QVGA.pak".encode_utf16() {
+            code.extend_from_slice(&unit.to_le_bytes());
+        }
+        code.extend_from_slice(&[0, 0]);
+        let payload = vec![0x11u8; 32];
+        code.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        code.extend_from_slice(&payload);
+        let data = build(MAGIC_SFA, 0, &code, &[]);
+        let img = SfaImage::parse(&data).unwrap();
+        assert!(ResourcePack::find_all_in(&img).is_empty());
+    }
+
     #[test]
     fn tfa_variant_uses_extended_header() {
         // TFA declares a 0x24 header; the code segment starts 4 bytes later.
