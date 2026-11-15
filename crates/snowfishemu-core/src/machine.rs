@@ -2952,11 +2952,103 @@ mod tests {
         assert_eq!(back, payload, "the guest reads back what it wrote");
     }
 
-    /// A path the platform does not know is the guest's own file — the
-    /// save slot it probes on every drive root before starting a new game.
-    /// It must read as empty: serving the package image as its content
-    /// makes the guest validate the container bytes as a save record and
-    /// report "invalid save" (无效存档) instead of starting a new game.
+    /// Builds a publisher resource container that declares `name` and
+    /// carries one pack of `body_len` bytes behind it.
+    ///
+    /// The layout is the one the resource generator writes: the UTF-16
+    /// file name first, then the pack as a length-prefixed blob whose
+    /// header is the fixed `1, 1, 6, count` shape.
+    fn build_pack_container(name: &str, entries: u16, body_len: usize) -> Vec<u8> {
+        let mut code = Vec::new();
+        for unit in name.encode_utf16() {
+            code.extend_from_slice(&unit.to_le_bytes());
+        }
+        code.extend_from_slice(&[0, 0]);
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&6u16.to_le_bytes());
+        payload.extend_from_slice(&entries.to_le_bytes());
+        payload.resize(4 + body_len, 0x5A);
+        code.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        code.extend_from_slice(&payload);
+        let mut v = Vec::new();
+        v.extend_from_slice(&0x1941_4653u32.to_le_bytes()); // magic
+        v.extend_from_slice(&0u32.to_le_bytes()); // ver
+        v.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        v.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        v.extend_from_slice(&0x20u32.to_le_bytes()); // hdr_len
+        v.extend_from_slice(&(code.len() as u32).to_le_bytes()); // c0
+        v.extend_from_slice(&0u32.to_le_bytes()); // c1
+        v.extend_from_slice(&0u32.to_le_bytes()); // reloc count
+        v.extend_from_slice(&code);
+        v
+    }
+
+    /// A download request names the pack it wants, and the platform answers
+    /// with that pack's own bytes. The guest has two length gates on the
+    /// result — the downloaded body and the on-disk size — and both must
+    /// see the pack's real length, so the resource load runs without a
+    /// carrier round trip.
+    #[test]
+    fn a_pack_named_by_the_request_is_served_with_its_own_bytes() {
+        let res = build_pack_container("FooRes_QVGA.pak", 9, 64);
+        let m = SnowFishMachine::load(build_test_image(), &[res]).unwrap();
+        let packs = m.resource_packs();
+        assert_eq!(packs.len(), 1);
+        assert_eq!(packs[0].0, "FooRes_QVGA.pak");
+        assert_eq!(packs[0].1, 68, "the pack length excludes the prefix");
+
+        // The request path names the pack; the lookup resolves it by name.
+        assert_eq!(
+            m.pack_for_request("GET /GM_PAK/FooRes_QVGA.pak HTTP/1.0"),
+            Some(0)
+        );
+        assert_eq!(
+            m.pack_for_request("GET /GM_PAK/Other_QVGA.pak HTTP/1.0"),
+            None,
+            "a pack the container does not carry is not answered"
+        );
+    }
+
+    /// A guest that opens the pack by name gets the pack, not the container
+    /// that holds it: the file's size must be the pack's length, because
+    /// the guest compares it against the length it asked for.
+    #[test]
+    fn a_pack_opened_by_name_has_the_packs_length() {
+        let res = build_pack_container("FooRes_QVGA.pak", 9, 64);
+        let mut m = SnowFishMachine::load(build_test_image(), &[res]).unwrap();
+        let path_at = plat::ROOT_ADDR + 0x3000;
+        let mut bytes = Vec::new();
+        for unit in "E:\\Application\\FooRes_QVGA.pak".encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        bytes.extend_from_slice(&[0, 0]);
+        m.mem.write(path_at, &bytes).unwrap();
+        m.cpu.reg_set(0, path_at);
+        m.cpu.reg_set(1, 0);
+        m.exec_slot(0x58, CODE_BASE).unwrap();
+        let handle = m.cpu.reg_get(0);
+        assert_ne!(handle, 0, "the pack is opened");
+        let slot = &m.file_slots[(handle - 1) as usize];
+        assert_eq!(slot.size, 68, "the size is the pack's length");
+        assert_eq!(slot.backing, SlotBacking::Pack(0));
+
+        // The bytes read back are the pack's payload.
+        let read_at = plat::ROOT_ADDR + 0x3200;
+        m.cpu.reg_set(0, handle);
+        m.cpu.reg_set(1, read_at);
+        m.cpu.reg_set(2, 8);
+        m.exec_slot(0x5C, CODE_BASE).unwrap();
+        let mut head = [0u8; 8];
+        m.mem.read(read_at, &mut head).unwrap();
+        assert_eq!(&head, &[1, 0, 1, 0, 6, 0, 9, 0], "the pack header");
+    }
+
+    /// A guest path the platform does not know is the guest's own save
+    /// slot, and it must start empty. Serving the package image as its
+    /// content makes the guest validate the container bytes as a save
+    /// record and report "invalid save" (无效存档).
     #[test]
     fn unknown_paths_read_as_empty_guest_files() {
         let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
