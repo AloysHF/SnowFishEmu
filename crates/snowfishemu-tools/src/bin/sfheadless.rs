@@ -13,9 +13,10 @@ use std::path::PathBuf;
 struct Args {
     /// Path to a `.app` package.
     path: PathBuf,
-    /// Optional sibling resource file served for `res`/`.pak` paths.
+    /// Sibling resource container(s) whose packs back `res`/`.pak` paths.
+    /// Repeat the option to serve more than one container.
     #[arg(long)]
-    res: Option<PathBuf>,
+    res: Vec<PathBuf>,
     /// Instruction budget per guest call.
     #[arg(long, default_value = "200000000")]
     budget: u64,
@@ -25,6 +26,11 @@ struct Args {
     /// Queue a few key presses after boot (indices into the key map).
     #[arg(long)]
     keys: Vec<u8>,
+    /// Press a key at an exact frame, `frame:key` (same indices as `--keys`).
+    /// Repeatable; a press holds the key for one frame and releases it on the
+    /// next, so a scripted run advances two frames per press.
+    #[arg(long = "press")]
+    press: Vec<String>,
     /// Skip the automatic bring-up key replay (pure idle run).
     #[arg(long)]
     no_keys: bool,
@@ -43,6 +49,15 @@ struct Args {
     /// leaving the transaction pending (same as `SF_OFFLINE_HTTP=1`).
     #[arg(long)]
     offline_http: bool,
+    /// Side-load a local file to answer download requests whose path contains
+    /// the `--serve-match` substring (default `.pak`). Same as `SF_SERVE_ASSET`.
+    /// The bytes are a real local artifact, not fabricated server data.
+    #[arg(long)]
+    serve_asset: Option<PathBuf>,
+    /// Substring a request path must contain for `--serve-asset` to be served
+    /// (default `.pak`). Same as `SF_SERVE_MATCH`.
+    #[arg(long, default_value = ".pak")]
+    serve_match: String,
     /// Suppress the per-frame app-activate/resume event (diagnostic only).
     #[arg(long)]
     no_app_pump: bool,
@@ -53,57 +68,108 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let container =
         std::fs::read(&args.path).with_context(|| format!("read {}", args.path.display()))?;
-    let res = match &args.res {
-        Some(p) => Some(std::fs::read(p).with_context(|| format!("read {}", p.display()))?),
-        None => None,
-    };
-    let mut m = SnowFishMachine::load(container, res)?;
+    let mut res = Vec::new();
+    for path in &args.res {
+        res.push(std::fs::read(path).with_context(|| format!("read {}", path.display()))?);
+    }
+    let mut m = SnowFishMachine::load(container, &res)?;
     if args.free_play {
         m.set_free_play(true);
     }
     if args.offline_http {
         m.set_offline_http(true);
     }
+    if let Some(path) = &args.serve_asset {
+        let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+        m.set_serve_asset(bytes);
+        m.set_serve_asset_match(args.serve_match.clone());
+    }
     if args.no_app_pump {
         m.set_app_pump(false);
     }
+    for (name, len) in m.resource_packs() {
+        eprintln!("resource pack: {name} ({len} bytes)");
+    }
     m.boot(args.budget)?;
+    // An explicit `--press frame:key` schedule takes over the frame loop;
+    // the bring-up replay below is only a convenience for idle runs.
+    let mut script: Vec<(u32, u8)> = Vec::new();
+    for spec in &args.press {
+        let (frame, key) = spec
+            .split_once(':')
+            .with_context(|| format!("--press wants frame:key, got {spec:?}"))?;
+        script.push((
+            frame
+                .parse()
+                .with_context(|| format!("bad frame in {spec:?}"))?,
+            key.parse()
+                .with_context(|| format!("bad key in {spec:?}"))?,
+        ));
+    }
+    script.sort_unstable();
+    let scripted = !script.is_empty();
+    let total = script
+        .last()
+        .map_or(args.frames, |(frame, _)| args.frames.max(frame + 2));
+
+    let dump_frame = |m: &SnowFishMachine, frame: u32| {
+        if let Some(dir) = &args.dump_fb {
+            let px = m.frame_pixels();
+            let mut out = Vec::with_capacity(px.len() * 4);
+            for p in &px {
+                out.extend_from_slice(&p.to_le_bytes());
+            }
+            let _ = std::fs::write(dir.join(format!("frame_{frame:03}.raw")), &out);
+        }
+    };
+
     // Mimic the platform bring-up: 5 idle ticks, LSK down+up, OK down+up,
     // then the remaining frames (key indices per the core's key table).
     // --no-keys skips the replay for pure idle runs.
     let lsk = 10u8;
     let ok = 5u8;
-    for i in 0..args.frames {
-        // Platform bring-up: LSK+OK at frame 5; periodic OK presses every
-        // 10 frames afterwards (menus advance on OK/5).
-        if i == 5 && !args.no_keys {
-            m.set_key(lsk, true)?;
+    let mut i = 0u32;
+    let mut next = 0usize;
+    while i < total {
+        if scripted && next < script.len() && script[next].0 <= i {
+            let key = script[next].1;
+            next += 1;
+            m.set_key(key, true)?;
             m.run_frame(args.budget)?;
-            m.set_key(lsk, false)?;
+            m.set_key(key, false)?;
             m.run_frame(args.budget)?;
-            m.set_key(ok, true)?;
-            m.run_frame(args.budget)?;
-            m.set_key(ok, false)?;
-            m.run_frame(args.budget)?;
+            eprintln!("frame {i} press={key} state={:?}", m.state());
+            dump_frame(&m, i);
+            i += 2;
             continue;
         }
-        if i > 6 && (i - 6) % 10 == 0 && !args.no_keys {
-            m.set_key(ok, true)?;
-            m.run_frame(args.budget)?;
-            m.set_key(ok, false)?;
+        if !scripted && !args.no_keys {
+            // Platform bring-up: LSK+OK at frame 5; periodic OK presses every
+            // 10 frames afterwards (menus advance on OK/5).
+            if i == 5 {
+                m.set_key(lsk, true)?;
+                m.run_frame(args.budget)?;
+                m.set_key(lsk, false)?;
+                m.run_frame(args.budget)?;
+                m.set_key(ok, true)?;
+                m.run_frame(args.budget)?;
+                m.set_key(ok, false)?;
+                m.run_frame(args.budget)?;
+                i += 4;
+                continue;
+            }
+            if i > 6 && (i - 6).is_multiple_of(10) {
+                m.set_key(ok, true)?;
+                m.run_frame(args.budget)?;
+                m.set_key(ok, false)?;
+            }
         }
         m.run_frame(args.budget)?;
-        eprintln!("frame {} state={:?}", i, m.state());
-        if let Some(dir) = &args.dump_fb {
-            let px = m.frame_pixels();
-            let mut out = Vec::new();
-            for p in &px {
-                out.extend_from_slice(&p.to_le_bytes());
-            }
-            let _ = std::fs::write(dir.join(format!("frame_{i:03}.raw")), &out);
-        }
+        eprintln!("frame {i} state={:?}", m.state());
+        dump_frame(&m, i);
+        i += 1;
     }
-    let mut key_frame = args.frames;
+    let mut key_frame = total;
     for k in &args.keys {
         m.set_key(*k, true)?;
         m.run_frame(args.budget)?;

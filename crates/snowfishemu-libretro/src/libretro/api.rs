@@ -106,8 +106,9 @@ struct Emulator {
     /// The loaded package bytes; kept for `retro_reset` and as the file
     /// service backing store of a reloaded machine.
     container: Vec<u8>,
-    /// Optional sibling resource file served for `res`/`.pak` file opens.
-    res_data: Option<Vec<u8>>,
+    /// The sibling resource containers whose packs back `res`/`.pak` file
+    /// opens and the download the guest would otherwise make.
+    res_data: Vec<Vec<u8>>,
     machine: SnowFishMachine,
     /// Set when a guest call faulted; the last valid frame keeps being
     /// presented and the guest stops advancing.
@@ -324,19 +325,22 @@ fn fail(message: &str) -> bool {
 /// Returns the kept container and resource bytes together with the machine:
 /// the container stays in the core so `retro_reset` can rebuild a machine
 /// without a new content load.
-fn load_machine(path: &Path) -> anyhow::Result<(Vec<u8>, Option<Vec<u8>>, SnowFishMachine)> {
+fn load_machine(path: &Path) -> anyhow::Result<(Vec<u8>, Vec<Vec<u8>>, SnowFishMachine)> {
     let container = std::fs::read(path)
         .map_err(|error| anyhow::anyhow!("cannot read {}: {error}", path.display()))?;
-    let res_data = find_res_file(path).and_then(|res_path| match std::fs::read(&res_path) {
-        Ok(data) => {
-            log::info!("Serving sibling resource file {}", res_path.display());
-            Some(data)
-        }
-        Err(error) => {
-            log::warn!("Ignoring resource file {}: {error}", res_path.display());
-            None
-        }
-    });
+    let res_data: Vec<Vec<u8>> = find_res_files(path)
+        .into_iter()
+        .filter_map(|res_path| match std::fs::read(&res_path) {
+            Ok(data) => {
+                log::info!("Serving sibling resource file {}", res_path.display());
+                Some(data)
+            }
+            Err(error) => {
+                log::warn!("Ignoring resource file {}: {error}", res_path.display());
+                None
+            }
+        })
+        .collect();
     let machine = rebuild_machine(&container, &res_data)?;
     Ok((container, res_data, machine))
 }
@@ -344,9 +348,9 @@ fn load_machine(path: &Path) -> anyhow::Result<(Vec<u8>, Option<Vec<u8>>, SnowFi
 /// Builds a freshly booted machine from the kept package bytes.
 fn rebuild_machine(
     container: &[u8],
-    res_data: &Option<Vec<u8>>,
+    res_data: &[Vec<u8>],
 ) -> anyhow::Result<SnowFishMachine> {
-    let mut machine = SnowFishMachine::load(container.to_vec(), res_data.clone())
+    let mut machine = SnowFishMachine::load(container.to_vec(), res_data)
         .map_err(|error| anyhow::anyhow!("{error:#}"))?;
     machine
         .boot(INSTRUCTION_BUDGET)
@@ -354,26 +358,34 @@ fn rebuild_machine(
     Ok(machine)
 }
 
-/// Locates the optional sibling resource file served for `res`/`.pak` file
+/// Locates the sibling resource containers that back `res`/`.pak` file
 /// opens.
 ///
 /// The desktop frontend takes the resource file explicitly; a libretro
 /// frontend only provides the content path, so the lookup follows a fixed
 /// rule: `<content-stem>.pak` or `<content-stem>.res` next to the content
-/// file, else exactly one sibling file whose name mentions `.pak` or `res`.
-/// Ambiguous or missing files resolve to no resource data.
-fn find_res_file(content_path: &Path) -> Option<PathBuf> {
-    let dir = content_path.parent()?;
-    let stem = content_path.file_stem()?.to_str()?;
-    for name in [format!("{stem}.pak"), format!("{stem}.res")] {
+/// file, else every sibling file whose name mentions `.pak` or `res`. A
+/// title may ship more than one container (each carries its own pack), so
+/// every match is served rather than only an unambiguous one.
+fn find_res_files(content_path: &Path) -> Vec<PathBuf> {
+    let Some(dir) = content_path.parent() else {
+        return Vec::new();
+    };
+    let stem = content_path.file_stem().and_then(|s| s.to_str());
+    for name in stem
+        .map(|stem| [format!("{stem}.pak"), format!("{stem}.res")])
+        .unwrap_or_default()
+    {
         let candidate = dir.join(name);
         if candidate.is_file() {
-            return Some(candidate);
+            return vec![candidate];
         }
     }
-    let matches: Vec<PathBuf> = std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
+    let mut matches: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()
+        .map(|entries| entries.flatten().collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
         .filter(|entry| {
             entry.file_name().to_str().is_some_and(|name| {
                 name.to_ascii_lowercase().contains(".pak")
@@ -383,14 +395,8 @@ fn find_res_file(content_path: &Path) -> Option<PathBuf> {
         .map(|entry| entry.path())
         .filter(|path| path.is_file())
         .collect();
-    match matches.as_slice() {
-        [only] => Some(only.clone()),
-        [] => None,
-        _ => {
-            log::info!("Multiple candidate resource files next to the content; none used");
-            None
-        }
-    }
+    matches.sort();
+    matches
 }
 
 #[no_mangle]
@@ -1407,20 +1413,23 @@ mod tests {
         std::fs::write(&content, b"").unwrap();
 
         // No sibling files: no resource.
-        assert_eq!(find_res_file(&content), None);
+        assert!(find_res_files(&content).is_empty());
 
         // A single "res"-named sibling matches.
         std::fs::write(root.join("res.bin"), b"x").unwrap();
-        assert_eq!(find_res_file(&content), Some(root.join("res.bin")));
+        assert_eq!(find_res_files(&content), vec![root.join("res.bin")]);
 
         // The stem-named candidate wins over the loose match.
         std::fs::write(root.join("game.res"), b"y").unwrap();
-        assert_eq!(find_res_file(&content), Some(root.join("game.res")));
+        assert_eq!(find_res_files(&content), vec![root.join("game.res")]);
 
-        // Ambiguity without a stem match: none used.
+        // Without a stem match every candidate is served: a title may
+        // ship several resource containers.
         std::fs::remove_file(root.join("game.res")).unwrap();
         std::fs::write(root.join("other.pak"), b"z").unwrap();
-        assert_eq!(find_res_file(&content), None);
+        let found = find_res_files(&content);
+        assert!(found.contains(&root.join("res.bin")));
+        assert!(found.contains(&root.join("other.pak")));
 
         std::fs::remove_dir_all(&root).unwrap();
     }

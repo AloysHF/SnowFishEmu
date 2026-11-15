@@ -23,9 +23,10 @@ mod keys {
 struct Args {
     /// Path to a `.app` package.
     path: PathBuf,
-    /// Optional sibling resource file served for `res`/`.pak` paths.
+    /// Sibling resource container(s) whose packs back `res`/`.pak` paths.
+    /// Repeat the option to serve more than one container.
     #[arg(long)]
-    res: Option<PathBuf>,
+    res: Vec<PathBuf>,
     /// Window scale factor (default: fit 240x320 into ~640x854).
     #[arg(long)]
     scale: Option<u32>,
@@ -39,11 +40,11 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let container =
         std::fs::read(&args.path).with_context(|| format!("read {}", args.path.display()))?;
-    let res = match &args.res {
-        Some(p) => Some(std::fs::read(p).with_context(|| format!("read {}", p.display()))?),
-        None => None,
-    };
-    let mut machine = SnowFishMachine::load(container, res)?;
+    let mut res = Vec::new();
+    for path in &args.res {
+        res.push(std::fs::read(path).with_context(|| format!("read {}", path.display()))?);
+    }
+    let mut machine = SnowFishMachine::load(container, &res)?;
     machine.boot(args.budget)?;
 
     let scale = args.scale.unwrap_or(2).max(1);
