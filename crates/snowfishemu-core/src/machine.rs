@@ -1347,6 +1347,14 @@ impl SnowFishMachine {
                 let h = self.stack_arg(sp, adj, 2)? as i32;
                 let dx = self.stack_arg(sp, adj, 4)? as i32;
                 let dy = self.stack_arg(sp, adj, 5)? as i32;
+                if self.trace {
+                    debug!(
+                        "[gdi]+0x{slot:X} draw args r2={:#x} w={w} h={h} s3={:#x} s4={:#x} dx={dx} dy={dy}",
+                        r(2),
+                        self.stack_arg(sp, adj, 3).unwrap_or(0),
+                        self.stack_arg(sp, adj, 4).unwrap_or(0)
+                    );
+                }
                 self.draw_bitmap(slot, bmp_ptr, Some((w, h)), dx, dy)?;
             }
             0x134 => {
@@ -1576,6 +1584,31 @@ impl SnowFishMachine {
         // just downloaded to check its size, and the container bytes would
         // answer with the wrong length.
         let written = !write_intent && self.named_files.get(&path).is_some_and(|d| !d.is_empty());
+        // The response inbox (__dcsmsinfo_) is what the carrier would
+        // write back; SF_DCSMS injects its bytes so the send handler's
+        // parse-and-compare gate can pass offline. The injection happens
+        // once per path: after the guest consumes the record the inbox
+        // stays empty so the no-match path (which marks the flow
+        // processed) can run instead of an infinite match cycle.
+        // SF_DCSMS_LOOP=1 re-arms the injection each time the guest
+        // re-opens an empty inbox — some SDK revisions poll the inbox
+        // repeatedly before they consume the record, and the one-shot
+        // left them parsing an empty buffer.
+        let dcsms_present =
+            basename(&path).starts_with("__dcsmsinfo") && std::env::var_os("SF_DCSMS").is_some();
+        // A read of a guest-owned file the guest never wrote does not
+        // exist: on the handset the first boot probes save records that
+        // are simply not there, and the SDK's probe path expects the
+        // fopen to fail. Serving a fresh empty handle instead sent one
+        // SDK revision into a 1400-iteration halfword parse of nothing
+        // and then through a null pointer.
+        if writable && !write_intent && !written && !dcsms_present {
+            let known = self.named_files.get(&path).is_some_and(|d| !d.is_empty());
+            if !known {
+                debug!("[plat] +0x58 fopen \"{path}\" flags={flags} -> 0 (no record yet)");
+                return Ok(0);
+            }
+        }
         if writable || write_intent || written {
             let stored = self.named_files.get(&path).cloned().unwrap_or_default();
             // The pay-info file is a tag-stream log the guest builds
@@ -1589,10 +1622,17 @@ impl SnowFishMachine {
             // happens once per path: after the guest consumes the record
             // the inbox stays empty so the no-match path (which marks the
             // flow processed) can run instead of an infinite match cycle.
+            // SF_DCSMS_LOOP=1 re-arms the injection each time the guest
+            // re-opens an empty inbox — some SDK revisions poll the inbox
+            // repeatedly before they consume the record, and the one-shot
+            // left them parsing an empty buffer.
             let mut stored = stored;
+            let rearm = std::env::var("SF_DCSMS_LOOP")
+                .map(|v| v == "1")
+                .unwrap_or(false);
             if stored.is_empty()
                 && basename(&path).starts_with("__dcsmsinfo")
-                && !self.dcsms_injected.contains(&path)
+                && (rearm || !self.dcsms_injected.contains(&path))
             {
                 if let Ok(hex) = std::env::var("SF_DCSMS") {
                     let bytes: Vec<u8> = hex
@@ -1755,7 +1795,7 @@ impl SnowFishMachine {
                 self.mem.write(buf, &chunk)?;
             }
             self.file_slots[idx].offset += n;
-            debug!("[plat] +0x5C fread h={handle} -> {n} (writable file)");
+            debug!("[plat] +0x5C fread h={handle} size={len} -> {n} (writable file)");
             return Ok(n as u32);
         }
         let avail = self.file_slots[idx]
@@ -2671,7 +2711,7 @@ mod tests {
         m.mem.write_u32(desc + 16, data).unwrap(); // indices
         m.mem.write_u16(pal, 0xF800).unwrap(); // index 0: red
         m.mem.write_u16(pal + 2, 0x001F).unwrap(); // index 1: blue
-        // index 0 first (red), index 1 second (blue)
+                                                   // index 0 first (red), index 1 second (blue)
         m.mem.write_u16(data, 0x0100).unwrap(); // bytes [0, 1]
         m.mem.write_u16(data + 2, 0x0100).unwrap();
         m.gdi.fill(&mut m.mem, 0, 0, 240, 320, 0xFFFF);
@@ -2975,7 +3015,9 @@ mod tests {
     /// the handset registered once. Free play backs it with the in-memory
     /// service store so the guest writes a record at boot and reads the same
     /// bytes back; without free play the probe is refused, so every drive
-    /// root fails and the title drops to its registration page.
+    /// root fails and the title drops to its registration page. A record
+    /// that was never written reads as absent — on the handset the first
+    /// boot probes files that are simply not there.
     #[test]
     fn account_record_files_are_served_under_free_play() {
         let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
@@ -2999,13 +3041,22 @@ mod tests {
         m.cpu.reg_set(0, path_at);
         m.cpu.reg_set(1, 0);
         m.exec_slot(0x58, CODE_BASE).unwrap();
-        let handle = m.cpu.reg_get(0);
-        assert!(handle != 0, "free play serves the account record");
+        assert_eq!(
+            m.cpu.reg_get(0),
+            0,
+            "a record the guest never wrote reads as absent"
+        );
 
-        // Write a record through the handle, close it, and read it back.
+        // Write a record through a write-intent handle, close it, and read
+        // it back through a fresh read handle.
         let payload_at = plat::ROOT_ADDR + 0x3100;
         let payload = [7u8, 0, 0, 0, 0xFC];
         m.mem.write(payload_at, &payload).unwrap();
+        m.cpu.reg_set(0, path_at);
+        m.cpu.reg_set(1, 5); // write intent creates the record
+        m.exec_slot(0x58, CODE_BASE).unwrap();
+        let handle = m.cpu.reg_get(0);
+        assert!(handle != 0, "free play serves the write-intent open");
         m.cpu.reg_set(0, handle);
         m.cpu.reg_set(1, payload_at);
         m.cpu.reg_set(2, payload.len() as u32);
