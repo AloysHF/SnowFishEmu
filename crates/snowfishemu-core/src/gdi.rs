@@ -21,6 +21,12 @@ pub struct Gdi {
     clear_count: u64,
     fill2_count: u64,
     flush_count: u64,
+    /// The label cursor: `(origin, next line top)`. The SDK's dialog
+    /// renderer issues one `+0x154` call per line with the *same* block
+    /// origin, so a call that repeats the previous call's origin draws on
+    /// the next row instead of over it. A call with a new origin restarts
+    /// the block; the cursor clears on flush.
+    pub(crate) text_cursor: Option<(i32, i32, i32)>,
 }
 
 /// RGB888 → RGB565 truncation used by the platform bridge.
@@ -39,7 +45,13 @@ impl Gdi {
             clear_count: 0,
             fill2_count: 0,
             flush_count: 0,
+            text_cursor: None,
         }
+    }
+
+    /// Clear the label cursor (start of a frame).
+    pub fn reset_text_cursor(&mut self) {
+        self.text_cursor = None;
     }
 
     /// Whether the surface changed since the last presentation.
@@ -339,12 +351,51 @@ impl Gdi {
         y: i32,
         color: u16,
     ) -> i32 {
+        let (advance, _) = self.op_text_block(mem, chars, x, y, color, None);
+        advance
+    }
+
+    /// Draw a UTF-16 run, optionally wrapped at `right` (the x coordinate
+    /// the next cell must not cross). This is the renderer behind both
+    /// `+0x154` labels (`right = None`) and `+0x14C` paragraph bodies
+    /// (`right = Some(surface edge)`): the body slot hands the platform a
+    /// whole paragraph — the intro screens scroll it by moving y — and the
+    /// firmware breaks the lines itself. A line's height is the tallest
+    /// cell in it (8 for ASCII, 16 for wide cells), matching the advance
+    /// metrics the guest lays its origins out with. Returns the total
+    /// advance and the y coordinate below the last finished line.
+    pub fn op_text_block(
+        &mut self,
+        mem: &mut crate::mem::GuestMem,
+        chars: &[u16],
+        x: i32,
+        y: i32,
+        color: u16,
+        right: Option<i32>,
+    ) -> (i32, i32) {
         self.text_count += 1;
         let mut cx = x;
+        let mut cy = y;
+        // Height of the tallest cell placed on the line being drawn.
+        let mut line_h = 8i32;
+        let mut advance = 0i32;
         for &ch in chars {
             if ch == 0 {
                 break;
             }
+            let wide = ch > 0x4DFF;
+            let cell = if wide { 16 } else { 8 };
+            if let Some(right) = right {
+                // Wrap before a cell that would cross the edge, and skip a
+                // cell wider than the whole line so a pathological run
+                // cannot loop forever.
+                if cx + cell > right && cell <= right - x {
+                    cx = x;
+                    cy += line_h;
+                    line_h = 8;
+                }
+            }
+            let row0 = cy;
             match ch {
                 0x00..=0x1F => cx += 8,
                 0x20..=0x7E => {
@@ -353,7 +404,7 @@ impl Gdi {
                         for col in 0..8usize {
                             // font8x8 encodes pixels LSB-first (col 0 = 0x01).
                             if bits & (1 << col) != 0 {
-                                self.set_px(mem, cx + col as i32, y + row as i32, color);
+                                self.set_px(mem, cx + col as i32, row0 + row as i32, color);
                             }
                         }
                     }
@@ -366,7 +417,7 @@ impl Gdi {
                             for row in 0..16usize {
                                 for col in 0..glyph.get_width() {
                                     if glyph.get_pixel(col, row) {
-                                        self.set_px(mem, cx + col as i32, y + row as i32, color);
+                                        self.set_px(mem, cx + col as i32, row0 + row as i32, color);
                                     }
                                 }
                             }
@@ -375,9 +426,13 @@ impl Gdi {
                     cx += 16;
                 }
             }
+            if wide {
+                line_h = 16;
+            }
+            advance += cell;
         }
         self.dirty = true;
-        cx - x
+        (advance, cy + line_h)
     }
 }
 
@@ -424,5 +479,32 @@ mod tests {
             (0..8).any(|col| g.frame_pixels(&mem)[(10 + row) * 240 + 10 + col] != 0xFF000000)
         });
         assert!(hit, "'A' should draw pixels");
+    }
+
+    #[test]
+    fn text_block_wraps_at_the_right_edge() {
+        let mut g = Gdi::new();
+        let mut mem = crate::mem::GuestMem::new(0x1000);
+        // Five ASCII cells of 8 px starting at 36: three fit inside right=60,
+        // the remaining two wrap to the next 8-px row (top at y=18).
+        let chars: Vec<u16> = "ABCDE".chars().map(|c| c as u16).collect();
+        let (_, end_y) = g.op_text_block(&mut mem, &chars, 36, 10, 0x07E0, Some(60));
+        assert_eq!(end_y, 26);
+        let px = g.frame_pixels(&mem);
+        let first_row_hit = (0..8).any(|row| px[(10 + row) * 240 + 36] != 0xFF000000);
+        let wrapped_hit = (0..8).any(|row| px[(18 + row) * 240 + 36] != 0xFF000000);
+        assert!(first_row_hit, "first line should draw at y=10");
+        assert!(wrapped_hit, "'E' should wrap to y=18");
+    }
+
+    #[test]
+    fn text_block_line_height_follows_the_tallest_cell() {
+        let mut g = Gdi::new();
+        let mut mem = crate::mem::GuestMem::new(0x1000);
+        // One ASCII cell then one wide (CJK-range) cell: line 1 finishes at
+        // the ASCII height (8), and the wrapped wide cell occupies 8..24.
+        let chars = [0x41u16, 0x4E00];
+        let (_, end_y) = g.op_text_block(&mut mem, &chars, 0, 0, 0x0000, Some(16));
+        assert_eq!(end_y, 24);
     }
 }

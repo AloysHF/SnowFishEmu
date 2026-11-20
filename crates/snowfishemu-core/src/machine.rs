@@ -420,10 +420,7 @@ impl SnowFishMachine {
     /// to the package. Each carries the resource pack the guest would
     /// otherwise download from the carrier endpoint; the packs are extracted
     /// here so the platform can serve the real bytes offline.
-    pub fn load(
-        container: Vec<u8>,
-        res_containers: &[Vec<u8>],
-    ) -> Result<Self, MachineError> {
+    pub fn load(container: Vec<u8>, res_containers: &[Vec<u8>]) -> Result<Self, MachineError> {
         // Static function-entry skips: SF_FSKIP="addr:r0;addr:r0" (hex).
         // When the guest PC reaches `addr` the call returns at once with
         // r0 = `val`. Used by the offline billing shim to report the SDK's
@@ -547,9 +544,11 @@ impl SnowFishMachine {
     /// publisher container declares, so the request is matched by name
     /// rather than by position.
     fn pack_for_request(&self, request: &str) -> Option<usize> {
-        self.res_packs
-            .iter()
-            .position(|pack| request.to_ascii_lowercase().contains(&pack.name.to_ascii_lowercase()))
+        self.res_packs.iter().position(|pack| {
+            request
+                .to_ascii_lowercase()
+                .contains(&pack.name.to_ascii_lowercase())
+        })
     }
 
     /// The resource packs the platform can serve, with the names the
@@ -1197,6 +1196,12 @@ impl SnowFishMachine {
                 let y = r(2) as i32;
                 let w = r(3) as i32;
                 let h = self.stack_arg(sp, adj, 1)? as i32;
+                // A full-screen commit is the guest's frame boundary: the
+                // label cursor is per-frame state (some titles commit with
+                // this slot instead of the flush slot).
+                if x == 0 && y == 0 && w == plat::FB_WIDTH as i32 && h == plat::FB_HEIGHT as i32 {
+                    self.gdi.reset_text_cursor();
+                }
                 if self.trace {
                     let stale = self.stack_arg(sp, adj, 2).unwrap_or(0);
                     debug!(
@@ -1209,6 +1214,14 @@ impl SnowFishMachine {
             0x154 => {
                 // text(obj, str u16le, x, y, font) — the font selector is
                 // ignored (single embedded font set).
+                //
+                // The anchor is the raw (x, y) — the reference reads r2/r3
+                // and only slides a label back below the bottom edge. The
+                // SDK's dialog renderer issues one call per line with the
+                // *same* origin and relies on the platform's label cursor:
+                // a call repeating the previous origin draws on the next
+                // row, so its four-line dialog bodies stack instead of
+                // overprinting.
                 let str_ptr = r(1);
                 let x = r(2) as i32;
                 let y = r(3) as i32;
@@ -1232,47 +1245,66 @@ impl SnowFishMachine {
                     }
                 }
                 let color = crate::gdi::rgb888_to_565(rgb24);
-                // Softkey labels are anchored to the surface edges: the
-                // right-hand one is placed at `width - 5` and the bottom row
-                // at `height + n`, i.e. one full cell past the last row. The
-                // platform slides such a label back inside the surface
+                // Labels anchored past the surface edges: the bottom softkey
+                // row sits at `height + n` and the right-hand label at
+                // `width - 5`. The platform slides such a label back inside
                 // instead of clipping it away, which is what makes the last
-                // row and the right-hand label readable.
+                // row and the right-hand label readable. A label wider than
+                // the surface keeps its origin (the run clips at the edge
+                // like the reference) unless the origin itself is past the
+                // edge.
                 let (tw, th) = crate::gdi::Gdi::text_extent(&chars);
-                let x = x - tw / 2;
-                let x = x.clamp(0, (plat::FB_WIDTH as i32 - tw).max(0));
+                let x = if x + tw > plat::FB_WIDTH as i32 {
+                    (plat::FB_WIDTH as i32 - tw).max(0)
+                } else {
+                    x
+                };
                 let y = if th > 0 && y + th > plat::FB_HEIGHT as i32 {
                     (plat::FB_HEIGHT as i32 - th).max(0)
                 } else {
                     y
                 };
+                // The label cursor: a repeated origin continues the block
+                // one row down; anything else restarts at its own origin.
+                let (dx, dy) = match self.gdi.text_cursor {
+                    Some((ox, oy, next_y)) if ox == x && oy == y => (x, next_y),
+                    _ => (x, y),
+                };
+                // One call advances the cursor by one row; the row height is
+                // the tallest cell in the label (8 ASCII / 16 wide).
+                self.gdi
+                    .op_text_block(&mut self.mem, &chars, dx, dy, color, None);
+                self.gdi.text_cursor = Some((x, y, dy + th.max(8)));
                 if self.trace {
                     let text: String = chars
                         .iter()
                         .take_while(|&&c| c != 0)
                         .filter_map(|&c| char::from_u32(c as u32))
                         .collect();
+                    let adj = self.sp_adjust(ret);
                     debug!(
-                        "[gdi]+0x{slot:X} text @{x},{y} c={color:#06x} len={} font={:#x} \"{text}\"",
+                        "[gdi]+0x{slot:X} text raw=({},{}) @{x},{y}->{dx},{dy} obj={:#010x} c={color:#06x} len={} font={:#x} \"{text}\"",
+                        r(2),
+                        r(3),
+                        r(0),
                         chars.len(),
-                        self.stack_arg(sp, self.sp_adjust(ret), 1).unwrap_or(0)
+                        self.stack_arg(sp, adj, 1).unwrap_or(0)
                     );
                 }
-                self.gdi.op_text(&mut self.mem, &chars, x, y, color);
             }
             0x14C => {
                 // textrun(obj, str u16le, first, count, x, y, flags) —
-                // the wrapped-line renderer behind every dialog body.
+                // the paragraph body renderer behind every dialog.
                 //
-                // The guest measures its own line breaks: it walks the
-                // UTF-16 string, accumulates the cell advance of each code
-                // point, and when the next cell would pass the right margin
-                // it calls this slot with the index of the first character
-                // of the finished line and that line's length.  `x`/`y` are
-                // the text origin the guest laid the block out at, so the
-                // run is a plain anchored write; without this slot the
-                // dialog chrome is painted but its body stays blank, which
-                // is what every trial title looked like before.
+                // The guest hands the platform a character range of the
+                // UTF-16 string together with the block origin it laid out.
+                // The range is frequently the whole paragraph (the intro
+                // screens scroll it by moving y between frames), so the
+                // firmware breaks the lines itself at the surface edge; the
+                // line height follows the same cell metrics the guest
+                // measures with (8 ASCII / 16 wide). Without the wrapping
+                // the body renders as one clipped line, which is what every
+                // intro and battle dialog looked like before.
                 let adj = self.sp_adjust(ret);
                 let str_ptr = r(1);
                 let first = r(2);
@@ -1295,9 +1327,17 @@ impl SnowFishMachine {
                         .iter()
                         .filter_map(|&c| char::from_u32(c as u32))
                         .collect();
-                    debug!("[gdi]+0x{slot:X} textrun @{x},{y} n={count} c={color:#06x} \"{text}\"");
+                    debug!(
+                        "[gdi]+0x{slot:X} textrun @{x},{y} n={count} s1={:#x} s2={:#x} s3={:#x} s4={:#x} c={color:#06x} \"{text}\"",
+                        self.stack_arg(sp, adj, 1).unwrap_or(0),
+                        self.stack_arg(sp, adj, 2).unwrap_or(0),
+                        self.stack_arg(sp, adj, 3).unwrap_or(0),
+                        self.stack_arg(sp, adj, 4).unwrap_or(0)
+                    );
                 }
-                self.gdi.op_text(&mut self.mem, &chars, x, y, color);
+                let right = plat::FB_WIDTH as i32;
+                self.gdi
+                    .op_text_block(&mut self.mem, &chars, x, y, color, Some(right));
             }
             0x198 => {
                 // draw(obj, bmp, w, h, _, dx, dy)
@@ -1368,6 +1408,9 @@ impl SnowFishMachine {
             }
             0x010 => {
                 self.gdi.op_flush(&self.mem);
+                // The label cursor is per-frame state: the next frame's
+                // dialog re-issues its first line at the block origin.
+                self.gdi.reset_text_cursor();
             }
             // +0x130/+0x140: the long-form fill variants for the dialog
             // chrome (r1 = x, r2 = y; the canvas color from the context).
@@ -1589,10 +1632,7 @@ impl SnowFishMachine {
         // starts empty and is filled in by the guest's own writes.
         let (backing, size) = match pack {
             Some(index) => (SlotBacking::Pack(index), self.res_packs[index].bytes.len()),
-            None if special => (
-                SlotBacking::Res,
-                self.res_containers[0].len(),
-            ),
+            None if special => (SlotBacking::Res, self.res_containers[0].len()),
             None => (SlotBacking::Memory, 0),
         };
         self.file_slots[idx] = FileSlot {
@@ -1610,7 +1650,11 @@ impl SnowFishMachine {
         debug!(
             "[plat] +0x58 fopen \"{path}\" flags={flags} -> h={} (size={size}{})",
             idx + 1,
-            if backing == SlotBacking::Res { " RES" } else { "" }
+            if backing == SlotBacking::Res {
+                " RES"
+            } else {
+                ""
+            }
         );
         Ok(idx as u32 + 1)
     }
@@ -1722,9 +1766,7 @@ impl SnowFishMachine {
             let src_off = self.file_slots[idx].offset;
             let backing = self.file_slots[idx].backing;
             let data: &[u8] = match backing {
-                SlotBacking::Pack(index) => {
-                    &self.res_packs[index].bytes[src_off..src_off + n]
-                }
+                SlotBacking::Pack(index) => &self.res_packs[index].bytes[src_off..src_off + n],
                 SlotBacking::Res => &self.res_containers[0][src_off..src_off + n],
                 _ => &self.container[src_off..src_off + n],
             };
