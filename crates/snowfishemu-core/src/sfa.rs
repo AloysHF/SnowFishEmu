@@ -171,7 +171,9 @@ impl ResourcePack {
 
     /// Finds the largest resource pack inside a parsed container.
     pub fn find_in(image: &SfaImage) -> Option<Self> {
-        Self::find_all_in(image).into_iter().max_by_key(|p| p.bytes.len())
+        Self::find_all_in(image)
+            .into_iter()
+            .max_by_key(|p| p.bytes.len())
     }
 
     /// Finds every resource pack inside a parsed container, largest first.

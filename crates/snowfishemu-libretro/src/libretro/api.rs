@@ -346,10 +346,7 @@ fn load_machine(path: &Path) -> anyhow::Result<(Vec<u8>, Vec<Vec<u8>>, SnowFishM
 }
 
 /// Builds a freshly booted machine from the kept package bytes.
-fn rebuild_machine(
-    container: &[u8],
-    res_data: &[Vec<u8>],
-) -> anyhow::Result<SnowFishMachine> {
+fn rebuild_machine(container: &[u8], res_data: &[Vec<u8>]) -> anyhow::Result<SnowFishMachine> {
     let mut machine = SnowFishMachine::load(container.to_vec(), res_data)
         .map_err(|error| anyhow::anyhow!("{error:#}"))?;
     machine
