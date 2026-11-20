@@ -2472,6 +2472,8 @@ mod tests {
     const WHITE: u32 = 0xFFF8_FCF8;
     /// RGB565 red (0xF800) as `frame_pixels` expands it.
     const RED: u32 = 0xFFF8_0000;
+    /// RGB565 blue (0x001F) as `frame_pixels` expands it.
+    const BLUE: u32 = 0xFF00_00F8;
 
     /// Builds a minimal .app whose "entry" immediately registers a handler
     /// (written to the args slot) and returns to the sentinel, then an
@@ -2649,6 +2651,38 @@ mod tests {
         assert_eq!(px[20 * 240 + 10], RED, "first pixel of the blit");
         assert_eq!(px[23 * 240 + 13], RED, "last pixel of the blit");
         assert_eq!(px[20 * 240 + 14], WHITE, "nothing past the bitmap");
+    }
+
+    /// A palette blit with key=0 must not key out index 0. The descriptor's
+    /// key field only carries a chroma index when the guest set one; keying
+    /// zero unconditionally erased the dominant palette colour — 宇宙风暴's
+    /// full-screen title bitmap is index 0 for the logo and the star field
+    /// with key=0, and the blit painted an all-black frame.
+    #[test]
+    fn palette_blit_keeps_index_zero_when_key_is_unset() {
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        let desc = HEAP_BASE;
+        let pal = HEAP_BASE + 0x40;
+        let data = HEAP_BASE + 0x100;
+        m.mem.write_u32(desc, 2).unwrap(); // sw
+        m.mem.write_u32(desc + 4, 2).unwrap(); // sh
+        m.mem.write_u32(desc + 8, 0).unwrap(); // key: none
+        m.mem.write_u32(desc + 12, pal).unwrap(); // palette pointer
+        m.mem.write_u32(desc + 16, data).unwrap(); // indices
+        m.mem.write_u16(pal, 0xF800).unwrap(); // index 0: red
+        m.mem.write_u16(pal + 2, 0x001F).unwrap(); // index 1: blue
+        // index 0 first (red), index 1 second (blue)
+        m.mem.write_u16(data, 0x0100).unwrap(); // bytes [0, 1]
+        m.mem.write_u16(data + 2, 0x0100).unwrap();
+        m.gdi.fill(&mut m.mem, 0, 0, 240, 320, 0xFFFF);
+        m.cpu.reg_set(0, HEAP_BASE + 0x300);
+        m.cpu.reg_set(1, desc);
+        m.cpu.reg_set(2, 0);
+        m.cpu.reg_set(3, 0);
+        m.exec_gdi(0x134, 0).unwrap();
+        let px = m.gdi.frame_pixels(&m.mem);
+        assert_eq!(px[0], RED, "index-0 pixel must draw when key=0");
+        assert_eq!(px[1], BLUE, "index-1 pixel draws its palette colour");
     }
 
     /// Dialog bodies are drawn by `+0x14C`, which carries a character range

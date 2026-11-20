@@ -264,7 +264,13 @@ impl Gdi {
             Vec::new()
         };
         if pal_mode {
+            // A zero key field means "no transparency": the descriptor's
+            // key only keys out an index when the guest set one. Keying
+            // index 0 unconditionally erased the dominant palette color —
+            // the star-field sky and the whole logo of 宇宙风暴 are index 0
+            // with key=0, and the blit painted black.
             let tr = (key & 0xFF) as u8;
+            let keyed = key != 0;
             for j in 0..h.min(sh) {
                 let dyy = j + dy;
                 if dyy < 0 || dyy >= FB_HEIGHT as i32 {
@@ -276,7 +282,7 @@ impl Gdi {
                         continue;
                     }
                     let idx = bmp[(j * sw + i) as usize];
-                    if idx == tr {
+                    if keyed && idx == tr {
                         continue;
                     }
                     let px = pal_cache.get(idx as usize).copied().unwrap_or(0);
