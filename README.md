@@ -87,21 +87,25 @@ Headless bring-up harness (used by the test tooling; per-frame
 framebuffer dumps for offline analysis):
 
 ```sh
-sfheadless <path/to/game.app> --frames 30 [--res <res.app>] [--dump-fb <dir>] [--keys 10 --keys 5] [--free-play] [--offline-http] [--no-app-pump] [--no-keys]
+sfheadless <path/to/game.app> --frames 30 [--res <res.app>] [--dump-fb <dir>] [--keys 10 --keys 5] [--press frame:key] [--free-play] [--offline-http] [--no-app-pump] [--no-keys]
 ```
 
 `--free-play` is the same switch as `SF_FREE_PLAY=1`; `--offline-http` is
-the same as `SF_OFFLINE_HTTP=1`. `--no-keys` skips the automatic bring-up
-key replay so an explicit `--keys` sequence is the only input.
+the same as `SF_OFFLINE_HTTP=1`. `--res` is repeatable — a title that
+ships two resource containers takes both, and a download request naming a
+pack is answered with that pack's own bytes. `--no-keys` skips the
+automatic bring-up key replay so an explicit `--keys` sequence is the
+only input. `--press frame:key` fires a single key at an exact frame,
+which is how the SDK's pay/session screens get walked deterministically.
 `--dump-mem addr:len:path` (hex) writes a guest memory range after the run.
 
 A purchase-free session that reaches a title's own play screen can be
-driven entirely headlessly (repeat `--keys 10` six times for the gobang
-board; a directional key then moves the cursor and `--keys 5` places a
-stone):
+driven entirely headlessly (six left-soft-key presses spread over the run
+reach the gobang board; a directional key then moves the cursor and OK
+places a stone — see docs/Game-Compatibility.md for each title's recipe):
 
 ```sh
-sfheadless <game.app> --frames 80 --no-keys --free-play --keys 10 --keys 10 --keys 10 --keys 10 --keys 10 --keys 10
+sfheadless <game.app> --frames 200 --no-keys --free-play --offline-http   --press 30:10 --press 60:10 --press 90:10 --press 120:10 --press 150:10 --press 180:10
 ```
 
 Package inspector:
