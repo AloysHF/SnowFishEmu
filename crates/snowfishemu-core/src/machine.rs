@@ -91,7 +91,9 @@ pub fn scan_wrappers(code: &[u8]) -> Vec<Wrapper> {
         // happen to precede a stublet are not mistaken for entries: a
         // false entry here intercepts a call with the wrong slot and
         // routes guest control flow into the heap.
-        if w >= 2 && (slot == 0x56C || slot == 0x570 || slot == 0xF0) {
+        if w >= 2
+            && (slot == 0x56C || slot == 0x570 || slot == 0xF0 || slot == 0x4C || slot == 0x500)
+        {
             let pro1 = rd(w * 4 - 8);
             let pro2 = rd(w * 4 - 4);
             let is_ldr_lit = pro1 & 0xFFFF_0000 == 0xE59F_0000;
@@ -726,6 +728,11 @@ impl SnowFishMachine {
                 w.ret
             });
         }
+        // The prologue entries of the non-responder slots carry ret == 0
+        // too: resume them at the caller's live lr instead of address 0.
+        if w.ret == 0 && matches!(w.slot, 0x4C | 0x500) {
+            return Some(self.cpu.reg_get(armv4t_emu::reg::LR));
+        }
         match w.slot {
             0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 | 0x524 | 0xAC | 0xE4 => {
                 Some(w.ret)
@@ -1009,7 +1016,11 @@ impl SnowFishMachine {
             // lets the pump's register step find the object.
             0x56C => {
                 if self.http.enabled {
-                    let body: Vec<u16> = "c".encode_utf16().chain([0]).collect();
+                    let body: Vec<u16> = std::env::var("SF_HTTP_BODY")
+                        .unwrap_or_else(|_| "c".to_string())
+                        .encode_utf16()
+                        .chain([0])
+                        .collect();
                     let mut bytes = Vec::with_capacity(body.len() * 2);
                     for u in body {
                         bytes.extend_from_slice(&u.to_le_bytes());
@@ -1219,6 +1230,28 @@ impl SnowFishMachine {
                     );
                     Some(handle)
                 }
+            }
+            0x500 => {
+                // timerStart(id, callback, context): record the registration
+                // so the frame loop delivers the callback. The prologue
+                // interception routes here (the run loop's own +0x500 branch
+                // only sees loader-address entries).
+                let (id, entry, ctx) = (r(0), r(1), r(2));
+                let (item_array, count_addr, target_addr) =
+                    GuestTimer::decode_tables(&self.mem, entry);
+                self.timers.retain(|t| t.id != id);
+                self.timers.push(GuestTimer {
+                    id,
+                    entry,
+                    ctx,
+                    item_array,
+                    count_addr,
+                    target_addr,
+                });
+                debug!(
+                    "[plat] timer registered id={id} cb={entry:#010x} ctx={ctx:#010x}                      items={item_array:#010x} count={count_addr:#010x} target={target_addr:#010x}"
+                );
+                Some(0)
             }
             0x12C | 0x130 | 0x134 | 0x140 | 0x14C | 0x154 | 0x158 | 0x180 | 0x198 | 0x194
             | 0x184 | 0x15C | 0x010 => {
