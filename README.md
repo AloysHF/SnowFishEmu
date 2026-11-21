@@ -90,8 +90,9 @@ to open Options and choose Start Game to reach the level selection menu.
 
 In the supported Universe Storm (宇宙风暴) QVGA build, press **Z** at the
 music prompt, then **Enter** at the title and again on **New Game**.
-Use the arrow keys to steer. The emulator loads embedded music and
-bitmaps directly from the package during play.
+Use the arrow keys to steer. The standalone window continues processing
+input and close requests while a loading screen is static. The emulator
+loads embedded music and bitmaps directly from the package during play.
 
 Optional resource file: place it next to the `.app` under the same stem
 with `Res`/`res` in the name (see the compatibility notes).

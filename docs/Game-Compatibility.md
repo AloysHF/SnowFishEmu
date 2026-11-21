@@ -93,7 +93,9 @@ reaches the first level and steers the ship right.
 sfheadless <game.app> --frames 132 --press 30:10 --press 60:5 --press 98:5 --press 130:6
 ```
 
-The desktop replay also works with `--free-play --offline-http`.
+The desktop replay also works with `--free-play --offline-http`. The
+standalone frontend keeps servicing window messages during static frames,
+including the first-level loading screen.
 
 Set `SF_UNIVERSE_STORM_APP` to the package path and run
 `cargo test -p snowfishemu-core --test universe_storm -- --ignored` to
