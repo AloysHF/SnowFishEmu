@@ -29,8 +29,8 @@ app-activate pump (selector 3) is on by default;
 | 胭脂戏游龙 (yzxyl) | **playable** | The 西门庆居 scene, the dialog box (与春梅对话) and the movement tutorial (使用8,2,4,6可以进行移动) |
 | 新星际撞球 (StarBall) | **playable** | The brick board, the ball and the paddle run; the top score strip draws the whole digit atlas instead of the score (cosmetic, see the known gaps) |
 | 新鬼吹灯 (Mengde pe) | **playable** | The full title screen; OK opens the story intro (scrolling, wrapped) and then the menu (新的游戏/继续游戏/帮助/退出) and the battle |
-| 黄金矿工 (hjkg) | renders + login form | The title screen and the main menu render; 开始游戏 walks the pay flow to the platform login form (欢迎登陆雪鲤鱼平台, 帐号/密码 fields, 登陆/取消) and the auth response arrives — the form reports 帐号或密码输入有误 because the offline response is the pay receipt, not an auth success record |
-| 宇宙风暴 (yzfb) | renders | The full title screen (宇宙风暴 logo, the earth, the astronaut) after the music prompt is answered; the SDK session that follows the game-start press paints nothing while it waits, so the gameplay stays behind the same pay/session wall |
+| 黄金矿工 (hjkg) | renders + login form | The title screen and the main menu render; with the offline receipt recipe (see below) 开始游戏 walks the pay flow through the login form (the fields fill, the submit fires) into the tariff-fetch wait. The wait ends when the SDK's own session file says a send is pending — the last undecoded layer |
+| 宇宙风暴 (yzfb) | renders | The full title screen (宇宙风暴 logo, the earth, the astronaut — the palette blit now draws index-0 art). The game menu behind it draws sprite handles that are still empty: the menu's own images load only after the pay/session flow advances |
 
 Every title now paints through the platform's UI timer: all ten arm
 `+0xAC` during create and drive their screens from the callback's
