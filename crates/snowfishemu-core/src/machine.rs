@@ -1764,7 +1764,11 @@ impl SnowFishMachine {
         // the default), so refusing them breaks account creation.
         let is_save_record = base_lower.ends_with(".sav")
             || (base_lower.ends_with(".dat") && base_lower != "game.dat");
-        if writable && !write_intent && !written && !dcsms_present && !netinfo_present
+        if writable
+            && !write_intent
+            && !written
+            && !dcsms_present
+            && !netinfo_present
             && is_save_record
         {
             let known = self.named_files.get(&path).is_some_and(|d| !d.is_empty());
@@ -2311,6 +2315,26 @@ impl SnowFishMachine {
             }
         }
         self.pump(budget)?;
+        // SF_FREE_SCREEN=1: suppress all guest writes to the screen
+        // variable so it stays at the SF_FORCE value. The render dispatch
+        // reads the variable and falls through to the game's own code when
+        // the value is >= 18, bypassing the SDK's pay-flow screens.
+        if std::env::var_os("SF_FREE_SCREEN").is_some() {
+            let addr = std::env::var("SF_SCAN_ADDR")
+                .ok()
+                .and_then(|a| u32::from_str_radix(&a, 16).ok())
+                .unwrap_or(0x131744);
+            // The screen variable AND the SDK's stage variable: the stage
+            // machine (0x10fcf8) dispatches on [0x1326E0] and its stages
+            // 99-109 render the SDK's notice/login/pay dialogs on top of
+            // the screen system. Suppressing both keeps the SDK's dialogs
+            // off and the screen at the SF_FORCE value.
+            // [0x1323B3] = the notice-dialog state cell ([0x131A08+0x9AB]):
+            // 0 = the non-dismissible notice, 1 = the dismissible notice.
+            // Suppressing the guest's write lets SF_FORCE set it to 1 so
+            // the LSK dismiss works.
+            self.mem.suppress = vec![addr, 0x1326E0, 0x1323B3];
+        }
         // SF_FORCE="addr:val;..." (hex): write guest words EVERY frame
         // before the tick — for variables the guest's own flow clears but
         // an experiment needs held at a value.
@@ -2327,12 +2351,18 @@ impl SnowFishMachine {
         }
         // Selector 3 is posted at the top of the frame (see above), so it
         // is pumped together with the key events of this frame.
+        if !self.mem.suppress.is_empty() {
+            self.mem.suppress_active = true;
+        }
         self.fire_ui_timers(budget)?;
         // The platform also delivers a bare frame tick. The corpus' own
         // pumps gate their selector-10 work on the message id the SDK
         // registered (3, or 1 for the older builds), so this call is what
         // the titles that read the tick directly use, not the main path.
         self.app_call(10, 0, budget)?;
+        if !self.mem.suppress.is_empty() {
+            self.mem.suppress_active = false;
+        }
         for t in self.timers.clone() {
             // The callback receives a platform-allocated result record: the
             // registration's context word is a guest-internal value (hjkg
