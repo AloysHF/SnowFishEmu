@@ -36,6 +36,12 @@ pub struct GuestMem {
     /// execution loop to attribute to the current instruction.
     pub watch: Vec<u32>,
     pub watch_hit: Option<u32>,
+    /// Suppressed guest addresses (`SF_FREE_SCREEN`): writes from the CPU
+    /// to these addresses are silently dropped while `suppress_active` is
+    /// set. The machine's own writes bypass the check through
+    /// `write_unsuppressed`.
+    pub suppress: Vec<u32>,
+    pub suppress_active: bool,
 }
 
 /// Rounds the image size up to a page with room for the 0x1000 reserved
@@ -74,6 +80,8 @@ impl GuestMem {
             regions,
             watch: Vec::new(),
             watch_hit: None,
+            suppress: Vec::new(),
+            suppress_active: false,
         }
     }
 
@@ -107,8 +115,24 @@ impl GuestMem {
     }
 
     /// Bulk write into guest memory.
+    /// Writes without checking the suppress list (the machine's own writes:
+    /// SF_FORCE, the platform hooks, the state serialisation).
+    pub fn write_unsuppressed(&mut self, addr: u32, data: &[u8]) -> Result<(), MemError> {
+        let region = self.region_mut(addr, data.len() as u32)?;
+        let off = (addr - region.base) as usize;
+        region.data[off..off + data.len()].copy_from_slice(data);
+        Ok(())
+    }
+
     pub fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), MemError> {
         let len = data.len() as u32;
+        if self.suppress_active && !self.suppress.is_empty() {
+            for &s in &self.suppress {
+                if addr <= s && s < addr + len {
+                    return Ok(());
+                }
+            }
+        }
         if !self.watch.is_empty() && self.watch_hit.is_none() {
             for &w in &self.watch {
                 if addr <= w && w < addr + len {
