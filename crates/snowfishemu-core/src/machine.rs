@@ -1135,7 +1135,7 @@ impl SnowFishMachine {
             }
             0x4C => {
                 let lr = self.cpu.reg_get(armv4t_emu::reg::LR);
-                debug!("[plat] +0x4C lr={lr:#010x}");
+                debug!("[plat] +0x4C lr={lr:#010x} ret={ret:#010x}");
                 // "Can this platform bill over the carrier channel?" — the
                 // SDK's pay service asks once at boot and every title gates
                 // its own state machine on the answer:
@@ -1170,6 +1170,7 @@ impl SnowFishMachine {
                         }
                     }
                 }
+                debug!("[plat] +0x4C result={:?} base={base:#x}", result);
                 Some(result.unwrap_or(base))
             }
             0x5C => Some(self.hook_fread(r(0), r(1), r(2))?),
@@ -1752,13 +1753,20 @@ impl SnowFishMachine {
         // instead of polling it forever. SF_NETINFO serves the raw bytes.
         let netinfo_present =
             basename(&path).starts_with("__sfnetinfo") && std::env::var_os("SF_NETINFO").is_some();
-        // A read of a guest-owned file the guest never wrote does not
-        // exist: on the handset the first boot probes save records that
-        // are simply not there, and the SDK's probe path expects the
-        // fopen to fail. Serving a fresh empty handle instead sent one
-        // SDK revision into a 1400-iteration halfword parse of nothing
-        // and then through a null pointer.
-        if writable && !write_intent && !written && !dcsms_present && !netinfo_present {
+        // A read of a save record the guest never wrote does not exist:
+        // on the handset the first boot probes save records that are
+        // simply not there, and the SDK's probe path expects the fopen to
+        // fail. Serving a fresh empty handle instead sent one SDK revision
+        // into a 1400-iteration halfword parse of nothing and then through
+        // a null pointer. The __-prefixed account records are exempt: the
+        // SDK's boot creates the default record through an empty-handle
+        // read (the probe reads 0 bytes → "load fail" → the SDK writes
+        // the default), so refusing them breaks account creation.
+        let is_save_record = base_lower.ends_with(".sav")
+            || (base_lower.ends_with(".dat") && base_lower != "game.dat");
+        if writable && !write_intent && !written && !dcsms_present && !netinfo_present
+            && is_save_record
+        {
             let known = self.named_files.get(&path).is_some_and(|d| !d.is_empty());
             if !known {
                 debug!("[plat] +0x58 fopen \"{path}\" flags={flags} -> 0 (no record yet)");
@@ -3222,22 +3230,23 @@ mod tests {
         m.cpu.reg_set(0, path_at);
         m.cpu.reg_set(1, 0);
         m.exec_slot(0x58, CODE_BASE).unwrap();
-        assert_eq!(
-            m.cpu.reg_get(0),
-            0,
-            "a record the guest never wrote reads as absent"
+        let handle = m.cpu.reg_get(0);
+        assert!(
+            handle != 0,
+            "free play serves the account record (the SDK creates the default through it)"
         );
 
-        // Write a record through a write-intent handle, close it, and read
-        // it back through a fresh read handle.
+        // Write a record through the handle, close it, and read it back
+        // through a fresh read handle.
         let payload_at = plat::ROOT_ADDR + 0x3100;
         let payload = [7u8, 0, 0, 0, 0xFC];
         m.mem.write(payload_at, &payload).unwrap();
-        m.cpu.reg_set(0, path_at);
-        m.cpu.reg_set(1, 5); // write intent creates the record
-        m.exec_slot(0x58, CODE_BASE).unwrap();
-        let handle = m.cpu.reg_get(0);
-        assert!(handle != 0, "free play serves the write-intent open");
+        m.cpu.reg_set(0, handle);
+        m.cpu.reg_set(1, payload_at);
+        m.cpu.reg_set(2, payload.len() as u32);
+        m.exec_slot(0x60, CODE_BASE).unwrap();
+        m.cpu.reg_set(0, handle);
+        m.exec_slot(0x68, CODE_BASE).unwrap();
         m.cpu.reg_set(0, handle);
         m.cpu.reg_set(1, payload_at);
         m.cpu.reg_set(2, payload.len() as u32);
