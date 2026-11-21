@@ -574,6 +574,22 @@ impl SnowFishMachine {
     /// answers and open its own play state.
     pub fn set_free_play(&mut self, on: bool) {
         self.free_play = on;
+        // The identity callable gains a real body: the SDK calls it with
+        // r0 = its ICCID buffer, so the entry copies the SIM serial into
+        // the buffer and returns 0. The method-table words beyond the
+        // stublet (offsets +0x48 and up) still point at the entry.
+        if on {
+            let image = crate::plat::iccid_stublet_image();
+            if image.len() <= crate::plat::SERVICE_CALLABLE_LEN as usize * 4 {
+                let _ = self.mem.write(crate::plat::SERVICE_CALLABLE_ADDR, &image);
+                for i in (image.len() / 4)..crate::plat::SERVICE_CALLABLE_LEN as usize {
+                    let _ = self.mem.write_u32(
+                        crate::plat::SERVICE_CALLABLE_ADDR + i as u32 * 4,
+                        crate::plat::SERVICE_CALLABLE_ADDR,
+                    );
+                }
+            }
+        }
     }
 
     /// Whether free-play provisioning is on.
@@ -1349,13 +1365,18 @@ impl SnowFishMachine {
                 let dy = self.stack_arg(sp, adj, 5)? as i32;
                 if self.trace {
                     debug!(
-                        "[gdi]+0x{slot:X} draw args r2={:#x} w={w} h={h} s3={:#x} s4={:#x} dx={dx} dy={dy}",
+                        "[gdi]+0x{slot:X} draw args bmp={:#x} r2={:#x} w={w} h={h} s3={:#x} s4={:#x} dx={dx} dy={dy}",
+                        bmp_ptr,
                         r(2),
                         self.stack_arg(sp, adj, 3).unwrap_or(0),
                         self.stack_arg(sp, adj, 4).unwrap_or(0)
                     );
                 }
-                self.draw_bitmap(slot, bmp_ptr, Some((w, h)), dx, dy)?;
+                // A zero clip means "the bitmap's own size": 宇宙风暴's menu
+                // items draw with w=h=0 and expect the descriptor to supply
+                // the extent, like the five-argument +0x134 form does.
+                let clip = if w > 0 && h > 0 { Some((w, h)) } else { None };
+                self.draw_bitmap(slot, bmp_ptr, clip, dx, dy)?;
             }
             0x134 => {
                 // blit(obj, bmp, x, y, flags) — the five-argument form of
@@ -1596,13 +1617,21 @@ impl SnowFishMachine {
         // left them parsing an empty buffer.
         let dcsms_present =
             basename(&path).starts_with("__dcsmsinfo") && std::env::var_os("SF_DCSMS").is_some();
+        // __sfnetinfo__ is the SDK's own local retry counter (it reads it
+        // before posting and rewrites it after an attempt). On a handset
+        // that has tried the connection before the record exists; serving
+        // it with a count high enough for the SDK's own give-up check is
+        // what lets a title whose carrier is long dead skip the wait
+        // instead of polling it forever. SF_NETINFO serves the raw bytes.
+        let netinfo_present =
+            basename(&path).starts_with("__sfnetinfo") && std::env::var_os("SF_NETINFO").is_some();
         // A read of a guest-owned file the guest never wrote does not
         // exist: on the handset the first boot probes save records that
         // are simply not there, and the SDK's probe path expects the
         // fopen to fail. Serving a fresh empty handle instead sent one
         // SDK revision into a 1400-iteration halfword parse of nothing
         // and then through a null pointer.
-        if writable && !write_intent && !written && !dcsms_present {
+        if writable && !write_intent && !written && !dcsms_present && !netinfo_present {
             let known = self.named_files.get(&path).is_some_and(|d| !d.is_empty());
             if !known {
                 debug!("[plat] +0x58 fopen \"{path}\" flags={flags} -> 0 (no record yet)");
@@ -1642,6 +1671,16 @@ impl SnowFishMachine {
                     debug!("[plat] injecting {} response bytes for {path}", bytes.len());
                     stored = bytes;
                     self.dcsms_injected.insert(path.clone());
+                }
+            }
+            if stored.is_empty() && basename(&path).starts_with("__sfnetinfo") && !write_intent {
+                if let Ok(hex) = std::env::var("SF_NETINFO") {
+                    let bytes: Vec<u8> = hex
+                        .split(',')
+                        .filter_map(|b| u8::from_str_radix(b, 16).ok())
+                        .collect();
+                    debug!("[plat] injecting {} netinfo bytes for {path}", bytes.len());
+                    stored = bytes;
                 }
             }
             let size = stored.len();
@@ -2982,27 +3021,43 @@ mod tests {
             plat::SERVICE_CALLABLE_ADDR,
             "the out-pointer must hold the dual-shape entry"
         );
-        // Shape A: `ldr pc, [entry]` must land on executable code.
+        // Shape A: `ldr pc, [entry]` must land on executable code — the
+        // ICCID stublet's first word (an ldr-literal, not the bare ret0).
         let first = m.mem.read_u32(entry).unwrap();
         assert_eq!(
             first,
-            u32::from_le_bytes(plat::STUB_RET0[..4].try_into().unwrap()),
-            "direct calls must reach the return-0 trampoline"
+            plat::ICCID_STUBLET[0],
+            "direct calls must reach the ICCID stublet"
         );
+        // Calling the entry fills the caller's buffer with the SIM serial
+        // and returns 0.
+        let buf = HEAP_BASE + 0x100;
+        m.cpu.reg_set(0, buf);
+        m.cpu.reg_set(armv4t_emu::reg::SP, STACK_TOP);
+        m.cpu.reg_set(armv4t_emu::reg::LR, STOP_ADDRESS);
+        m.cpu.reg_set(armv4t_emu::reg::PC, entry);
+        m.cpu.reg_set(armv4t_emu::reg::CPSR, 0x10);
+        m.run_until_return(100_000).unwrap();
+        assert_eq!(m.cpu.reg_get(0), 0, "the identity callable returns 0");
+        let mut iccid = [0u8; plat::SIM_ICCID.len() + 1];
+        m.mem.read(buf, &mut iccid).unwrap();
         assert_eq!(
-            m.mem.read_u32(entry + 4).unwrap(),
-            u32::from_le_bytes(plat::STUB_RET0[4..].try_into().unwrap()),
-            "the trampoline must actually return"
+            &iccid[..plat::SIM_ICCID.len()],
+            plat::SIM_ICCID.as_bytes(),
+            "the callable must write the SIM serial into r0"
         );
         // Shape B: `ldr pc, [entry + 0x50]` must resolve to that same code,
         // not to a literal word from the shared stub area. Handing out the
-        // bare STUB_ADDR fails here and aborts the whole boot event.
+        // bare STUB_ADDR fails here and aborts the whole boot event. This
+        // +0x50 load is the only virtual offset the SDK's second shape has
+        // been observed to take; the words below +0x34 are the ICCID
+        // stublet's own code now.
         assert_eq!(
             m.mem.read_u32(entry + 0x50).unwrap(),
             entry,
             "virtual calls must resolve to the callable trampoline"
         );
-        for off in [0x18u32, 0x3C, 0x54, 0x7C] {
+        for off in [0x54u32, 0x7C] {
             assert_eq!(
                 m.mem.read_u32(entry + off).unwrap(),
                 entry,

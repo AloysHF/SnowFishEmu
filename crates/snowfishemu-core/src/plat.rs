@@ -71,6 +71,55 @@ pub const SERVICE_CALLABLE_ADDR: u32 = SERVICE_VTABLE_ADDR + 0x100;
 /// up to +0x7C).
 pub const SERVICE_CALLABLE_LEN: u32 = 32;
 
+/// The ICCID the identity callable writes when the handset claims a SIM.
+///
+/// The SDK calls the +0x524 entry with r0 = its ICCID buffer and reads the
+/// subscriber identity back out of it; an empty buffer leaves every account
+/// record keyed on nothing and pushes the flow into registration. The
+/// string is a plausible 19-digit SIM serial.
+pub const SIM_ICCID: &str = "8986012345678901234";
+
+/// ARM stublet: copy the 20-byte ICCID string into r0 and return 0.
+///
+/// `ldr r1, [pc,#imm]` + four word copies + `mov r0,#0; bx lr`, followed by
+/// the string-pointer pool word and the string itself. 17 words total; the
+/// callable stublet has 32, so the method-table entries from word 18 on
+/// still point at the entry.
+pub const ICCID_STUBLET: [u32; 13] = [
+    0xE59F102C, // ldr r1, [pc, #0x2c]  -> pool word at +0x34
+    0xE5912000, // ldr r2, [r1]
+    0xE5802000, // str r2, [r0]
+    0xE5912004, // ldr r2, [r1, #4]
+    0xE5802004, // str r2, [r0, #4]
+    0xE5912008, // ldr r2, [r1, #8]
+    0xE5802008, // str r2, [r0, #8]
+    0xE591200C, // ldr r2, [r1, #0xc]
+    0xE580200C, // str r2, [r0, #0xc]
+    0xE5912010, // ldr r2, [r1, #0x10]
+    0xE5802010, // str r2, [r0, #0x10]
+    0xE3A00000, // mov r0, #0
+    0xE12FFF1E, // bx lr
+];
+
+/// Builds the ICCID stublet image: the code words, the string-pointer pool
+/// entry, and the string bytes (NUL-padded to a word boundary).
+pub fn iccid_stublet_image() -> Vec<u8> {
+    let mut v = Vec::new();
+    for word in ICCID_STUBLET {
+        v.extend_from_slice(&word.to_le_bytes());
+    }
+    // The ldr's pool word sits at entry+0x34 (pc = entry+8, imm 0x2c) and
+    // points at the string at entry+0x38.
+    let string_addr = SERVICE_CALLABLE_ADDR + 0x38;
+    v.extend_from_slice(&string_addr.to_le_bytes());
+    v.extend_from_slice(SIM_ICCID.as_bytes());
+    v.push(0); // NUL
+    while v.len() % 4 != 0 {
+        v.push(0);
+    }
+    v
+}
+
 /// Per-stub value trampolines: each returns a fixed constant in r0.
 pub const STUB_HEAP_BASE: u32 = STUB_ADDR + 0x08;
 pub const STUB_CODE_BASE: u32 = STUB_ADDR + 0x18;
