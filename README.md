@@ -70,8 +70,12 @@ cargo build --release
 Standalone (240x320 window, keyboard controls):
 
 ```sh
-snowfishemu <path/to/game.app>
+snowfishemu <path/to/game.app> [--free-play] [--offline-http] [--res <res.app>] [--scale N]
 ```
+
+`--free-play` and `--offline-http` are the same switches as sfheadless's
+(they turn on what `SF_FREE_PLAY=1` / `SF_OFFLINE_HTTP=1` turn on; those
+environment variables are honoured too).
 
 | Key | Phone control |
 |---|---|

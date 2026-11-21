@@ -27,6 +27,14 @@ struct Args {
     /// Repeat the option to serve more than one container.
     #[arg(long)]
     res: Vec<PathBuf>,
+    /// Answer the purchase service as a registered handset (the same
+    /// switch as sfheadless `--free-play` / `SF_FREE_PLAY=1`).
+    #[arg(long)]
+    free_play: bool,
+    /// Answer the SDK's HTTP transactions locally (the same switch as
+    /// sfheadless `--offline-http` / `SF_OFFLINE_HTTP=1`).
+    #[arg(long)]
+    offline_http: bool,
     /// Window scale factor (default: fit 240x320 into ~640x854).
     #[arg(long)]
     scale: Option<u32>,
@@ -45,6 +53,15 @@ fn main() -> Result<()> {
         res.push(std::fs::read(path).with_context(|| format!("read {}", path.display()))?);
     }
     let mut machine = SnowFishMachine::load(container, &res)?;
+    // The flags only ever turn the switches ON: `SF_FREE_PLAY` /
+    // `SF_OFFLINE_HTTP` are honoured by the core at load, and a flag adds
+    // the switch on top rather than overriding an env var back off.
+    if args.free_play {
+        machine.set_free_play(true);
+    }
+    if args.offline_http {
+        machine.set_offline_http(true);
+    }
     machine.boot(args.budget)?;
 
     let scale = args.scale.unwrap_or(2).max(1);
