@@ -84,6 +84,10 @@ environment variables are honoured too).
 | Z | Left soft key |
 | X | Right soft key |
 
+In the supported Gold Miner (黄金矿工) QVGA build, press **X** or
+**Enter** on the title screen to start the first level offline. Use **Z**
+to open Options and choose Start Game to reach the level selection menu.
+
 Optional resource file: place it next to the `.app` under the same stem
 with `Res`/`res` in the name (see the compatibility notes).
 
@@ -133,6 +137,8 @@ then load a `.app` as content.
   fingerprint (`SFEMSTAT` envelope), so states from other packages or
   older builds are rejected instead of restored.
 - Core options: CPU/HLE debug logging.
+- Gold Miner (黄金矿工): press the right soft key or OK to start the first
+  level from the title screen.
 - Resource file: the core serves the same optional sibling resource file
   as the standalone frontend (see above), resolved from the content path.
 - Note: on Windows, RetroArch's d3d11 driver has a first-present race

@@ -7,6 +7,7 @@
 //! - Display, input, file, and timer services
 //! - Framebuffer and runtime state management
 
+mod compat;
 pub mod consts;
 pub mod cpu;
 pub mod font;

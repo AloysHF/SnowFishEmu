@@ -346,6 +346,7 @@ pub struct SnowFishMachine {
     pub mem: GuestMem,
     pub cpu: ArmCpu,
     code_base: u32,
+    gold_miner_offline_start: bool,
     image_end: u32,
     wrappers: Vec<Wrapper>,
     handler: u32,
@@ -484,6 +485,10 @@ impl SnowFishMachine {
         let mut mem = GuestMem::new(image.header.image_size());
         let image_size = image.header.image_size();
         mem.write(CODE_BASE, &image.code)?;
+        let gold_miner_offline_start = crate::compat::is_gold_miner_qvga(&container);
+        if gold_miner_offline_start {
+            crate::compat::apply_gold_miner_offline_start(&mut mem)?;
+        }
         // SF_PATCH="addr:insn,addr:insn" (hex): overwrite guest code words
         // after load. Lets an experiment fix a call argument (e.g. the
         // stage value a builder call passes) without editing the binary.
@@ -545,6 +550,7 @@ impl SnowFishMachine {
             mem,
             cpu: ArmCpu::new(),
             code_base: CODE_BASE,
+            gold_miner_offline_start,
             image_end: CODE_BASE + image_size,
             wrappers,
             handler: 0,
@@ -2760,6 +2766,11 @@ impl SnowFishMachine {
         self.mem
             .copy_regions_from(&state.mem)
             .map_err(|_| crate::save::SaveStateError::ContentMismatch)?;
+        // Older snapshots include the guest instructions from before the fix.
+        if self.gold_miner_offline_start {
+            crate::compat::apply_gold_miner_offline_start(&mut self.mem)
+                .map_err(|_| crate::save::SaveStateError::ContentMismatch)?;
+        }
         self.cpu = state.cpu;
         self.handler = state.handler;
         self.file_slots = state.file_slots;

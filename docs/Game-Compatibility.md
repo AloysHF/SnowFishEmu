@@ -29,7 +29,7 @@ app-activate pump (selector 3) is on by default;
 | 胭脂戏游龙 (yzxyl) | **playable** | The 西门庆居 scene, the dialog box (与春梅对话) and the movement tutorial (使用8,2,4,6可以进行移动) |
 | 新星际撞球 (StarBall) | **playable** | The brick board, the ball and the paddle run; the top score strip draws the whole digit atlas instead of the score (cosmetic, see the known gaps) |
 | 新鬼吹灯 (Mengde pe) | **playable** | The full title screen; OK opens the story intro (scrolling, wrapped) and then the menu (新的游戏/继续游戏/帮助/退出) and the battle |
-| 黄金矿工 (hjkg) | renders + charge screen | The title screen and the main menu render. With the offline receipt recipe (see below) 开始游戏 walks the pay flow through the login form into the tariff wait, and with the send-record seed and the dispatch-phase seed the send driver runs and the flow reaches the SDK's 付费中 charge screen — the deepest offline run. The remaining wall: the SDK validates the platform's subscriber-identity record (an XOR-0xF5-encoded, comma-separated, checksummed 8-field string) and shows 无效的sim卡 when it does not parse |
+| 黄金矿工 (hjkg) | **playable** | Start on the title screen opens the first level directly. Options → Start Game opens the local New Game / Level Select menu |
 | 宇宙风暴 (yzfb) | renders | The full title screen (宇宙风暴 logo, the earth, the astronaut — the palette blit now draws index-0 art). The game menu behind it draws sprite handles that are still empty: the menu's own images load only after the pay/session flow advances, and the same session-file wall applies |
 
 Every title now paints through the platform's UI timer: all ten arm
@@ -58,60 +58,32 @@ intro, and further OK presses finish it into the menu. For 新星际撞球
 three presses over 500 frames suffice — its tariff wait dismisses
 itself and the game starts.
 
-### The hjkg charge screen
+### Gold Miner (黄金矿工)
 
-黄金矿工's menu 开始游戏 runs the paid-mode check, and with the offline
-receipt machinery the flow walks the login form into the tariff wait
-and then — with the send-record seed — the SDK's own 付费中 charge
-screen:
+SnowFishEmu identifies the supported SnowFish V2 QVGA package by its
+content fingerprint and applies the offline start fix in guest memory.
+The right soft key (**X**) or **Enter** on the title screen opens the
+first level directly. **Z** opens Options, where Start Game opens the
+local New Game / Level Select menu. The same behavior applies to the
+libretro core. Both paths work with the default launch settings.
 
 ```sh
-SF_FAKE_PAY=1 SF_4C="1084a0:1;1094bc:1;106fb0:1" \
-SF_DCSMS="ff,ff,ff,ef,ff,7c,ff,ff,ff,ff,ff,ff,ff,ff,ff,ff" \
-SF_NETINFO="ff,ff,ff,cf,ef" SF_SENDINFO="ff,ff,ff,b5" \
-SF_FSKIP="118fc4:1" SF_DCSMS_LOOP=1 \
-SF_FORCE="12f5a4:2;12f578:5;12f5ba:2" \
-sfheadless hjkg.app --frames 900 --free-play --offline-http --no-keys \
-  --press 40:10 --press 60:5 --press 200:10 --press 400:10
+sfheadless <game.app> --frames 90 --press 30:25 --press 65:5
 ```
 
-`SF_SENDINFO` seeds the send record (the encoded dword 164 — the ssu
-id). `SF_FORCE` seeds the dispatch phase cell (0x12F5A4 = 2, the gate
-that lets the per-tick dispatch reach the response machine), the queue
-head (0x12F578 = 5, the send/parse dispatch case) and the send-state
-byte (0x12F5BA = 2, what the receipt action's screen-advance block
-wants). `SF_FSKIP` returns the SDK's SMS send method (0x118FC4) as
-accepted — without it the send runs the full socket dance and the
-response parser walks the planted transaction's garbage body pointer.
-
-`SF_4C` per site: 0x1094bc is the paid-mode check inside CheckSms
-(returning 0 there means "free" and parks the title on the menu with
-the pay flow never starting — but the title's own OK path then fails
-the pay attempt on the next check); 0x1084a0 and 0x106fb0 keep the
-service present.
+The right soft key at frame 30 starts the first level. OK at frame 65
+releases the claw. Set `SF_GOLD_MINER_APP` to the package path and run
+`cargo test -p snowfishemu-core --test gold_miner -- --ignored` to verify
+both start paths.
 
 ## Known gaps
 
-- **The hjkg charge completion**: the flow reaches the 付费中 charge
-  screen and waits for the carrier reply. The reply path (the charge
-  POST's response parse) needs the planted async transaction to carry
-  a real body — the response grammar is decoded (sections with a
-  `b1*b2 == b0` check, the ssu dword, then a tag stream whose last tag
-  byte lands in the queue-head cell), but the transaction completion
-  plumbing that hands the body to the parser is not wired yet.
-- **The identity record** (hjkg): the SDK checksums an XOR-0xF5-encoded
-  comma-separated field list from the platform's identity service and
-  shows 无效的sim卡 when it does not parse. The encoder and the record
-  callable exist (SF_IDENTITY), but the parsed fields then feed the
-  SDK's encoded-stream parsers, so the record stays behind
-  SF_RECORD_LOOKUP until that path is understood.
 - **The yzfb session wall**: after the game-start press the SDK's pay
   callback re-registers itself every frame and nothing paints. Its
   address set (callback 0x112374, the pay-state/queue-head pools) needs
   the same per-title decode the older corpus notes describe.
-- **StarBall's score strip**: the HUD draws the whole 90x12 digit atlas
-  per score panel instead of a digit slice — the score reads as
-  `0123456789`. The game itself (board, ball, paddle) runs.
+- **StarBall and Gold Miner HUD digits**: the HUD can draw the entire
+  digit atlas (`0123456789`) where a single digit belongs.
 - **Ghosting behind sliding menus** (新鬼吹灯): menu items and softkey
   labels drawn while a widget animates leave earlier positions on the
   surface, because the bridge renders directly into the display instead
