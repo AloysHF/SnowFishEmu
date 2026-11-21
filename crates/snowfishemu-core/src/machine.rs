@@ -1028,16 +1028,20 @@ impl SnowFishMachine {
             // lets the pump's register step find the object.
             0x56C => {
                 if self.http.enabled {
-                    let body: Vec<u16> = std::env::var("SF_HTTP_BODY")
-                        .unwrap_or_else(|_| "c".to_string())
-                        .encode_utf16()
-                        .chain([0])
-                        .collect();
-                    let mut bytes = Vec::with_capacity(body.len() * 2);
-                    for u in body {
+                    let body = std::env::var("SF_HTTP_BODY").unwrap_or_else(|_| "c".to_string());
+                    let wide: Vec<u16> = body.encode_utf16().chain([0]).collect();
+                    let mut bytes = Vec::with_capacity(wide.len() * 2);
+                    for u in &wide {
                         bytes.extend_from_slice(&u.to_le_bytes());
                     }
                     let _ = self.mem.write(0x135018, &bytes);
+                    // 0x12CCE0 is the SDK's own notifier record: the file
+                    // shows text there, but the loader's relocations
+                    // overwrite it with the real method table at load, so
+                    // the plant must stay the image's own static. The
+                    // synthetic TX_* wrapper is for the socket-path
+                    // deliveries, where the consumer is the result parser
+                    // (see plat::TX_*).
                     let _ = self.mem.write_u32(0x1356E4, 0x135100);
                     let _ = self.mem.write_u32(0x135100, 0x12CCE0);
                     // Clear the SDK's network state cell: the POST setup

@@ -191,6 +191,32 @@ pub fn identity_record_image(record: &[u8]) -> Vec<u8> {
     v
 }
 
+/// Guest addresses of the synthetic HTTP transaction wrapper the +0x56C
+/// delivery plants for the SDK's response parser.
+///
+/// The SDK's result consumer dereferences the planted object as a wrapper
+/// (`obj->vtable[0xC](obj, &out)` hands back a data pointer whose word[0]
+/// is the HTTP status, word[0x10] the body length and word[0x14] the body
+/// pointer), so the old plant — a pointer at static image text — made the
+/// parser execute string bytes and walk a garbage body. The wrapper here
+/// has a real method table: vtable[0xC] is a stublet that stores
+/// `wrapper[4]` (the data block) into the caller's out slot, and
+/// vtable[4] is the shared passthrough (`bx lr`) the release paths call.
+pub const TX_DATA_ADDR: u32 = SERVICE_CALLABLE2_ADDR + 0x200;
+pub const TX_BODY_ADDR: u32 = TX_DATA_ADDR + 0x20;
+pub const TX_BODY_MAX: u32 = 0x400;
+pub const TX_WRAPPER_ADDR: u32 = TX_BODY_ADDR + TX_BODY_MAX;
+pub const TX_WRAPPER_VT_ADDR: u32 = TX_WRAPPER_ADDR + 0x20;
+pub const TX_GETTER_ADDR: u32 = TX_WRAPPER_VT_ADDR + 0x20;
+
+/// Words of the transaction wrapper's status getter:
+/// `*out = wrapper[4]` (the data block), then return.
+pub const TX_GETTER: [u32; 3] = [
+    0xE5900004, // ldr r0, [r0, #4]
+    0xE5810000, // str r0, [r1]
+    0xE12FFF1E, // bx lr
+];
+
 /// Per-stub value trampolines: each returns a fixed constant in r0.
 pub const STUB_HEAP_BASE: u32 = STUB_ADDR + 0x08;
 pub const STUB_CODE_BASE: u32 = STUB_ADDR + 0x18;
@@ -366,6 +392,35 @@ pub fn layout(mem: &mut crate::mem::GuestMem, code_base: u32, image_size: u32) {
     for i in 2..SERVICE_CALLABLE_LEN {
         w(mem, SERVICE_CALLABLE_ADDR + i * 4, SERVICE_CALLABLE_ADDR);
     }
+
+    // --- synthetic HTTP transaction wrapper (+0x56C delivery) -------------
+    // wrapper[0] = the method table, wrapper[4] = the data block; the
+    // table's [0xC] is the status getter, [4] the release passthrough.
+    // [data+0] = the HTTP status (200), [data+0x10] = the body length
+    // (the delivery hook updates it), [data+0x14] = the body pointer.
+    for i in 0..8 {
+        w(mem, TX_WRAPPER_VT_ADDR + i * 4, STUB_PASSTHROUGH_ADDR);
+    }
+    w(mem, TX_WRAPPER_VT_ADDR + 0xC, TX_GETTER_ADDR);
+    wb(
+        mem,
+        TX_GETTER_ADDR,
+        &TX_GETTER
+            .iter()
+            .copied()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<u8>>(),
+    );
+    w(mem, TX_WRAPPER_ADDR, TX_WRAPPER_VT_ADDR);
+    w(mem, TX_WRAPPER_ADDR + 4, TX_DATA_ADDR);
+    // The status stays non-2xx: the +0x56C slot's callers are the HTTP
+    // layer's cancel/reset calls, and a 2xx here sends the boot give-up
+    // handler into the success branch (the ssu account write) before the
+    // flow has its account objects. The release branch is what the old
+    // plant's garbage status produced, minus the garbage-pointer walk.
+    w(mem, TX_DATA_ADDR, 0);
+    w(mem, TX_DATA_ADDR + 0x10, 0);
+    w(mem, TX_DATA_ADDR + 0x14, TX_BODY_ADDR);
 
     // --- loader info block around the code image ---------------------------
     w(mem, code_base - 8, REG_ADDR);
