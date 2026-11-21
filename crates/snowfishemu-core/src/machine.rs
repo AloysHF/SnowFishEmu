@@ -1028,6 +1028,12 @@ impl SnowFishMachine {
                     let _ = self.mem.write(0x135018, &bytes);
                     let _ = self.mem.write_u32(0x1356E4, 0x135100);
                     let _ = self.mem.write_u32(0x135100, 0x12CCE0);
+                    // Clear the SDK's network state cell: the POST setup
+                    // stores -2 (the give-up pending). Clearing it to 0
+                    // lets the pay service init run (the init gates on the
+                    // state being 0 to initialise the callback registry),
+                    // which the pump's register step needs.
+                    let _ = self.mem.write_u32(0x130C9C, 0);
                     debug!("[plat] +0x56C r0={:#010x} -> response delivered", r(0));
                 }
                 Some(0)
@@ -1819,6 +1825,28 @@ impl SnowFishMachine {
                         .filter_map(|b| u8::from_str_radix(b, 16).ok())
                         .collect();
                     debug!("[plat] injecting {} netinfo bytes for {path}", bytes.len());
+                    stored = bytes;
+                }
+            }
+            // The send-record file (__sfsmspaysendinfo_) is what the SDK
+            // writes when the carrier accepts a send; the pay-flow dispatch
+            // polls its first decoded dword (>0 = a send is queued) before
+            // it runs the send driver. SF_SENDINFO seeds it the same way
+            // SF_NETINFO seeds the retry counter: re-armed on every empty
+            // open, so repeated read queries each see the record.
+            if stored.is_empty()
+                && basename(&path).starts_with("__sfsmspaysendinfo")
+                && !write_intent
+            {
+                if let Ok(hex) = std::env::var("SF_SENDINFO") {
+                    let bytes: Vec<u8> = hex
+                        .split(',')
+                        .filter_map(|b| u8::from_str_radix(b, 16).ok())
+                        .collect();
+                    debug!(
+                        "[plat] injecting {} send-record bytes for {path}",
+                        bytes.len()
+                    );
                     stored = bytes;
                 }
             }
