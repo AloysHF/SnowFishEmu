@@ -5,6 +5,7 @@
 //! natively here and resume at the wrapper epilogue, everything else
 //! executes through the planted root-table stubs unchanged.
 
+use crate::compat::{self, Compatibility};
 use crate::consts::{
     CODE_BASE, FRAME_MS, HEAP_BASE, STACK_TOP, STOP_ADDRESS, TIMER_JOB_ADDR, TIMER_JOB_SIZE,
 };
@@ -346,7 +347,7 @@ pub struct SnowFishMachine {
     pub mem: GuestMem,
     pub cpu: ArmCpu,
     code_base: u32,
-    gold_miner_offline_start: bool,
+    compatibility: Compatibility,
     image_end: u32,
     wrappers: Vec<Wrapper>,
     handler: u32,
@@ -485,9 +486,9 @@ impl SnowFishMachine {
         let mut mem = GuestMem::new(image.header.image_size());
         let image_size = image.header.image_size();
         mem.write(CODE_BASE, &image.code)?;
-        let gold_miner_offline_start = crate::compat::is_gold_miner_qvga(&container);
-        if gold_miner_offline_start {
-            crate::compat::apply_gold_miner_offline_start(&mut mem)?;
+        let compatibility = Compatibility::detect(&container);
+        if compatibility == Compatibility::GoldMiner {
+            compat::apply_gold_miner_offline_start(&mut mem)?;
         }
         // SF_PATCH="addr:insn,addr:insn" (hex): overwrite guest code words
         // after load. Lets an experiment fix a call argument (e.g. the
@@ -550,7 +551,7 @@ impl SnowFishMachine {
             mem,
             cpu: ArmCpu::new(),
             code_base: CODE_BASE,
-            gold_miner_offline_start,
+            compatibility,
             image_end: CODE_BASE + image_size,
             wrappers,
             handler: 0,
@@ -1521,27 +1522,18 @@ impl SnowFishMachine {
                     .op_text_block(&mut self.mem, &chars, x, y, color, Some(right));
             }
             0x198 => {
-                // draw(obj, bmp, w, h, _, dx, dy)
+                // draw(obj, bmp, sx, sy, w, h, _, dx, dy, _)
                 let adj = self.sp_adjust(ret);
                 let bmp_ptr = r(1);
+                let sx = r(2) as i32;
+                let sy = r(3) as i32;
                 let w = self.stack_arg(sp, adj, 1)? as i32;
                 let h = self.stack_arg(sp, adj, 2)? as i32;
                 let dx = self.stack_arg(sp, adj, 4)? as i32;
                 let dy = self.stack_arg(sp, adj, 5)? as i32;
-                if self.trace {
-                    debug!(
-                        "[gdi]+0x{slot:X} draw args bmp={:#x} r2={:#x} w={w} h={h} s3={:#x} s4={:#x} dx={dx} dy={dy}",
-                        bmp_ptr,
-                        r(2),
-                        self.stack_arg(sp, adj, 3).unwrap_or(0),
-                        self.stack_arg(sp, adj, 4).unwrap_or(0)
-                    );
-                }
-                // A zero clip means "the bitmap's own size": 宇宙风暴's menu
-                // items draw with w=h=0 and expect the descriptor to supply
-                // the extent, like the five-argument +0x134 form does.
+                // A zero clip uses the descriptor's bitmap size.
                 let clip = if w > 0 && h > 0 { Some((w, h)) } else { None };
-                self.draw_bitmap(slot, bmp_ptr, clip, dx, dy)?;
+                self.draw_bitmap(slot, bmp_ptr, (sx, sy), clip, (dx, dy))?;
             }
             0x134 => {
                 // blit(obj, bmp, x, y, flags) — the five-argument form of
@@ -1550,7 +1542,7 @@ impl SnowFishMachine {
                 let bmp_ptr = r(1);
                 let dx = r(2) as i32;
                 let dy = r(3) as i32;
-                self.draw_bitmap(slot, bmp_ptr, None, dx, dy)?;
+                self.draw_bitmap(slot, bmp_ptr, (0, 0), None, (dx, dy))?;
             }
             0x194 => {
                 self.gdi.op_bmp();
@@ -1640,9 +1632,9 @@ impl SnowFishMachine {
         &mut self,
         slot: u32,
         bmp_ptr: u32,
+        source: (i32, i32),
         clip: Option<(i32, i32)>,
-        dx: i32,
-        dy: i32,
+        target: (i32, i32),
     ) -> Result<(), MachineError> {
         if bmp_ptr <= 0x1000 {
             return Ok(());
@@ -1659,11 +1651,11 @@ impl SnowFishMachine {
         let (w, h) = clip.unwrap_or((sw, sh));
         if self.trace {
             debug!(
-                "[gdi]+0x{slot:X} blit obj={:#010x} bmp@{bmp_ptr:#x} sw={sw} sh={sh} key={key:#x} pal={pal:#x} data={data:#x} clip={w}x{h} @({dx},{dy})",
+                "[gdi]+0x{slot:X} blit obj={:#010x} bmp@{bmp_ptr:#x} sw={sw} sh={sh} key={key:#x} pal={pal:#x} data={data:#x} clip={w}x{h} from {source:?} to {target:?}",
                 self.cpu.reg_get(0)
             );
         }
-        if w <= 0 || h <= 0 || w > 0x400 || h > 0x400 {
+        if sw <= 0 || sh <= 0 || w <= 0 || h <= 0 || w > 0x400 || h > 0x400 {
             return Ok(());
         }
         let data = if data > 0x1000 && data <= 0x7F_FFFF {
@@ -1671,16 +1663,25 @@ impl SnowFishMachine {
         } else {
             self.mem.read_u32(bmp_ptr.wrapping_add(0x14))?
         };
-        let pal_mode = pal > 0x1000 && pal <= 0x7F_FFFF;
-        let nbytes = if pal_mode {
-            (sw * sh) as usize
-        } else {
-            (sw * sh * 2) as usize
-        };
-        if sw <= 0 || sh <= 0 || nbytes == 0 || nbytes > 0x80000 {
+        let palette = (0x1001..=0x7F_FFFF).contains(&pal).then_some(pal);
+        let bytes_per_pixel = if palette.is_some() { 1 } else { 2 };
+        let nbytes = i64::from(sw) * i64::from(sh) * bytes_per_pixel;
+        if nbytes > 0x80000 {
             return Ok(());
         }
-        let mut buf = vec![0u8; nbytes];
+        let key = if palette.is_some() {
+            // Universe Storm's palette loader emits an explicit index 0
+            // for transparent sprites and a sentinel for opaque bitmaps.
+            let keyed = match self.compatibility {
+                Compatibility::UniverseStorm => key <= u32::from(u8::MAX),
+                _ => key != 0,
+            };
+            keyed.then_some((key & 0xff) as u16)
+        } else {
+            let key = key as u16;
+            (key != 0 && key != u16::MAX).then_some(key)
+        };
+        let mut buf = vec![0u8; nbytes as usize];
         if self.mem.read(data, &mut buf).is_err() {
             return Ok(());
         }
@@ -1696,15 +1697,12 @@ impl SnowFishMachine {
         self.gdi.op_draw(
             &mut self.mem,
             &buf,
-            sw,
-            sh,
+            (sw, sh),
             key,
-            pal_mode,
-            w,
-            h,
-            dx,
-            dy,
-            pal,
+            palette,
+            source,
+            (w, h),
+            target,
         );
         Ok(())
     }
@@ -2110,15 +2108,30 @@ impl SnowFishMachine {
             return Ok(u32::MAX - 6); // -7 bad args
         }
         let cap = 0x100000usize;
-        let mut srcbuf = vec![0u8; src_len as usize];
-        self.mem.read(src, &mut srcbuf)?;
+        let embedded = if self.compatibility == Compatibility::UniverseStorm {
+            compat::universe_storm_lz_source(&self.container, src, src_len)
+        } else {
+            None
+        };
+        let mut guest_bytes;
+        let srcbuf = match embedded {
+            Some(bytes) => bytes,
+            None => {
+                guest_bytes = vec![0; src_len as usize];
+                self.mem.read(src, &mut guest_bytes)?;
+                &guest_bytes
+            }
+        };
         if std::env::var_os("SF_DUMP_BLOCK").is_some() {
             let name = format!("SF_DUMP_BLOCK_{src:08X}_{src_len}.bin");
-            let _ = std::fs::write(&name, &srcbuf);
+            let _ = std::fs::write(&name, srcbuf);
             info!("dumped {name}");
         }
-        match lz::decompress(&srcbuf, cap) {
-            Ok(data) => {
+        match lz::decompress(srcbuf, cap) {
+            Ok(mut data) => {
+                if self.compatibility == Compatibility::UniverseStorm {
+                    compat::repair_universe_storm_bitmap_block(src, &mut data);
+                }
                 let out_len = data.len();
                 self.mem.write(dst, &data)?;
                 if out > 0x1000 {
@@ -2128,7 +2141,11 @@ impl SnowFishMachine {
                 Ok(0)
             }
             Err(e) => {
-                warn!("[plat] +0x108 lz failed: {e}");
+                warn!(
+                    "[plat] +0x108 lz failed: {e} (frame={}, src={src:#010x}, len={src_len}, dst={dst:#010x}, lr={:#010x})",
+                    self.frame_count,
+                    self.cpu.reg_get(armv4t_emu::reg::LR),
+                );
                 if out > 0x1000 {
                     self.mem.write_u32(out, 0)?;
                 }
@@ -2767,8 +2784,8 @@ impl SnowFishMachine {
             .copy_regions_from(&state.mem)
             .map_err(|_| crate::save::SaveStateError::ContentMismatch)?;
         // Older snapshots include the guest instructions from before the fix.
-        if self.gold_miner_offline_start {
-            crate::compat::apply_gold_miner_offline_start(&mut self.mem)
+        if self.compatibility == Compatibility::GoldMiner {
+            compat::apply_gold_miner_offline_start(&mut self.mem)
                 .map_err(|_| crate::save::SaveStateError::ContentMismatch)?;
         }
         self.cpu = state.cpu;
@@ -2975,11 +2992,39 @@ mod tests {
         assert_eq!(px[20 * 240 + 14], WHITE, "nothing past the bitmap");
     }
 
-    /// A palette blit with key=0 must not key out index 0. The descriptor's
-    /// key field only carries a chroma index when the guest set one; keying
-    /// zero unconditionally erased the dominant palette colour — 宇宙风暴's
-    /// full-screen title bitmap is index 0 for the logo and the star field
-    /// with key=0, and the blit painted an all-black frame.
+    #[test]
+    fn draw_uses_the_bitmap_source_offsets() {
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        let desc = HEAP_BASE;
+        let data = HEAP_BASE + 0x100;
+        let sp = HEAP_BASE + 0x200;
+        m.mem.write_u32(desc, 3).unwrap();
+        m.mem.write_u32(desc + 4, 3).unwrap();
+        m.mem.write_u32(desc + 16, data).unwrap();
+        for (index, pixel) in [0u16, 0, 0, 0, 0, 0xf800, 0, 0, 0x001f]
+            .into_iter()
+            .enumerate()
+        {
+            m.mem.write_u16(data + index as u32 * 2, pixel).unwrap();
+        }
+        m.gdi.fill(&mut m.mem, 0, 0, 240, 320, 0xffff);
+        m.cpu.reg_set(1, desc);
+        m.cpu.reg_set(2, 1);
+        m.cpu.reg_set(3, 1);
+        m.cpu.reg_set(armv4t_emu::reg::SP, sp);
+        m.mem.write_u32(sp + 4, 2).unwrap(); // w
+        m.mem.write_u32(sp + 8, 2).unwrap(); // h
+        m.mem.write_u32(sp + 16, u32::MAX).unwrap(); // dx = -1
+        m.mem.write_u32(sp + 20, 0).unwrap(); // dy
+        m.exec_gdi(0x198, 0).unwrap();
+
+        let pixels = m.frame_pixels();
+        assert_eq!(pixels[0], RED);
+        assert_eq!(pixels[240], BLUE);
+        assert_eq!(pixels[1], WHITE, "destination clip ends at x=0");
+    }
+
+    /// Preserve the default interpretation of a zero palette key.
     #[test]
     fn palette_blit_keeps_index_zero_when_key_is_unset() {
         let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();

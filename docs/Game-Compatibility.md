@@ -30,7 +30,7 @@ app-activate pump (selector 3) is on by default;
 | 新星际撞球 (StarBall) | **playable** | The brick board, the ball and the paddle run; the top score strip draws the whole digit atlas instead of the score (cosmetic, see the known gaps) |
 | 新鬼吹灯 (Mengde pe) | **playable** | The full title screen; OK opens the story intro (scrolling, wrapped) and then the menu (新的游戏/继续游戏/帮助/退出) and the battle |
 | 黄金矿工 (hjkg) | **playable** | Start on the title screen opens the first level directly. Options → Start Game opens the local New Game / Level Select menu |
-| 宇宙风暴 (yzfb) | renders | The full title screen (宇宙风暴 logo, the earth, the astronaut — the palette blit now draws index-0 art). The game menu behind it draws sprite handles that are still empty: the menu's own images load only after the pay/session flow advances, and the same session-file wall applies |
+| 宇宙风暴 (yzfb) | **playable** | The music prompt, title, and main menu render. New Game enters the scrolling first level, and directional keys move the ship |
 
 Every title now paints through the platform's UI timer: all ten arm
 `+0xAC` during create and drive their screens from the callback's
@@ -76,12 +76,32 @@ releases the claw. Set `SF_GOLD_MINER_APP` to the package path and run
 `cargo test -p snowfishemu-core --test gold_miner -- --ignored` to verify
 both start paths.
 
+### Universe Storm (宇宙风暴)
+
+The supported SnowFish V2 QVGA package has two malformed bitmap headers.
+SnowFishEmu identifies the package by its content fingerprint and repairs
+those headers as their blocks are decompressed. It reads embedded music
+and bitmap blocks from the original package bytes. SDK state writes to
+overlapping guest addresses previously corrupted those blocks and could
+cause repeated LZ errors during the first-level load.
+
+The left soft key (**Z**) accepts the music prompt. **Enter** opens the
+main menu from the title and confirms **New Game**. The following replay
+reaches the first level and steers the ship right.
+
+```sh
+sfheadless <game.app> --frames 132 --press 30:10 --press 60:5 --press 98:5 --press 130:6
+```
+
+The desktop replay also works with `--free-play --offline-http`.
+
+Set `SF_UNIVERSE_STORM_APP` to the package path and run
+`cargo test -p snowfishemu-core --test universe_storm -- --ignored` to
+verify the menu, ship controls, and first-level loading after an
+overlapping SDK state write.
+
 ## Known gaps
 
-- **The yzfb session wall**: after the game-start press the SDK's pay
-  callback re-registers itself every frame and nothing paints. Its
-  address set (callback 0x112374, the pay-state/queue-head pools) needs
-  the same per-title decode the older corpus notes describe.
 - **StarBall and Gold Miner HUD digits**: the HUD can draw the entire
   digit atlas (`0123456789`) where a single digit belongs.
 - **Ghosting behind sliding menus** (新鬼吹灯): menu items and softkey

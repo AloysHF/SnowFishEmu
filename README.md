@@ -26,9 +26,9 @@ identifiers. Save states use the `SFEMSTAT` signature.
   logging, guest file I/O over the package container, and the LZ stream
   decompressor (bit-exact with the platform's decoder)
 - **GDI display bridge** — RGB565 framebuffer (240x320) with region
-  fills, palette/RGB bitmap blits with color-key transparency, CJK text
-  rendering, and the pen/colour state the titles drive through the
-  canvas object
+  fills, palette/RGB bitmap blits with source cropping and color-key
+  transparency, CJK text rendering, and the pen/colour state the titles
+  drive through the canvas object
 - **UI timer service** — the repeating arm/callback pair every title
   registers during create, pumped on a millisecond frame clock so the
   guest's own 60-120 ms screen pumps fire at their designed rates
@@ -87,6 +87,11 @@ environment variables are honoured too).
 In the supported Gold Miner (黄金矿工) QVGA build, press **X** or
 **Enter** on the title screen to start the first level offline. Use **Z**
 to open Options and choose Start Game to reach the level selection menu.
+
+In the supported Universe Storm (宇宙风暴) QVGA build, press **Z** at the
+music prompt, then **Enter** at the title and again on **New Game**.
+Use the arrow keys to steer. The emulator loads embedded music and
+bitmaps directly from the package during play.
 
 Optional resource file: place it next to the `.app` under the same stem
 with `Res`/`res` in the name (see the compatibility notes).

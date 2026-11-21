@@ -137,43 +137,6 @@ impl Gdi {
         self.dirty = true;
     }
 
-    /// Verbatim RGB565 surface copy with clipping.
-    #[allow(clippy::too_many_arguments)]
-    fn blit_rgb565(
-        &mut self,
-        mem: &mut crate::mem::GuestMem,
-        src: &[u16],
-        src_w: i32,
-        src_h: i32,
-        w: i32,
-        h: i32,
-        dx: i32,
-        dy: i32,
-    ) {
-        if w <= 0 || h <= 0 {
-            return;
-        }
-        for j in 0..h {
-            let dj = j + dy;
-            if dj < 0 || dj >= FB_HEIGHT as i32 {
-                continue;
-            }
-            for i in 0..w {
-                let di = i + dx;
-                if di < 0 || di >= FB_WIDTH as i32 {
-                    continue;
-                }
-                let u = i;
-                let v = j;
-                if u < 0 || u >= src_w || v < 0 || v >= src_h {
-                    continue;
-                }
-                self.set_px(mem, di, dj, src[(v * src_w + u) as usize]);
-            }
-        }
-        self.dirty = true;
-    }
-
     /// `+0x12C fill(obj, x, y, w, h, color)`.
     pub fn op_fill(
         &mut self,
@@ -235,85 +198,50 @@ impl Gdi {
         }
     }
 
-    /// `+0x198 draw(obj, bmp, w, h, _, dx, dy)` — palette or RGB565 blit
-    /// with color-key transparency. `read_u8`/`read_u16` fetch guest bytes;
-    /// failures skip pixels like the reference's per-pixel reads.
+    /// Blits a region from a palette or RGB565 bitmap with an optional key.
     #[allow(clippy::too_many_arguments)]
     pub fn op_draw(
         &mut self,
         mem: &mut crate::mem::GuestMem,
         bmp: &[u8],
-        sw: i32,
-        sh: i32,
-        key: u32,
-        pal_mode: bool,
-        w: i32,
-        h: i32,
-        dx: i32,
-        dy: i32,
-        pal_addr: u32,
+        (sw, sh): (i32, i32),
+        key: Option<u16>,
+        palette: Option<u32>,
+        (sx, sy): (i32, i32),
+        (w, h): (i32, i32),
+        (dx, dy): (i32, i32),
     ) {
         self.draw_count += 1;
         // Pre-read the palette (256 entries max) so pixel writes and palette
         // reads don't alias the same guest-memory borrow.
-        let pal_cache: Vec<u16> = if pal_mode {
-            (0..256u32)
-                .map(|i| mem.read_u16(pal_addr.wrapping_add(i * 2)).unwrap_or(0))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        if pal_mode {
-            // A zero key field means "no transparency": the descriptor's
-            // key only keys out an index when the guest set one. Keying
-            // index 0 unconditionally erased the dominant palette color —
-            // the star-field sky and the whole logo of 宇宙风暴 are index 0
-            // with key=0, and the blit painted black.
-            let tr = (key & 0xFF) as u8;
-            let keyed = key != 0;
-            for j in 0..h.min(sh) {
-                let dyy = j + dy;
-                if dyy < 0 || dyy >= FB_HEIGHT as i32 {
-                    continue;
+        let pal_cache: Option<[u16; 256]> = palette.map(|addr| {
+            std::array::from_fn(|i| mem.read_u16(addr.wrapping_add(i as u32 * 2)).unwrap_or(0))
+        });
+        let min_x = 0.max(sx.saturating_neg()).max(dx.saturating_neg());
+        let min_y = 0.max(sy.saturating_neg()).max(dy.saturating_neg());
+        let max_x = w
+            .min(sw.saturating_sub(sx))
+            .min((FB_WIDTH as i32).saturating_sub(dx));
+        let max_y = h
+            .min(sh.saturating_sub(sy))
+            .min((FB_HEIGHT as i32).saturating_sub(dy));
+        for j in min_y..max_y {
+            let row = (j + sy) as usize * sw as usize;
+            for i in min_x..max_x {
+                let offset = row + (i + sx) as usize;
+                let (value, pixel) = match &pal_cache {
+                    Some(colors) => {
+                        let index = bmp[offset] as usize;
+                        (index as u16, colors[index])
+                    }
+                    None => {
+                        let pixel = u16::from_le_bytes([bmp[offset * 2], bmp[offset * 2 + 1]]);
+                        (pixel, pixel)
+                    }
+                };
+                if key != Some(value) {
+                    self.point(mem, i + dx, j + dy, pixel);
                 }
-                for i in 0..w.min(sw) {
-                    let dxx = i + dx;
-                    if dxx < 0 || dxx >= FB_WIDTH as i32 {
-                        continue;
-                    }
-                    let idx = bmp[(j * sw + i) as usize];
-                    if keyed && idx == tr {
-                        continue;
-                    }
-                    let px = pal_cache.get(idx as usize).copied().unwrap_or(0);
-                    self.point(mem, dxx, dyy, px);
-                }
-            }
-        } else {
-            let tr = (key & 0xFFFF) as u16;
-            let src: Vec<u16> = (0..bmp.len() / 2)
-                .map(|i| u16::from_le_bytes([bmp[i * 2], bmp[i * 2 + 1]]))
-                .collect();
-            if tr != 0 && tr != 0xFFFF {
-                for j in 0..h.min(sh) {
-                    let dyy = j + dy;
-                    if dyy < 0 || dyy >= FB_HEIGHT as i32 {
-                        continue;
-                    }
-                    for i in 0..w.min(sw) {
-                        let dxx = i + dx;
-                        if dxx < 0 || dxx >= FB_WIDTH as i32 {
-                            continue;
-                        }
-                        let px = src[(j * sw + i) as usize];
-                        if px == tr {
-                            continue;
-                        }
-                        self.point(mem, dxx, dyy, px);
-                    }
-                }
-            } else {
-                self.blit_rgb565(mem, &src, sw, sh, w, h, dx, dy);
             }
         }
     }

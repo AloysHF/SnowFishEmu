@@ -110,7 +110,7 @@ executes through the root-table stubs unchanged.
 | `+0x180` | GDI set-color(obj, rgb888) |
 | `+0x184` | GDI clear / pen color |
 | `+0x194` | GDI bitmap register |
-| `+0x198` | GDI draw(obj, bmp, w, h, _, dx, dy) |
+| `+0x198` | GDI draw(obj, bmp, sx, sy, w, h, _, dx, dy, _) |
 | `+0x4C` | Carrier-billing capability query (1 = phone can bill) |
 | `+0x500` | Timer start (id, callback, context) |
 | `+0x524` | Service lookup (see below) |
@@ -278,8 +278,9 @@ Two optional platform facilities close that loop:
   completed. It is on by default and can be turned off with
   `SF_NO_APP_PUMP=1`, `--no-app-pump` or `set_app_pump(false)`.
 
-`+0x134` and `+0x198` consume the same bitmap descriptor; `+0x198` adds
-an explicit clip window, `+0x134` draws the bitmap at its own size.
+`+0x134` and `+0x198` consume the same bitmap descriptor. `+0x198` takes
+the source origin `(sx, sy)` in r2/r3 and the crop dimensions `(w, h)`
+on the stack. `+0x134` draws the bitmap at its own size.
 
 `+0x0AC` returns a handle and arms a repeating callback. The callback is
 a trampoline that treats r0 as the SDK's delayed-message record
@@ -295,14 +296,21 @@ Draw calls take a descriptor at r1:
 |---|---|---|
 | 0x00 | 4 | Source width (`sw`) |
 | 0x04 | 4 | Source height (`sh`) |
-| 0x08 | 4 | Color key (255 = opaque) |
+| 0x08 | 4 | Color key or opaque sentinel |
 | 0x0C | 4 | Palette pointer (a pointer selects palette mode) |
 | 0x10 | 4 | Pixel data pointer (fallback: `*(desc+0x14)`) |
 
 Palette mode stores one byte per pixel indexing a 256-entry RGB565
-palette; direct mode stores RGB565 words.
+palette. Direct mode stores RGB565 words. Universe Storm's palette
+descriptors use index 0 as a valid color key and `0x7fffffff` for an
+opaque bitmap.
 
 ## LZ stream format
+
+The LZ service reads ordinary inputs from guest memory. For the supported
+Universe Storm package, it reads the embedded, unrelocated music and
+bitmap archives from the original package bytes. Guest memory remains the
+destination for decompressed data.
 
 The platform decompression service takes a stream with a literal-run
 backbone and five match encodings. The decoder is a two-state machine:
