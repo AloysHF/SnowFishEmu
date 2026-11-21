@@ -29,8 +29,8 @@ app-activate pump (selector 3) is on by default;
 | 胭脂戏游龙 (yzxyl) | **playable** | The 西门庆居 scene, the dialog box (与春梅对话) and the movement tutorial (使用8,2,4,6可以进行移动) |
 | 新星际撞球 (StarBall) | **playable** | The brick board, the ball and the paddle run; the top score strip draws the whole digit atlas instead of the score (cosmetic, see the known gaps) |
 | 新鬼吹灯 (Mengde pe) | **playable** | The full title screen; OK opens the story intro (scrolling, wrapped) and then the menu (新的游戏/继续游戏/帮助/退出) and the battle |
-| 黄金矿工 (hjkg) | renders + login form | The title screen and the main menu render; with the offline receipt recipe (see below) 开始游戏 walks the pay flow through the login form (the fields fill, the submit fires) into the tariff-fetch wait. The wait ends when the SDK's own session file says a send is pending — the last undecoded layer |
-| 宇宙风暴 (yzfb) | renders | The full title screen (宇宙风暴 logo, the earth, the astronaut — the palette blit now draws index-0 art). The game menu behind it draws sprite handles that are still empty: the menu's own images load only after the pay/session flow advances |
+| 黄金矿工 (hjkg) | renders + login form | The title screen and the main menu render; with the offline receipt recipe (see below) 开始游戏 walks the pay flow through the login form (the fields fill, the submit fires) into the tariff-fetch wait. The give-up POST, the transaction pump, the async HTTP delivery (+0x56C) and the notifier registration all run; the wall is the SDK's own screen walk (the pay tick runs at screen 14), driven by the send-task queueing the failed POST does not reach |
+| 宇宙风暴 (yzfb) | renders | The full title screen (宇宙风暴 logo, the earth, the astronaut — the palette blit now draws index-0 art). The game menu behind it draws sprite handles that are still empty: the menu's own images load only after the pay/session flow advances, and the same session-file wall applies |
 
 Every title now paints through the platform's UI timer: all ten arm
 `+0xAC` during create and drive their screens from the callback's
