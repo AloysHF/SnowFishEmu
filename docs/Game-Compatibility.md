@@ -58,34 +58,53 @@ intro, and further OK presses finish it into the menu. For 新星际撞球
 three presses over 500 frames suffice — its tariff wait dismisses
 itself and the game starts.
 
-### The hjkg login form
+### The hjkg charge screen
 
 黄金矿工's menu 开始游戏 runs the paid-mode check, and with the offline
-receipt machinery the flow walks into the SDK's own login screen:
+receipt machinery the flow walks the login form into the tariff wait
+and then — with the send-record seed — the SDK's own 付费中 charge
+screen:
 
 ```sh
-SF_FAKE_PAY=1 SF_4C="*:1" SF_FSKIP="118fc4:1" SF_DCSMS_LOOP=1 \
+SF_FAKE_PAY=1 SF_4C="1084a0:1;1094bc:1;106fb0:1" \
 SF_DCSMS="ff,ff,ff,ef,ff,7c,ff,ff,ff,ff,ff,ff,ff,ff,ff,ff" \
-SF_FORCE="12f578:5;12f5b4:1;131754:5;1317e4:38;12f5f0:1;12cf84:0" \
-sfheadless hjkg.app --frames 500 --free-play --offline-http --no-keys \
-  --press 40:10 --press 60:5 --press 100:10
+SF_NETINFO="ff,ff,ff,cf,ef" SF_SENDINFO="ff,ff,ff,b5" \
+SF_FSKIP="118fc4:1" SF_DCSMS_LOOP=1 \
+SF_FORCE="12f5a4:2;12f578:5;12f5ba:2" \
+sfheadless hjkg.app --frames 900 --free-play --offline-http --no-keys \
+  --press 40:10 --press 60:5 --press 200:10 --press 400:10
 ```
 
-`SF_DCSMS` is the encoded response record (nibble-swap + invert of the
-plaintext `[BE dword len][len x BE halfwords] "8"` record — the encode
-is self-inverse). `SF_FORCE` seeds the queue head (5 = the pay-flow
-message type), the builder stage flag, the pay state, and the send
-pattern table that the callback's match loops consume. The form reports
-帐号或密码输入有误 because the injected record is the *pay* receipt; the
-platform-auth success record is a separate format that has not been
-decoded.
+`SF_SENDINFO` seeds the send record (the encoded dword 164 — the ssu
+id). `SF_FORCE` seeds the dispatch phase cell (0x12F5A4 = 2, the gate
+that lets the per-tick dispatch reach the response machine), the queue
+head (0x12F578 = 5, the send/parse dispatch case) and the send-state
+byte (0x12F5BA = 2, what the receipt action's screen-advance block
+wants). `SF_FSKIP` returns the SDK's SMS send method (0x118FC4) as
+accepted — without it the send runs the full socket dance and the
+response parser walks the planted transaction's garbage body pointer.
+
+`SF_4C` per site: 0x1094bc is the paid-mode check inside CheckSms
+(returning 0 there means "free" and parks the title on the menu with
+the pay flow never starting — but the title's own OK path then fails
+the pay attempt on the next check); 0x1084a0 and 0x106fb0 keep the
+service present.
 
 ## Known gaps
 
-- **The platform-auth record** (hjkg): the login form submits and the
-  SDK parses a response, but the offline response is the pay receipt.
-  Decoding the auth success record is the remaining step before the
-  game loop opens.
+- **The hjkg charge completion**: the flow reaches the 付费中 charge
+  screen and waits for the carrier reply. The reply path (the charge
+  POST's response parse) needs the planted async transaction to carry
+  a real body — the response grammar is decoded (sections with a
+  `b1*b2 == b0` check, the ssu dword, then a tag stream whose last tag
+  byte lands in the queue-head cell), but the transaction completion
+  plumbing that hands the body to the parser is not wired yet.
+- **The identity record** (hjkg): the SDK checksums an XOR-0xF5-encoded
+  comma-separated field list from the platform's identity service and
+  shows 无效的sim卡 when it does not parse. The encoder and the record
+  callable exist (SF_IDENTITY), but the parsed fields then feed the
+  SDK's encoded-stream parsers, so the record stays behind
+  SF_RECORD_LOOKUP until that path is understood.
 - **The yzfb session wall**: after the game-start press the SDK's pay
   callback re-registers itself every frame and nothing paints. Its
   address set (callback 0x112374, the pay-state/queue-head pools) needs
@@ -141,5 +160,14 @@ framebuffer at `540720:25800` (raw RGB565).
 - `SF_DCSMS="hex,hex,..."` — the encoded response record injected into
   the `__dcsmsinfo_` inbox
 - `SF_DCSMS_LOOP=1` — re-arm the inbox injection on every empty open
+- `SF_SENDINFO="hex,hex,..."` — the encoded send-record seeded into
+  `__sfsmspaysendinfo_` (re-armed on every empty open); its first
+  decoded dword (>0) is what makes the pay dispatch run the send
+  driver
+- `SF_IDENTITY="f1,f2,..."` — the plain subscriber-identity field
+  list; the core XOR-0xF5-encodes it with the trailing checksum and
+  installs the record callable. Experimental: also needs
+  `SF_RECORD_LOOKUP=1`, because the SDK's record parse feeds plain
+  text into its encoded-stream parsers
 - `SF_TRACE` — log every platform slot and GDI operation
 - `SF_FRAME_DUMP` (libretro test) — dump the core's presented frame
