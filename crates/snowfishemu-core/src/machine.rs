@@ -83,6 +83,45 @@ pub fn scan_wrappers(code: &[u8]) -> Vec<Wrapper> {
         let hook = CODE_BASE + (w * 4) as u32;
         let ret = hook + 0xC;
         out.push(Wrapper { slot, hook, ret });
+        // Some call sites jump to the stublet's prologue — a two-word
+        // `ldr rD,[pc,#imm]; str lr,[sp,#-4]` header that loads the same
+        // service-base pointer the loader tail uses. Record the header
+        // entry only when its literal pool lands on the loader's own pool
+        // word (the same service base), so unrelated ldr/str pairs that
+        // happen to precede a stublet are not mistaken for entries: a
+        // false entry here intercepts a call with the wrong slot and
+        // routes guest control flow into the heap.
+        if w >= 2 && (slot == 0x56C || slot == 0x570 || slot == 0xF0) {
+            let pro1 = rd(w * 4 - 8);
+            let pro2 = rd(w * 4 - 4);
+            let is_ldr_lit = pro1 & 0xFFFF_0000 == 0xE59F_0000;
+            if is_ldr_lit && pro2 == 0xE52D_E004 {
+                // The prologue loads the SDK's shared service-base cell —
+                // its literal pool word holds a small data-segment offset
+                // (the relocated value is the base cell every stublet
+                // reads). An unrelated ldr/str pair points its pool at a
+                // code address instead, so the size check separates them.
+                let pro_imm = pro1 & 0xFFF;
+                let pro_pool = ((hook - 8) + 8 + pro_imm) & !2u32;
+                let pool_word_off = pro_pool - CODE_BASE;
+                let pool_word = rd(pool_word_off as usize);
+                // The image may already be relocated when the scan runs: the
+                // base-cell word is then the relocated pointer (inside the
+                // code segment) instead of the small file offset.
+                let small = pool_word < 0x40000;
+                let relocated = (CODE_BASE..CODE_BASE + 0x40000).contains(&pool_word);
+                if small || relocated {
+                    // The interception happens before the prologue's own
+                    // return save runs, so the resume address is the
+                    // caller's live lr (ret = 0 marks that).
+                    out.push(Wrapper {
+                        slot,
+                        hook: CODE_BASE + (w * 4 - 8) as u32,
+                        ret: 0,
+                    });
+                }
+            }
+        }
     }
     out
 }
@@ -331,7 +370,7 @@ pub struct SnowFishMachine {
     // to report the SDK's SMS send as accepted.
     fn_skips: Vec<(u32, u32)>,
     gdi: Gdi,
-    timer: Option<GuestTimer>,
+    timers: Vec<GuestTimer>,
     ui_timers: Vec<UiTimer>,
     ui_clock_ms: u64,
     /// Persistent contents of the guest-writable service files (the SMS
@@ -520,7 +559,7 @@ impl SnowFishMachine {
             dcsms_injected: std::collections::HashSet::new(),
             fn_skips,
             gdi: Gdi::new(),
-            timer: None,
+            timers: Vec::new(),
             ui_timers: Vec::new(),
             ui_clock_ms: 0,
             named_files: std::collections::HashMap::new(),
@@ -666,10 +705,26 @@ impl SnowFishMachine {
         if self.http.enabled
             && matches!(
                 w.slot,
-                0xC8 | 0xCC | 0xD4 | 0xD8 | 0xDC | 0xE0 | 0xE8 | 0xEC | 0xF0 | 0x568 | 0x570
+                0xC8 | 0xCC
+                    | 0xD4
+                    | 0xD8
+                    | 0xDC
+                    | 0xE0
+                    | 0xE8
+                    | 0xEC
+                    | 0xF0
+                    | 0x56C
+                    | 0x568
+                    | 0x570
             )
         {
-            return Some(w.ret);
+            // The prologue entries (ret == 0) intercept before the stublet
+            // saved the return address: resume at the caller's live lr.
+            return Some(if w.ret == 0 {
+                self.cpu.reg_get(armv4t_emu::reg::LR)
+            } else {
+                w.ret
+            });
         }
         match w.slot {
             0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 | 0x524 | 0xAC | 0xE4 => {
@@ -763,7 +818,12 @@ impl SnowFishMachine {
                     );
                     let (item_array, count_addr, target_addr) =
                         GuestTimer::decode_tables(&self.mem, entry);
-                    self.timer = Some(GuestTimer {
+                    // Multiple concurrent timers: the SDK arms its pay
+                    // callback and the HTTP retry loop at the same time,
+                    // and both must be delivered per frame. A re-registration
+                    // of the same id replaces that timer.
+                    self.timers.retain(|t| t.id != id);
+                    self.timers.push(GuestTimer {
                         id,
                         entry,
                         ctx,
@@ -935,6 +995,31 @@ impl SnowFishMachine {
                     .unwrap_or(0);
                 debug!("[plat] +0xEC lookup h={:#x} -> {obj:#010x}", r(0));
                 Some(obj)
+            }
+            // +0x56C advances the SDK's async HTTP state machine. The SDK
+            // drives the retry timers and the completion callbacks itself;
+            // the platform's part is delivering the response body into the
+            // response cell (0x135018, UTF-16). The completion body is the
+            // one-character status code the SDK's own parser matches (its
+            // grammar lives in the guest image); the offline transaction
+            // completes with the parser's charge-complete code so the flow
+            // takes the same path a carrier acknowledgement would. The
+            // notifier is the SDK's static object (its constructor stores
+            // these two cells when the handle is missing) — planting it
+            // lets the pump's register step find the object.
+            0x56C => {
+                if self.http.enabled {
+                    let body: Vec<u16> = "c".encode_utf16().chain([0]).collect();
+                    let mut bytes = Vec::with_capacity(body.len() * 2);
+                    for u in body {
+                        bytes.extend_from_slice(&u.to_le_bytes());
+                    }
+                    let _ = self.mem.write(0x135018, &bytes);
+                    let _ = self.mem.write_u32(0x1356E4, 0x135100);
+                    let _ = self.mem.write_u32(0x135100, 0x12CCE0);
+                    debug!("[plat] +0x56C r0={:#010x} -> response delivered", r(0));
+                }
+                Some(0)
             }
             // +0x570 receives a three-word async request descriptor:
             // [status (-1 pending), callback, context]. A real platform's
@@ -1599,7 +1684,16 @@ impl SnowFishMachine {
         // package, writes it out and then re-opens it to check the size;
         // if the write is dropped the file it reads back is the wrong one
         // and the size check fails.
-        let write_intent = flags & 1 != 0;
+        //
+        // The SDK's flag bit 2 (value 4) marks a writing open — the corpus
+        // writes through `fopen(name, 5)` and reads through `fopen(name,
+        // 0/1/2)`. Treating bit 0 as the write bit served every flags=1
+        // read as a fresh empty handle, which starved the response-inbox
+        // query (0x106efc reads the inbox with flags=1 and returns its
+        // first dword): the query could never see the injected record and
+        // the whole pay flow idled waiting for a response that was in the
+        // file all along.
+        let write_intent = flags & 4 != 0;
         // A file the guest already wrote is served back from memory, not
         // from the container: the guest re-opens the resource package it
         // just downloaded to check its size, and the container bytes would
@@ -2198,7 +2292,7 @@ impl SnowFishMachine {
         // registered (3, or 1 for the older builds), so this call is what
         // the titles that read the tick directly use, not the main path.
         self.app_call(10, 0, budget)?;
-        if let Some(t) = self.timer {
+        for t in self.timers.clone() {
             // The callback receives a platform-allocated result record: the
             // registration's context word is a guest-internal value (hjkg
             // passes the just-read flag byte, i.e. zero), while the callback
@@ -2218,7 +2312,7 @@ impl SnowFishMachine {
                 const RECEIPT: &str = "8";
                 let mut text: Vec<u8> = RECEIPT.as_bytes().to_vec();
                 text.push(0);
-                let t = self.timer.expect("timer captured before delivery");
+                let t = &t;
                 if t.item_array != 0 && t.count_addr != 0 {
                     let mut item = [0u8; 0x20];
                     item[..text.len().min(0x20)].copy_from_slice(&text);
@@ -2307,7 +2401,6 @@ impl SnowFishMachine {
             }
             self.mem.write(TIMER_JOB_ADDR, &job)?;
             if std::env::var_os("SF_PAY_WATCH").is_some() {
-                let t = self.timer.expect("timer captured before delivery");
                 let count = self.mem.read_u8(t.count_addr).unwrap_or(0xFF);
                 let mut tgt = [0u8; 64];
                 let _ = self.mem.read(t.target_addr, &mut tgt);
@@ -2510,7 +2603,7 @@ impl SnowFishMachine {
             last_pc: self.last_pc,
             branch_log: self.branch_log.clone(),
             gdi: self.gdi.clone(),
-            timer: self.timer,
+            timers: self.timers.clone(),
         };
         // Encoding a well-formed snapshot cannot fail; surface any codec
         // fault loudly rather than returning a corrupt state.
@@ -2537,7 +2630,7 @@ impl SnowFishMachine {
         self.last_pc = state.last_pc;
         self.branch_log = state.branch_log;
         self.gdi = state.gdi;
-        self.timer = state.timer;
+        self.timers = state.timers;
         Ok(())
     }
 }
