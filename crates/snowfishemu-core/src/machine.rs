@@ -630,6 +630,18 @@ impl SnowFishMachine {
                     );
                 }
             }
+            // SF_IDENTITY="field,field,..." carries the plain identity
+            // field list the SDK's record checksum gate wants. The core
+            // encodes it (XOR-0xF5 + the trailing checksum byte) and
+            // installs the record callable behind it; the +0x524 handler
+            // routes the record lookup to it. Without the record the SDK
+            // fails the checksum and parks the session on the invalid-SIM
+            // dialog.
+            if let Ok(fields) = std::env::var("SF_IDENTITY") {
+                let record = crate::plat::identity_record(&fields);
+                let image = crate::plat::identity_record_image(&record);
+                let _ = self.mem.write(crate::plat::SERVICE_CALLABLE2_ADDR, &image);
+            }
         }
     }
 
@@ -1122,9 +1134,27 @@ impl SnowFishMachine {
                 } else {
                     self.mem.write_u32(plat::STATE_PTR_ADDR, out)?;
                     if self.free_play && out > 0x1000 {
-                        self.mem.write_u32(out, plat::SERVICE_CALLABLE_ADDR)?;
+                        // Every hashed lookup gets the ICCID callable. The
+                        // identity-record lookup (the shared SDK's hash
+                        // pair) wants the XOR-0xF5 field-list record, but
+                        // its parse feeds the record fields into the same
+                        // stream parsers the response bodies use, and a
+                        // plain-text field decodes into runaway counts, so
+                        // the record callable (SF_IDENTITY) stays
+                        // experimental: it is installed but only handed
+                        // out when SF_RECORD_LOOKUP=1 is also set.
+                        let callable = if (r(0), r(1))
+                            == (plat::IDENTITY_RECORD_TYPE, plat::IDENTITY_RECORD_ID)
+                            && std::env::var_os("SF_IDENTITY").is_some()
+                            && std::env::var_os("SF_RECORD_LOOKUP").is_some()
+                        {
+                            plat::SERVICE_CALLABLE2_ADDR
+                        } else {
+                            plat::SERVICE_CALLABLE_ADDR
+                        };
+                        self.mem.write_u32(out, callable)?;
                         debug!(
-                            "[plat] +0x524 sim lookup type={:#x} id={:#x} out={out:#010x} -> callable entry",
+                            "[plat] +0x524 sim lookup type={:#x} id={:#x} out={out:#010x} -> callable {callable:#010x}",
                             r(0),
                             r(1)
                         );
@@ -1911,9 +1941,15 @@ impl SnowFishMachine {
     /// port range and the dword at +0x10 against the confirmation-code
     /// pattern; the offline shim fabricates both.
     fn hook_sms_fetch(&mut self, buf: u32, kind: u32) -> Result<u32, MachineError> {
-        // kind 1 = the poll query (buffer, 5 words, type 1); the boot-time
-        // info query passes other registers and keeps passthrough
-        // semantics so its flow stays untouched.
+        // The slot also carries a date/time query (a caller-stack buffer
+        // the caller formats with "%04d-%02d-%02d" into its request
+        // parameter cell). Answering it with a real date unblocks the
+        // request throttle and sends the charge flow into the response
+        // parser while the planted async transaction still points at
+        // static data — the parse then walks a garbage body pointer. Keep
+        // the date query on passthrough until the transaction completion
+        // path delivers a real response object; kind 1 = the poll query
+        // (buffer, 5 words, type 1) is the only answered shape.
         if std::env::var_os("SF_FAKE_PAY").is_some()
             && kind == 1
             && buf > 0x1000

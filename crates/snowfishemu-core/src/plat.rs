@@ -120,6 +120,77 @@ pub fn iccid_stublet_image() -> Vec<u8> {
     v
 }
 
+/// Guest address of the second callable entry: the subscriber-identity
+/// record stublet installed when `SF_IDENTITY` is set (see
+/// [`identity_record_image`]). Sits in the slack behind the first callable.
+pub const SERVICE_CALLABLE2_ADDR: u32 = SERVICE_CALLABLE_ADDR + SERVICE_CALLABLE_LEN * 4;
+
+/// The +0x524 type/id pair that requests the subscriber-identity record.
+///
+/// The pair is the shared SDK's hash of its identity service and appears
+/// unchanged in every SnowFish V2 image of the corpus. The callable handed
+/// back for this lookup is expected to write the whole identity record —
+/// an XOR-0xF5-encoded, comma-separated field list closed by a raw
+/// checksum byte — into the buffer the caller passes in r0. The SDK
+/// verifies the checksum, splits the decoded list into its identity
+/// fields and refuses the pay session ("invalid SIM") when the record
+/// does not parse.
+pub const IDENTITY_RECORD_TYPE: u32 = 0x794C_973A;
+pub const IDENTITY_RECORD_ID: u32 = 0xEADB_BDAE;
+
+/// Encodes the subscriber-identity record from the plain comma-separated
+/// field list: every payload byte is XOR-0xF5 encoded (the SDK decodes it
+/// while scanning for the field separators) and a raw trailing byte holds
+/// the sum of the encoded payload, which is what the SDK's checksum gate
+/// compares against.
+pub fn identity_record(fields: &str) -> Vec<u8> {
+    let mut v: Vec<u8> = fields.bytes().map(|b| b ^ 0xF5).collect();
+    let sum = v.iter().fold(0u8, |a, b| a.wrapping_add(*b));
+    v.push(sum);
+    v
+}
+
+/// ARM stublet for the identity record: copies the encoded record into the
+/// caller's buffer (`ldr r1, =record; ldr r2, =len; byte loop over r0`)
+/// and returns the record length, which the caller uses as the copy
+/// length for its own identity cells.
+pub fn identity_record_image(record: &[u8]) -> Vec<u8> {
+    // Layout: 10 code words, two pool words (the record address and its
+    // length), then the record bytes.
+    let rec_addr = SERVICE_CALLABLE2_ADDR + 0x34;
+    let code: [u32; 10] = [
+        0xE59F1024, // ldr r1, [pc, #0x24]  -> pool word at +0x2C (the record)
+        0xE59F2024, // ldr r2, [pc, #0x24]  -> pool word at +0x30 (the length)
+        0xE3A03000, // mov r3, #0
+        0xE7D1C003, // ldrb ip, [r1, r3]
+        0xE7C0C003, // strb ip, [r0, r3]
+        0xE2833001, // add r3, r3, #1
+        0xE1530002, // cmp r3, r2
+        0xBAFFFFFA, // blt -6               -> the ldrb above
+        0xE1A00002, // mov r0, r2           (the length as the return)
+        0xE12FFF1E, // bx lr
+    ];
+    let mut v = Vec::new();
+    for word in code {
+        v.extend_from_slice(&word.to_le_bytes());
+    }
+    // +0x28..0x2C: slack. +0x2C: the record-address pool word, +0x30: the
+    // length pool word, +0x34: the record bytes.
+    while v.len() < 0x2C {
+        v.push(0);
+    }
+    v.extend_from_slice(&rec_addr.to_le_bytes());
+    while v.len() < 0x30 {
+        v.push(0);
+    }
+    v.extend_from_slice(&(record.len() as u32).to_le_bytes());
+    v.extend_from_slice(record);
+    while v.len() % 4 != 0 {
+        v.push(0);
+    }
+    v
+}
+
 /// Per-stub value trampolines: each returns a fixed constant in r0.
 pub const STUB_HEAP_BASE: u32 = STUB_ADDR + 0x08;
 pub const STUB_CODE_BASE: u32 = STUB_ADDR + 0x18;
