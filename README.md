@@ -1,6 +1,7 @@
 # SnowFishEmu
 
 <p align="center">
+  <a href="https://aloyshf.github.io/SnowFishEmu/"><img src="https://img.shields.io/badge/Website-SnowFishEmu-1F9FD0?logo=githubpages&logoColor=white" alt="Website"></a>
   <a href="https://github.com/AloysHF/SnowFishEmu/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/AloysHF/SnowFishEmu/ci.yml?branch=master&label=CI&logo=github" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-BSD%203--Clause-blue.svg" alt="License: BSD 3-Clause"></a>
 </p>
@@ -127,6 +128,18 @@ Package inspector:
 ```sh
 sfa_info <path/to/game.app>
 ```
+
+## Browser Mode (EmulatorJS)
+
+The project site hosts a browser player at
+<https://AloysHF.github.io/SnowFishEmu/play.html>: pick a local `.app`
+application (or drop it onto the page) and the WebAssembly core runs it via
+[EmulatorJS](https://emulatorjs.org). Files are processed entirely in the
+browser and never uploaded.
+
+The core bundle (`snowfishemu-emulatorjs.zip`) is published on every nightly
+and release. To embed the core in your own site, see
+[docs/EmulatorJS-Core.md](docs/EmulatorJS-Core.md).
 
 ## RetroArch
 

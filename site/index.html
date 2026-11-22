@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="SnowFishEmu 在桌面与浏览器中运行雪鲤鱼（SnowFish/SFA）功能机 .app 应用：纯 Rust ARM 内核、平台服务桥、RetroArch 核心与在线 WebAssembly 试玩。">
+  <title>SnowFishEmu — 让雪鲤鱼应用在桌面与浏览器重生</title>
+  <link rel="icon" type="image/png" href="res/logo.png">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <nav class="navbar" id="navbar">
+    <div class="nav-inner">
+      <a href="index.html" class="brand">
+        <img src="res/logo.png" alt="SnowFishEmu logo" width="34" height="34">
+        <span>SnowFishEmu</span>
+        <span class="brand-tag">雪鲤鱼模拟器</span>
+      </a>
+      <button class="nav-burger" id="nav-burger" aria-label="Toggle navigation" aria-expanded="false">☰</button>
+      <div class="nav-links" id="nav-links">
+        <a href="#features" data-i18n="nav-features">核心特性</a>
+        <a href="#gallery" data-i18n="nav-gallery">应用画廊</a>
+        <a href="#architecture" data-i18n="nav-arch">技术架构</a>
+        <a href="#quickstart" data-i18n="nav-quickstart">快速开始</a>
+        <a href="play.html" class="nav-play" data-i18n="nav-play">在线试玩</a>
+        <button id="lang-toggle" class="lang-toggle" aria-label="Switch language">EN</button>
+        <a href="https://github.com/AloysHF/SnowFishEmu" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ============================== hero ============================== -->
+
+  <header class="hero" id="top">
+    <canvas id="hero-canvas" aria-hidden="true"></canvas>
+    <div class="container">
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <img class="hero-banner" src="res/logo-banner.png" alt="SnowFishEmu logo banner">
+          <h1 data-i18n="hero-title">让雪鲤鱼应用<br>在<span class="accent">桌面与浏览器</span>重生</h1>
+          <p class="lead" data-i18n="hero-lead">SnowFishEmu 直接加载 <strong>.app</strong> 可执行文件，在纯 Rust 的 ARM 内核中运行功能机时代的雪鲤鱼（SnowFish/SFA）应用，并补齐它们依赖的手机服务：平台 API、GDI 绘制、文件系统与离线付费应答。</p>
+          <div class="cta-row">
+            <a class="button carp" href="play.html" data-i18n="hero-play">▶ 在线试玩</a>
+            <a class="button primary" href="https://github.com/AloysHF/SnowFishEmu/releases/latest" target="_blank" rel="noopener" data-i18n="hero-download">下载最新版本</a>
+            <a class="button secondary" href="https://github.com/AloysHF/SnowFishEmu" target="_blank" rel="noopener">GitHub</a>
+          </div>
+        </div>
+        <div class="phone-wrap">
+          <div class="phone-shell">
+            <div class="phone-earpiece"></div>
+            <div class="phone-screen">
+              <div class="screen-status"><span>SFA</span><span>▂▄▆ ✦</span></div>
+              <div class="screen-title">
+                <div class="cn">雪鲤鱼</div>
+                <div class="en">SNOWFISH</div>
+              </div>
+              <svg class="screen-carp" viewBox="0 0 120 60" aria-hidden="true">
+                <path d="M26 30 L10 14 C14.6 24 14.6 36.5 10 46 Z" fill="#ffffff" opacity="0.95"/>
+                <ellipse cx="62" cy="30" rx="37" ry="16.5" fill="#ffffff" transform="rotate(-8 62 30)"/>
+                <path d="M48 14.5c6.5-5.5 17-6 23.5-1.5" stroke="#f2734a" stroke-width="5.5" fill="none" stroke-linecap="round"/>
+                <circle cx="90" cy="26" r="3.6" fill="#0d84b8"/>
+              </svg>
+              <div class="screen-sea"></div>
+              <span class="screen-bubble b1"></span>
+              <span class="screen-bubble b2"></span>
+              <span class="screen-bubble b3"></span>
+              <div class="screen-softkeys"><span data-i18n="phone-soft-left">选项</span><span data-i18n="phone-soft-right">开始</span></div>
+            </div>
+            <div class="phone-keypad">
+              <div class="phone-softrow">
+                <div class="key small">✉</div>
+                <div class="key gel">OK</div>
+                <div class="key small">☰</div>
+              </div>
+              <div class="phone-dpadrow">
+                <div class="key dpad spacer"></div>
+                <div class="key dpad">▲</div>
+                <div class="key dpad spacer"></div>
+              </div>
+              <div class="phone-dpadrow">
+                <div class="key dpad">◀</div>
+                <div class="key dpad">●</div>
+                <div class="key dpad">▶</div>
+              </div>
+              <div class="phone-dpadrow">
+                <div class="key dpad spacer"></div>
+                <div class="key dpad">▼</div>
+                <div class="key dpad spacer"></div>
+              </div>
+              <div class="phone-keys">
+                <div class="key">1</div><div class="key">2 <span>ABC</span></div><div class="key">3 <span>DEF</span></div>
+                <div class="key">4 <span>GHI</span></div><div class="key">5 <span>JKL</span></div><div class="key">6 <span>MNO</span></div>
+                <div class="key">7 <span>PQRS</span></div><div class="key">8 <span>TUV</span></div><div class="key">9 <span>WXYZ</span></div>
+                <div class="key carp">✱</div><div class="key">0</div><div class="key carp">#</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============================== about ============================= -->
+
+  <section class="section section-alt" id="about">
+    <div class="container">
+      <div class="about-grid reveal">
+        <div class="about-copy">
+          <h2 class="section-title" data-i18n="about-title">什么是雪鲤鱼 / SFA 应用？</h2>
+          <p data-i18n="about-p1">2000 年代中后期，上海的雪鲤鱼（SnowFish）平台向国产功能机提供可下载的手机应用：<strong>.app</strong> 二进制搭载在 ARM 芯片上运行，通过平台 API 绘制屏幕、读取文件、发起网络与付费请求——那个"KTV 手机小游戏"年代的记忆。</p>
+          <p data-i18n="about-p2">SnowFishEmu 在没有原厂服务器与运营商短信通道的今天，把这些应用重新跑起来：<strong>纯 Rust 的 ARMv4T CPU 内核</strong>执行来宾代码，<strong>服务桥</strong>逐槽位补齐平台行为，LZ 解压与平台位精确一致。</p>
+        </div>
+        <div class="flow reveal">
+          <div class="flow-node">
+            <div class="flow-title" data-i18n="flow-1-title">雪鲤鱼平台</div>
+            <div class="flow-sub" data-i18n="flow-1-sub">功能机时代的应用分发平台（上海雪鲤鱼）</div>
+          </div>
+          <div class="flow-arrow">▼</div>
+          <div class="flow-node">
+            <div class="flow-title">.app 应用</div>
+            <div class="flow-sub" data-i18n="flow-2-sub">SFA\x19 容器 · ARM/Thumb 代码 · 重定位表 · 内嵌资源</div>
+          </div>
+          <div class="flow-arrow">▼</div>
+          <div class="flow-node highlight">
+            <div class="flow-title">SnowFishEmu</div>
+            <div class="flow-sub" data-i18n="flow-3-sub">桌面窗口 · RetroArch 核心 · 浏览器 WebAssembly</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== stats ============================= -->
+
+  <section class="section" id="stats">
+    <div class="container">
+      <div class="section-head reveal">
+        <h2 class="section-title" data-i18n="stats-title">当前进展</h2>
+      </div>
+      <div class="stats-grid reveal">
+        <div class="stat-item">
+          <div class="stat-number" data-count="10">0</div>
+          <div class="stat-label" data-i18n="stat-1">语料应用全部可运行</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-number" data-count="240" data-suffix="×320">0</div>
+          <div class="stat-label" data-i18n="stat-2">RGB565 原生分辨率</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-number" data-count="3">0</div>
+          <div class="stat-label" data-i18n="stat-3">前端形态（桌面 / RetroArch / 浏览器）</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-number" data-count="11">0</div>
+          <div class="stat-label" data-i18n="stat-4">发布构建目标</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ features ============================ -->
+
+  <section class="section section-alt" id="features">
+    <div class="container">
+      <div class="section-head reveal">
+        <h2 class="section-title" data-i18n="features-title">核心特性</h2>
+        <p class="section-desc" data-i18n="features-desc">从包格式到显示桥，每个层次都按平台行为逐项对齐。</p>
+      </div>
+      <div class="features-grid">
+        <div class="feature-card reveal">
+          <div class="feature-icon">🧩</div>
+          <h3 data-i18n="feat-1-title">SFA 包格式支持</h3>
+          <p data-i18n="feat-1-desc">头部解析、代码重定位、<code>sfa_info</code> 检查工具与姊妹资源文件的自动供给。</p>
+        </div>
+        <div class="feature-card reveal">
+          <div class="feature-icon">⚙️</div>
+          <h3 data-i18n="feat-2-title">ARM/Thumb CPU 内核</h3>
+          <p data-i18n="feat-2-desc">纯 Rust 的 ARMv4T 解释器，补全 ARMv5TE 行为（BLX 互通、DSP 乘法），无第三方 C 依赖。</p>
+        </div>
+        <div class="feature-card reveal">
+          <div class="feature-icon">🌉</div>
+          <h3 data-i18n="feat-3-title">平台服务桥</h3>
+          <p data-i18n="feat-3-desc">按包装分发点的平台 API 表：日志、来宾文件 I/O、UI 定时器与位精确的 LZ 流解压。</p>
+        </div>
+        <div class="feature-card reveal">
+          <div class="feature-icon">🎨</div>
+          <h3 data-i18n="feat-4-title">GDI 显示桥</h3>
+          <p data-i18n="feat-4-desc">240×320 RGB565 帧缓冲：区域填充、调色/RGB 位块（裁剪与色键透明）、CJK 文本渲染。</p>
+        </div>
+        <div class="feature-card reveal">
+          <div class="feature-icon">📴</div>
+          <h3 data-i18n="feat-5-title">离线启动与免付费</h3>
+          <p data-i18n="feat-5-desc">网络与付费查询本地应答，<code>--free-play</code> 把平台应答为已注册的计费手机，<code>--offline-http</code> 本地完成运营商事务。</p>
+        </div>
+        <div class="feature-card reveal">
+          <div class="feature-icon">🕹️</div>
+          <h3 data-i18n="feat-6-title">三种前端</h3>
+          <p data-i18n="feat-6-desc">桌面窗口、<code>snowfishemu_libretro</code> 核心（含 SFEMSTAT 存档状态）与浏览器 WebAssembly 核心。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ gallery ============================= -->
+
+  <section class="section" id="gallery">
+    <div class="container">
+      <div class="section-head reveal">
+        <h2 class="section-title" data-i18n="gallery-title">应用画廊</h2>
+        <p class="section-desc" data-i18n="gallery-desc">本地验证语料中的全部十款应用。用自己持有的 .app 文件即可在线试玩。</p>
+      </div>
+      <div class="gallery-grid reveal" id="gallery-grid"></div>
+      <p class="gallery-note"><span data-i18n="gallery-note">每款的状态与逐标题操作说明见</span> <a href="https://github.com/AloysHF/SnowFishEmu/blob/master/docs/Game-Compatibility.md" target="_blank" rel="noopener">Game-Compatibility 文档</a>。</p>
+    </div>
+  </section>
+
+  <!-- ========================== architecture ========================== -->
+
+  <section class="section section-alt" id="architecture">
+    <div class="container">
+      <div class="section-head reveal">
+        <h2 class="section-title" data-i18n="arch-title">技术架构</h2>
+        <p class="section-desc" data-i18n="arch-desc">核心保持平台无关，前端各自负责窗口、输入与呈现。</p>
+      </div>
+      <div class="arch reveal">
+        <div class="arch-row">
+          <div class="arch-box">
+            <div class="arch-title">snowfishemu</div>
+            <div class="arch-sub" data-i18n="arch-f1">桌面窗口前端（minifb）</div>
+          </div>
+          <div class="arch-box">
+            <div class="arch-title">snowfishemu_libretro</div>
+            <div class="arch-sub" data-i18n="arch-f2">RetroArch / libretro 核心</div>
+          </div>
+          <div class="arch-box">
+            <div class="arch-title">snowfishemu · wasm</div>
+            <div class="arch-sub" data-i18n="arch-f3">浏览器核心（EmulatorJS）</div>
+          </div>
+        </div>
+        <div class="arch-arrow">▼</div>
+        <div class="arch-box core">
+          <div class="arch-title">snowfishemu-core</div>
+          <div class="arch-sub" data-i18n="arch-core-sub">平台无关的模拟器核心</div>
+          <div class="chip-row">
+            <span class="chip" data-i18n="chip-sfa">sfa 包载入</span>
+            <span class="chip">cpu ARMv4T</span>
+            <span class="chip" data-i18n="chip-plat">plat 服务桥</span>
+            <span class="chip" data-i18n="chip-gdi">gdi 显示桥</span>
+            <span class="chip" data-i18n="chip-lz">lz 解压</span>
+            <span class="chip">save SFEMSTAT</span>
+          </div>
+        </div>
+        <div class="arch-arrow">▼</div>
+        <div class="arch-row wide">
+          <div class="arch-box"><div class="arch-title">Windows</div></div>
+          <div class="arch-box"><div class="arch-title">macOS</div></div>
+          <div class="arch-box"><div class="arch-title">Linux</div></div>
+          <div class="arch-box"><div class="arch-title">Android · iOS · webOS</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =========================== quickstart =========================== -->
+
+  <section class="section" id="quickstart">
+    <div class="container">
+      <div class="section-head reveal">
+        <h2 class="section-title" data-i18n="qs-title">快速开始</h2>
+        <p class="section-desc" data-i18n="qs-desc">三条路径把 .app 应用跑起来：浏览器、桌面或 RetroArch。</p>
+      </div>
+      <div class="qs-grid">
+        <div class="qs-card reveal">
+          <h3><span class="qs-num">1</span><span data-i18n="qs-1-title">在线试玩</span></h3>
+          <ol>
+            <li data-i18n="qs-1-step1">打开试玩页面，选择本机的 .app 文件（或拖入页面）。</li>
+            <li data-i18n="qs-1-step2">WebAssembly 核心随 EmulatorJS 自动加载，文件只在本地处理。</li>
+          </ol>
+          <pre><code>play.html  ←  选择 game.app</code></pre>
+        </div>
+        <div class="qs-card reveal">
+          <h3><span class="qs-num">2</span><span data-i18n="qs-2-title">桌面运行</span></h3>
+          <ol>
+            <li data-i18n="qs-2-step1">从 Releases 下载独立版，或从源码构建：</li>
+          </ol>
+          <pre><code>cargo build --release -p snowfishemu
+snowfishemu game.app --free-play --offline-http</code></pre>
+        </div>
+        <div class="qs-card reveal">
+          <h3><span class="qs-num">3</span><span data-i18n="qs-3-title">RetroArch 核心</span></h3>
+          <ol>
+            <li data-i18n="qs-3-step1">把核心放入 RetroArch 的 cores/ 目录，info 文件放入 info/。</li>
+            <li data-i18n="qs-3-step2">以 .app 为内容加载即可；方向键 + OK + 软键即是手机键盘。</li>
+          </ol>
+          <pre><code>cores/snowfishemu_libretro.dll
+info/snowfishemu_libretro.info</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========================== online play =========================== -->
+
+  <section class="section section-alt" id="play">
+    <div class="container">
+      <div class="play-cta reveal">
+        <div class="cta-visual">
+          <div class="cta-phone">
+            <div class="phone-screen">
+              <div class="screen-status"><span>SFA</span><span>▂▄▆ ✦</span></div>
+              <div class="screen-title">
+                <div class="cn">雪鲤鱼</div>
+                <div class="en">SNOWFISH</div>
+              </div>
+              <svg class="screen-carp" viewBox="0 0 120 60" aria-hidden="true">
+                <path d="M26 30 L10 14 C14.6 24 14.6 36.5 10 46 Z" fill="#ffffff" opacity="0.95"/>
+                <ellipse cx="62" cy="30" rx="37" ry="16.5" fill="#ffffff" transform="rotate(-8 62 30)"/>
+                <path d="M48 14.5c6.5-5.5 17-6 23.5-1.5" stroke="#f2734a" stroke-width="5.5" fill="none" stroke-linecap="round"/>
+                <circle cx="90" cy="26" r="3.6" fill="#0d84b8"/>
+              </svg>
+              <div class="screen-sea"></div>
+              <div class="screen-softkeys"><span data-i18n="phone-soft-left">选项</span><span data-i18n="phone-soft-right">开始</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="cta-copy">
+          <span class="cta-badge">✦ <span data-i18n="cta-badge">无需安装 · 浏览器直接运行</span></span>
+          <h3 data-i18n="cta-title">在浏览器里试玩雪鲤鱼游戏</h3>
+          <p data-i18n="cta-desc">WebAssembly 核心随页面加载，选择本地 .app 即刻运行：240×320 画面、手机键盘映射、存档状态保存在浏览器本地。游戏文件不会被上传。</p>
+          <a class="button primary" href="play.html" data-i18n="cta-button">▶ 进入试玩页</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================= footer ============================= -->
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div>
+          <div class="footer-brand">
+            <img src="res/logo.png" alt="SnowFishEmu logo">
+            <span>SnowFishEmu</span>
+          </div>
+          <p class="footer-blurb" data-i18n="footer-blurb">纯 Rust 的雪鲤鱼（SnowFish/SFA）功能机应用模拟器。本站不分发任何游戏数据，请使用自己合法持有的 .app 文件。</p>
+        </div>
+        <div>
+          <h4 data-i18n="footer-project">项目</h4>
+          <ul>
+            <li><a href="https://github.com/AloysHF/SnowFishEmu" target="_blank" rel="noopener">GitHub</a></li>
+            <li><a href="https://github.com/AloysHF/SnowFishEmu/releases" target="_blank" rel="noopener" data-i18n="footer-releases">Releases 下载</a></li>
+            <li><a href="https://github.com/AloysHF/SnowFishEmu/blob/master/docs/Game-Compatibility.md" target="_blank" rel="noopener" data-i18n="footer-compat">游戏兼容性</a></li>
+            <li><a href="https://github.com/AloysHF/SnowFishEmu/blob/master/docs/Game-File-Formats.md" target="_blank" rel="noopener" data-i18n="footer-formats">.app 文件格式</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4 data-i18n="footer-online">在线体验</h4>
+          <ul>
+            <li><a href="play.html" data-i18n="footer-play">在线试玩（EmulatorJS）</a></li>
+            <li><a href="https://emulatorjs.org" target="_blank" rel="noopener">EmulatorJS</a></li>
+            <li><a href="https://www.retroarch.com" target="_blank" rel="noopener">RetroArch</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span data-i18n="footer-license">BSD 3-Clause License © 2026 Aloys. Built with 🦀 Rust.</span>
+        <span data-i18n="footer-era">向 2000 年代的功能机小游戏时代致敬</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

@@ -23,7 +23,11 @@ Thumbs.db
 
 # Output directories
 out_*/
+out/
 *.log
+
+# Site runtime fetched by the Pages deployment (CI-generated)
+site/data/
 
 # Temporary files
 *.tmp

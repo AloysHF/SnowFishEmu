@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="在浏览器中加载雪鲤鱼（SnowFish/SFA）.app 应用即可直接运行，无需安装。由 EmulatorJS 与 SnowFishEmu WebAssembly 核心驱动。">
+  <meta name="theme-color" content="#f2f8fc">
+  <title>在线试玩雪鲤鱼应用 — SnowFishEmu</title>
+  <link rel="icon" type="image/png" href="res/logo.png">
+  <link rel="stylesheet" href="css/style.css">
+  <style>
+    .play-page { min-height: 100vh; }
+
+    .play-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 20px 24px;
+    }
+
+    .play-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 800;
+      font-size: 1.1rem;
+      color: var(--text);
+      text-decoration: none;
+    }
+
+    .play-header-links {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 18px;
+    }
+    .play-header-links a { color: var(--muted); font-size: 0.9rem; text-decoration: none; }
+    .play-header-links a:hover { color: var(--aqua-deep); }
+
+    .play-main {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 8px 24px 64px;
+    }
+
+    .play-title { font-size: clamp(1.6rem, 4vw, 2.4rem); line-height: 1.2; margin-bottom: 0; }
+    .play-title span { color: var(--aqua-deep); }
+
+    .play-subtitle { color: var(--muted); margin: 8px 0 22px; max-width: 68ch; }
+    .play-subtitle code { color: var(--aqua-deep); font-size: 0.95em; background: var(--aqua-soft); padding: 1px 5px; border-radius: 5px; }
+
+    /* Portrait stage: 240x320 content presented on a phone-bezel panel */
+    .play-stage {
+      position: relative;
+      width: min(100%, 520px);
+      aspect-ratio: 3 / 4;
+      margin: 0 auto;
+      background: linear-gradient(180deg, #fdfeff, #e9f2f9);
+      border: 1px solid var(--panel-border-strong);
+      border-radius: 26px;
+      overflow: hidden;
+      box-shadow:
+        inset 0 2px 3px rgba(255, 255, 255, 0.9),
+        var(--shadow-lift);
+    }
+
+    .play-stage > #game { position: absolute; inset: 0; }
+    #game, #game canvas { width: 100% !important; height: 100% !important; }
+
+    .play-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 5;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 24px;
+      text-align: center;
+      background: rgba(242, 248, 252, 0.94);
+      backdrop-filter: blur(3px);
+    }
+
+    .play-overlay h2 { font-size: 1.25rem; margin: 0; }
+    .play-overlay p { color: var(--muted); max-width: 52ch; margin: 0; }
+    .play-overlay .button { margin-top: 4px; }
+    .play-overlay[hidden] { display: none; }
+    .play-overlay code { font-size: 0.9em; color: var(--aqua-deep); }
+
+    #play-picker label.button { cursor: pointer; }
+    #play-picker input[hidden] { display: none; }
+
+    .play-picker-error { color: var(--carp-deep); font-size: 0.85rem; }
+    .play-picker-hint { font-size: 0.78rem; color: var(--faint); }
+    .play-picker-hint a { color: var(--aqua-deep); }
+
+    .play-stage.is-drop {
+      border-color: var(--aqua);
+      box-shadow: 0 0 0 3px var(--aqua-glow), var(--shadow-lift);
+    }
+
+    .play-controls {
+      margin-top: 16px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 20px;
+      justify-content: center;
+      align-items: center;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+
+    .play-controls kbd {
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      font-size: 0.78rem;
+      color: var(--text);
+      background: var(--panel);
+      border: 1px solid var(--panel-border-strong);
+      border-bottom-width: 2px;
+      border-radius: 6px;
+      padding: 1px 6px;
+    }
+
+    .play-reset {
+      padding: 4px 14px;
+      font: inherit;
+      font-size: 0.8rem;
+      color: var(--muted);
+      background: transparent;
+      border: 1px solid var(--panel-border-strong);
+      border-radius: 999px;
+      cursor: pointer;
+    }
+
+    .play-reset:hover { color: var(--aqua-deep); border-color: var(--aqua); }
+    .play-reset[hidden] { display: none; }
+
+    .play-note { margin-top: 12px; font-size: 0.8rem; color: var(--faint); text-align: center; }
+    .play-note a { color: var(--aqua-deep); }
+
+    @media (max-width: 640px) {
+      .play-header { padding: 16px; }
+      .play-header-links { gap: 12px; }
+      .play-header-links .optional { display: none; }
+      .play-main { padding: 0 16px 40px; }
+      .play-stage { border-radius: 18px; }
+      .play-stage.is-picking { aspect-ratio: auto; min-height: 420px; }
+      .play-stage.is-picking #play-picker { position: static; }
+      .play-overlay {
+        justify-content: center;
+        justify-content: safe center;
+        padding: 16px;
+        gap: 10px;
+        overflow-y: auto;
+        scrollbar-width: none;
+      }
+      .play-overlay::-webkit-scrollbar { display: none; }
+      .play-overlay h2 { font-size: 1.1rem; }
+      .play-overlay p { font-size: 0.85rem; }
+      .play-picker-hint { font-size: 0.72rem; }
+    }
+  </style>
+</head>
+<body class="play-page">
+
+  <header class="play-header">
+    <a href="index.html" class="play-brand">
+      <img src="res/logo.png" alt="SnowFishEmu" width="34" height="34">
+      <span>SnowFishEmu</span>
+    </a>
+    <nav class="play-header-links">
+      <a href="index.html" data-i18n="nav-back">返回首页</a>
+      <button id="lang-toggle" class="lang-toggle" aria-label="Switch language">EN</button>
+      <a href="https://github.com/AloysHF/SnowFishEmu" class="optional" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+
+  <main class="play-main">
+    <h1 class="play-title" data-i18n="title">在线试玩 <span>雪鲤鱼</span> 应用</h1>
+    <p class="play-subtitle" data-i18n="subtitle">选择本机上的 <code>.app</code> 应用。由 <strong>EmulatorJS</strong> 与 SnowFishEmu WebAssembly 核心在浏览器中直接运行，无需安装。</p>
+
+    <div class="play-stage is-picking">
+      <div id="game"></div>
+
+      <div id="play-status" class="play-overlay" hidden>
+        <h2 data-i18n="status-title">正在加载核心…</h2>
+        <p data-i18n="status-desc">首次启动需要下载 WebAssembly 核心，请稍候。</p>
+      </div>
+
+      <div id="play-picker" class="play-overlay">
+        <h2 data-i18n="picker-title">选择应用文件</h2>
+        <p data-i18n="picker-desc">请选择 <code>.app</code> 应用文件，选择后会自动加载核心。</p>
+        <label class="button primary">
+          <span data-i18n="pick-game">选择应用文件</span>
+          <input id="game-file" type="file" accept=".app,application/octet-stream" hidden>
+        </label>
+        <p id="play-picker-error" class="play-picker-error" hidden></p>
+        <p class="play-picker-hint" data-i18n="picker-hint">也可以把文件拖进窗口。文件只在浏览器本地处理，不会被上传。支持范围见 <a href="https://github.com/AloysHF/SnowFishEmu/blob/master/docs/Game-Compatibility.md" target="_blank" rel="noopener">兼容性记录</a>。</p>
+      </div>
+
+      <div id="play-error" class="play-overlay" hidden>
+        <h2 data-i18n="error-title">无法启动在线模拟器</h2>
+        <p data-i18n="error-text">EmulatorJS 运行时未部署（缺少 <code>data/loader.js</code>）。请通过 Pages 部署流程生成 <code>site/data</code>，或直接使用独立版模拟器。</p>
+      </div>
+    </div>
+
+    <div class="play-controls">
+      <span data-i18n="ctrl-move"><kbd>方向键</kbd> 移动</span>
+      <span data-i18n="ctrl-confirm"><kbd>Enter</kbd> / <kbd>x</kbd> 确认（OK）</span>
+      <span data-i18n="ctrl-soft"><kbd>Q</kbd> / <kbd>E</kbd> 左右软键</span>
+      <span data-i18n="ctrl-digits">数字层：按住 <kbd>V</kbd>（Select）+ 功能键（详见控制设置）</span>
+      <span data-i18n="ctrl-gamepad">支持手柄与手机触屏</span>
+      <button id="play-reset" class="play-reset" type="button" data-i18n="reset" hidden>换一个应用</button>
+    </div>
+
+    <p class="play-note" data-i18n="note">在线试玩使用 <a href="https://emulatorjs.org" target="_blank" rel="noopener">EmulatorJS</a>。游戏数据不随本站分发，请使用自己合法持有的文件。想离线游玩？从 <a href="https://github.com/AloysHF/SnowFishEmu/releases" target="_blank" rel="noopener">Releases</a> 下载独立模拟器或 RetroArch 核心。</p>
+  </main>
+
+  <script>
+    (function () {
+      'use strict';
+
+      var translations = {
+        zh: {
+          'meta-title': '在线试玩雪鲤鱼应用 — SnowFishEmu',
+          'meta-desc': '在浏览器中加载雪鲤鱼（SnowFish/SFA）.app 应用即可直接运行，无需安装。由 EmulatorJS 与 SnowFishEmu WebAssembly 核心驱动。',
+          'nav-back': '返回首页',
+          'title': '在线试玩 <span>雪鲤鱼</span> 应用',
+          'subtitle': '选择本机上的 <code>.app</code> 应用。由 <strong>EmulatorJS</strong> 与 SnowFishEmu WebAssembly 核心在浏览器中直接运行，无需安装。',
+          'status-title': '正在加载核心…',
+          'status-desc': '首次启动需要下载 WebAssembly 核心，请稍候。',
+          'picker-title': '选择应用文件',
+          'picker-desc': '请选择 <code>.app</code> 应用文件，选择后会自动加载核心。',
+          'pick-game': '选择应用文件',
+          'picker-hint': '也可以把文件拖进窗口。文件只在浏览器本地处理，不会被上传。支持范围见 <a href="https://github.com/AloysHF/SnowFishEmu/blob/master/docs/Game-Compatibility.md" target="_blank" rel="noopener">兼容性记录</a>。',
+          'error-title': '无法启动在线模拟器',
+          'error-text': 'EmulatorJS 运行时未部署（缺少 <code>data/loader.js</code>）。请通过 Pages 部署流程生成 <code>site/data</code>，或直接使用独立版模拟器。',
+          'ctrl-move': '<kbd>方向键</kbd> 移动',
+          'ctrl-confirm': '<kbd>Enter</kbd> / <kbd>x</kbd> 确认（OK）',
+          'ctrl-soft': '<kbd>Q</kbd> / <kbd>E</kbd> 左右软键',
+          'ctrl-digits': '数字层：按住 <kbd>V</kbd>（Select）+ 功能键（详见控制设置）',
+          'ctrl-gamepad': '支持手柄与手机触屏',
+          'reset': '换一个应用',
+          'note': '在线试玩使用 <a href="https://emulatorjs.org" target="_blank" rel="noopener">EmulatorJS</a>。游戏数据不随本站分发，请使用自己合法持有的文件。想离线游玩？从 <a href="https://github.com/AloysHF/SnowFishEmu/releases" target="_blank" rel="noopener">Releases</a> 下载独立模拟器或 RetroArch 核心。',
+          'invalid-game': '仅支持 .app 应用文件。'
+        },
+        en: {
+          'meta-title': 'Play SnowFish Applications Online — SnowFishEmu',
+          'meta-desc': 'Load a SnowFish (SFA) .app application in your browser, no install required. Powered by EmulatorJS and the SnowFishEmu WebAssembly core.',
+          'nav-back': 'Back to Home',
+          'title': 'Play <span>SnowFish</span> Applications Online',
+          'subtitle': 'Pick a <code>.app</code> application. <strong>EmulatorJS</strong> and the SnowFishEmu WebAssembly core run it right in the browser.',
+          'status-title': 'Loading core…',
+          'status-desc': 'The first launch downloads the WebAssembly core.',
+          'picker-title': 'Choose an application file',
+          'picker-desc': 'Pick a <code>.app</code> application; the core loads as soon as you choose it.',
+          'pick-game': 'Choose Application File',
+          'picker-hint': 'You can also drop files onto the window. Files are processed locally in your browser and never uploaded. See the <a href="https://github.com/AloysHF/SnowFishEmu/blob/master/docs/Game-Compatibility.md" target="_blank" rel="noopener">compatibility records</a> for tested support.',
+          'error-title': 'Unable to start the online emulator',
+          'error-text': 'The EmulatorJS runtime is not deployed (missing <code>data/loader.js</code>). Generate <code>site/data</code> through the Pages workflow, or use the standalone emulator.',
+          'ctrl-move': '<kbd>Arrows</kbd> Move',
+          'ctrl-confirm': '<kbd>Enter</kbd> / <kbd>x</kbd> Confirm (OK)',
+          'ctrl-soft': '<kbd>Q</kbd> / <kbd>E</kbd> Soft keys',
+          'ctrl-digits': 'Number layer: hold <kbd>V</kbd> (Select) + a function key (see the control settings)',
+          'ctrl-gamepad': 'Gamepad and touch controls supported',
+          'reset': 'Play another application',
+          'note': 'Online play uses <a href="https://emulatorjs.org" target="_blank" rel="noopener">EmulatorJS</a>. Game data is not distributed with this site, so use your own legally obtained files. Prefer playing offline? Download the standalone emulator or the RetroArch core from <a href="https://github.com/AloysHF/SnowFishEmu/releases" target="_blank" rel="noopener">Releases</a>.',
+          'invalid-game': 'Only .app application files are supported.'
+        }
+      };
+
+      var storageKey = 'snowfish-site-lang';
+      var currentLang;
+      try {
+        currentLang = localStorage.getItem(storageKey) || 'zh';
+      } catch (error) {
+        currentLang = 'zh';
+      }
+
+      var languageButton = document.getElementById('lang-toggle');
+      var description = document.querySelector('meta[name="description"]');
+
+      function applyLang(lang) {
+        currentLang = lang;
+        document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+        var t = translations[lang];
+
+        document.querySelectorAll('[data-i18n]').forEach(function (el) {
+          var key = el.getAttribute('data-i18n');
+          if (t[key] !== undefined) el.innerHTML = t[key];
+        });
+
+        document.title = t['meta-title'];
+        if (description) description.setAttribute('content', t['meta-desc']);
+        languageButton.textContent = lang === 'zh' ? 'EN' : '中';
+        languageButton.setAttribute('aria-label', lang === 'zh' ? 'Switch to English' : '切换到中文');
+
+        try {
+          localStorage.setItem(storageKey, lang);
+        } catch (error) {
+          // Language persistence is optional in restricted browsing contexts.
+        }
+      }
+
+      var RUNTIME_PATH = 'data/';
+      var GAME_EXTENSIONS = /\.app$/i;
+      var stage = document.querySelector('.play-stage');
+      var status = document.getElementById('play-status');
+      var picker = document.getElementById('play-picker');
+      var pickerError = document.getElementById('play-picker-error');
+      var error = document.getElementById('play-error');
+      var gameInput = document.getElementById('game-file');
+      var resetButton = document.getElementById('play-reset');
+      var booted = false;
+
+      function show(element) { element.hidden = false; }
+      function hide(element) { element.hidden = true; }
+
+      function fail(messageKey) {
+        pickerError.textContent = translations[currentLang][messageKey];
+        show(pickerError);
+      }
+
+      function boot(file) {
+        if (booted) return;
+        booted = true;
+        stage.classList.remove('is-picking');
+        hide(picker);
+        hide(error);
+        hide(pickerError);
+        show(status);
+
+        window.EJS_player = '#game';
+        window.EJS_core = 'snowfishemu';
+        // Blob URLs have no file name, so EJS_gameName must keep the extension.
+        window.EJS_gameUrl = URL.createObjectURL(file);
+        window.EJS_gameName = file.name;
+        window.EJS_pathtodata = RUNTIME_PATH;
+        window.EJS_startOnLoaded = false;
+        window.EJS_backgroundColor = '#eef5fa';
+        if (currentLang === 'zh') window.EJS_language = 'zh-CN';
+
+        var runtime = document.createElement('script');
+        runtime.src = RUNTIME_PATH + 'loader.js';
+        runtime.onload = function () {
+          hide(status);
+          show(resetButton);
+        };
+        runtime.onerror = function () {
+          booted = false;
+          hide(status);
+          show(error);
+          show(resetButton);
+        };
+        document.body.appendChild(runtime);
+      }
+
+      function pick(file) {
+        if (!file || booted) return;
+        if (!GAME_EXTENSIONS.test(file.name)) {
+          fail('invalid-game');
+          return;
+        }
+        boot(file);
+      }
+
+      gameInput.addEventListener('change', function () {
+        pick(gameInput.files && gameInput.files[0]);
+      });
+
+      var dragDepth = 0;
+
+      document.addEventListener('dragenter', function (event) {
+        event.preventDefault();
+        if (booted) return;
+        dragDepth += 1;
+        stage.classList.add('is-drop');
+      });
+
+      document.addEventListener('dragover', function (event) {
+        event.preventDefault();
+      });
+
+      document.addEventListener('dragleave', function (event) {
+        event.preventDefault();
+        if (booted) return;
+        dragDepth = Math.max(0, dragDepth - 1);
+        if (dragDepth === 0) stage.classList.remove('is-drop');
+      });
+
+      document.addEventListener('drop', function (event) {
+        event.preventDefault();
+        dragDepth = 0;
+        stage.classList.remove('is-drop');
+        var files = event.dataTransfer && event.dataTransfer.files;
+        if (!files || files.length === 0) return;
+        pick(files[0]);
+      });
+
+      resetButton.addEventListener('click', function () {
+        window.location.reload();
+      });
+
+      languageButton.addEventListener('click', function () {
+        applyLang(currentLang === 'zh' ? 'en' : 'zh');
+      });
+
+      applyLang(currentLang);
+    })();
+  </script>
+</body>
+</html>
