@@ -38,7 +38,7 @@ pub enum MachineError {
 pub struct Wrapper {
     /// Root-table slot offset (imm12 of the `ldr pc` word).
     pub slot: u32,
-    /// Address of the `ldr rX,[rX,#-4]` instruction (interception point).
+    /// Interception point in the wrapper, normally the root-table load.
     pub hook: u32,
     /// Address of the epilogue (`pop {pc}` / `add sp` landing).
     pub ret: u32,
@@ -67,6 +67,21 @@ pub fn scan_wrappers(code: &[u8]) -> Vec<Wrapper> {
         let w3 = rd(w * 4 + 12);
         let w4 = rd(w * 4 + 16);
         let loader = w0 == 0xE513_3004 || w0 == 0xE51C_C004;
+        let hook = CODE_BASE + (w * 4) as u32;
+        // The glyph-width wrapper narrows r0 to UTF-16 before dispatch.
+        if w0 == 0xE513_3004
+            && w1 == 0xE1A0_0820
+            && w2 == 0xE1A0_E00F
+            && w3 == 0xE593_F018
+            && w4 == 0xE49D_F004
+        {
+            out.push(Wrapper {
+                slot: 0x18,
+                hook: hook + 8,
+                ret: hook + 16,
+            });
+            continue;
+        }
         if !loader || w1 != 0xE1A0_E00F {
             continue;
         }
@@ -81,7 +96,6 @@ pub fn scan_wrappers(code: &[u8]) -> Vec<Wrapper> {
         if !ret_pop && !ret_add_sp {
             continue;
         }
-        let hook = CODE_BASE + (w * 4) as u32;
         let ret = hook + 0xC;
         out.push(Wrapper { slot, hook, ret });
         // Some call sites jump to the stublet's prologue — a two-word
@@ -774,6 +788,8 @@ impl SnowFishMachine {
             return Some(self.cpu.reg_get(armv4t_emu::reg::LR));
         }
         match w.slot {
+            // Other SDK builds can overrun their dialog line tables when wrapping is enabled.
+            0x18 if self.compatibility == Compatibility::SanguoTd8 => Some(w.ret),
             0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 | 0x524 | 0xAC | 0xE4 => {
                 Some(w.ret)
             }
@@ -1324,10 +1340,11 @@ impl SnowFishMachine {
             }
             0x12C | 0x130 | 0x134 | 0x140 | 0x14C | 0x154 | 0x158 | 0x180 | 0x198 | 0x194
             | 0x184 | 0x15C | 0x010 => {
-                // GDI slots leave r0 untouched (the reference writes PC only).
+                // GDI drawing slots leave r0 untouched.
                 self.exec_gdi(slot, ret)?;
                 None
             }
+            0x18 => Some(Gdi::cell_width(r(0) as u16) as u32),
             _ => {
                 warn!("unhandled hooked slot +0x{slot:X} at ret {ret:#010x}");
                 Some(0)
@@ -1386,29 +1403,20 @@ impl SnowFishMachine {
         let r = |i: u8| self.cpu.reg_get(i);
         match slot {
             0x12C => {
-                // update(obj, x, y, w, h) — a dirty-rectangle commit, not a
-                // fill. The guest paints into the surface and then asks the
-                // platform to push that rectangle to the display; the second
-                // stack word is *not* a colour (every title in the corpus
-                // leaves stale stack contents there — code pointers, string
-                // pointers, zero), so reading it as RGB565 painted random
-                // colours over the frame. Our surface *is* the display, so
-                // presenting the rectangle costs nothing.
+                // set_clip(obj, x, y, w, h) limits subsequent drawing.
                 let adj = self.sp_adjust(ret);
                 let x = r(1) as i32;
                 let y = r(2) as i32;
                 let w = r(3) as i32;
                 let h = self.stack_arg(sp, adj, 1)? as i32;
-                // A full-screen commit is the guest's frame boundary: the
-                // label cursor is per-frame state (some titles commit with
-                // this slot instead of the flush slot).
+                Gdi::set_clip(&mut self.mem, x, y, w, h)?;
+                // Keep the label cursor reset when the guest restores the full clip.
                 if x == 0 && y == 0 && w == plat::FB_WIDTH as i32 && h == plat::FB_HEIGHT as i32 {
                     self.gdi.reset_text_cursor();
                 }
                 if self.trace {
-                    let stale = self.stack_arg(sp, adj, 2).unwrap_or(0);
                     debug!(
-                        "[gdi]+0x{slot:X} update rect {x},{y} {w}x{h} obj={:#010x} stale={stale:#010x} lr={:#010x}",
+                        "[gdi]+0x{slot:X} clip {x},{y} {w}x{h} obj={:#010x} lr={:#010x}",
                         r(0),
                         self.cpu.reg_get(armv4t_emu::reg::LR)
                     );
@@ -1444,7 +1452,7 @@ impl SnowFishMachine {
                 if r(0) > 0x1000 {
                     let mut b3 = [0u8; 3];
                     if self.mem.read(r(0) + 0x28, &mut b3).is_ok() {
-                        rgb24 = (b3[0] as u32) << 16 | (b3[1] as u32) << 8 | b3[2] as u32;
+                        rgb24 = u32::from_le_bytes([b3[0], b3[1], b3[2], 0]);
                     }
                 }
                 let color = crate::gdi::rgb888_to_565(rgb24);
@@ -1543,27 +1551,28 @@ impl SnowFishMachine {
                     .op_text_block(&mut self.mem, &chars, x, y, color, Some(right));
             }
             0x198 => {
-                // draw(obj, bmp, sx, sy, w, h, _, dx, dy, _)
+                // draw(obj, bmp, sx, sy, w, h, transform, dx, dy, _)
                 let adj = self.sp_adjust(ret);
                 let bmp_ptr = r(1);
                 let sx = r(2) as i32;
                 let sy = r(3) as i32;
                 let w = self.stack_arg(sp, adj, 1)? as i32;
                 let h = self.stack_arg(sp, adj, 2)? as i32;
+                let transform = self.stack_arg(sp, adj, 3)?;
                 let dx = self.stack_arg(sp, adj, 4)? as i32;
                 let dy = self.stack_arg(sp, adj, 5)? as i32;
-                // A zero clip uses the descriptor's bitmap size.
-                let clip = if w > 0 && h > 0 { Some((w, h)) } else { None };
-                self.draw_bitmap(slot, bmp_ptr, (sx, sy), clip, (dx, dy))?;
+                // A zero source size uses the descriptor's bitmap size.
+                let size = if w > 0 && h > 0 { Some((w, h)) } else { None };
+                self.draw_bitmap(slot, bmp_ptr, (sx, sy), size, (dx, dy), transform)?;
             }
             0x134 => {
                 // blit(obj, bmp, x, y, flags) — the five-argument form of
                 // +0x198: the bitmap is drawn at its own size, so the
-                // descriptor supplies the clip window.
+                // descriptor supplies the source dimensions.
                 let bmp_ptr = r(1);
                 let dx = r(2) as i32;
                 let dy = r(3) as i32;
-                self.draw_bitmap(slot, bmp_ptr, (0, 0), None, (dx, dy))?;
+                self.draw_bitmap(slot, bmp_ptr, (0, 0), None, (dx, dy), 0)?;
             }
             0x194 => {
                 self.gdi.op_bmp();
@@ -1647,15 +1656,16 @@ impl SnowFishMachine {
     }
 
     /// Blits a bitmap descriptor (`sw, sh, key, pal, data`) onto the canvas.
-    /// `clip` is the `(w, h)` window the caller asked for; `None` keeps the
-    /// bitmap's own size, which is what the five-argument `+0x134` form does.
+    /// `size` is the source region's dimensions. The five-argument
+    /// `+0x134` form uses the bitmap's full dimensions.
     fn draw_bitmap(
         &mut self,
         slot: u32,
         bmp_ptr: u32,
         source: (i32, i32),
-        clip: Option<(i32, i32)>,
+        size: Option<(i32, i32)>,
         target: (i32, i32),
+        transform: u32,
     ) -> Result<(), MachineError> {
         if bmp_ptr <= 0x1000 {
             return Ok(());
@@ -1669,10 +1679,10 @@ impl SnowFishMachine {
         let key = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
         let pal = u32::from_le_bytes([hdr[12], hdr[13], hdr[14], hdr[15]]);
         let data = u32::from_le_bytes([hdr[16], hdr[17], hdr[18], hdr[19]]);
-        let (w, h) = clip.unwrap_or((sw, sh));
+        let (w, h) = size.unwrap_or((sw, sh));
         if self.trace {
             debug!(
-                "[gdi]+0x{slot:X} blit obj={:#010x} bmp@{bmp_ptr:#x} sw={sw} sh={sh} key={key:#x} pal={pal:#x} data={data:#x} clip={w}x{h} from {source:?} to {target:?}",
+                "[gdi]+0x{slot:X} blit obj={:#010x} bmp@{bmp_ptr:#x} sw={sw} sh={sh} key={key:#x} pal={pal:#x} data={data:#x} clip={w}x{h} from {source:?} to {target:?} transform={transform}",
                 self.cpu.reg_get(0)
             );
         }
@@ -1691,13 +1701,8 @@ impl SnowFishMachine {
             return Ok(());
         }
         let key = if palette.is_some() {
-            // Universe Storm's palette loader emits an explicit index 0
-            // for transparent sprites and a sentinel for opaque bitmaps.
-            let keyed = match self.compatibility {
-                Compatibility::UniverseStorm => key <= u32::from(u8::MAX),
-                _ => key != 0,
-            };
-            keyed.then_some((key & 0xff) as u16)
+            // The loader uses an out-of-range sentinel for opaque bitmaps.
+            u8::try_from(key).ok().map(u16::from)
         } else {
             let key = key as u16;
             (key != 0 && key != u16::MAX).then_some(key)
@@ -1724,6 +1729,7 @@ impl SnowFishMachine {
             source,
             (w, h),
             target,
+            transform,
         );
         Ok(())
     }
@@ -2961,27 +2967,47 @@ mod tests {
         assert!(ink > 0, "'A' should be drawn in black, not white-on-white");
     }
 
-    /// +0x12C commits a rectangle of the surface to the display; it does not
-    /// paint. The second stack word is *not* a colour — every title in the
-    /// corpus leaves stale caller data there (code pointers, string
-    /// pointers, zero) — so treating it as RGB565 scribbled a random colour
-    /// over the frame and erased every sprite drawn before the call.
     #[test]
-    fn update_rect_leaves_the_surface_alone() {
+    fn canvas_clip_limits_an_atlas_blit_and_can_be_reset() {
         let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        let desc = HEAP_BASE;
+        let data = HEAP_BASE + 0x100;
+        m.mem.write_u32(desc, 3).unwrap();
+        m.mem.write_u32(desc + 4, 1).unwrap();
+        m.mem.write_u32(desc + 16, data).unwrap();
+        m.mem.write_u16(data, 0x001F).unwrap();
+        m.mem.write_u16(data + 2, 0xF800).unwrap();
+        m.mem.write_u16(data + 4, 0x001F).unwrap();
+
         let sp = HEAP_BASE + 0x200;
         m.cpu.reg_set(armv4t_emu::reg::SP, sp);
-        m.mem.write_u32(sp + 4, 320).unwrap(); // h (5th argument)
+        m.mem.write_u32(sp + 4, 1).unwrap(); // h (5th argument)
         m.mem.write_u32(sp + 8, 0x4151_7000).unwrap(); // stale word
         m.gdi.fill(&mut m.mem, 0, 0, 240, 320, 0xFFFF);
-        m.cpu.reg_set(0, HEAP_BASE);
+        m.cpu.reg_set(0, HEAP_BASE + 0x300);
+        m.cpu.reg_set(1, 11);
+        m.cpu.reg_set(2, 20);
+        m.cpu.reg_set(3, 1);
+        m.exec_gdi(0x12C, 0).unwrap();
+        let first = 20 * 240 + 10;
+        assert_eq!(&m.frame_pixels()[first..first + 3], &[WHITE; 3]);
+
+        m.cpu.reg_set(1, desc);
+        m.cpu.reg_set(2, 10);
+        m.cpu.reg_set(3, 20);
+        m.exec_gdi(0x134, 0).unwrap();
+        assert_eq!(&m.frame_pixels()[first..first + 3], &[WHITE, RED, WHITE]);
+
         m.cpu.reg_set(1, 0);
         m.cpu.reg_set(2, 0);
         m.cpu.reg_set(3, 240);
+        m.mem.write_u32(sp + 4, 320).unwrap();
         m.exec_gdi(0x12C, 0).unwrap();
-        let px = m.gdi.frame_pixels(&m.mem);
-        let bad = px.iter().filter(|&&p| p != WHITE).count();
-        assert_eq!(bad, 0, "committing a rectangle must not repaint it");
+        m.cpu.reg_set(1, desc);
+        m.cpu.reg_set(2, 10);
+        m.cpu.reg_set(3, 20);
+        m.exec_gdi(0x134, 0).unwrap();
+        assert_eq!(&m.frame_pixels()[first..first + 3], &[BLUE, RED, BLUE]);
     }
 
     /// +0x134 is the five-argument blit — `draw(obj, bmp, x, y, flags)` — and
@@ -3043,34 +3069,41 @@ mod tests {
         assert_eq!(pixels[0], RED);
         assert_eq!(pixels[240], BLUE);
         assert_eq!(pixels[1], WHITE, "destination clip ends at x=0");
+
+        m.mem.write_u32(sp + 12, 3).unwrap(); // reflect both axes
+        m.mem.write_u32(sp + 16, 10).unwrap();
+        m.exec_gdi(0x198, 0).unwrap();
+        let pixels = m.frame_pixels();
+        assert_eq!(pixels[10], BLUE);
+        assert_eq!(pixels[250], RED);
     }
 
-    /// Preserve the default interpretation of a zero palette key.
     #[test]
-    fn palette_blit_keeps_index_zero_when_key_is_unset() {
+    fn palette_blit_distinguishes_index_zero_from_the_opaque_sentinel() {
         let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         let desc = HEAP_BASE;
         let pal = HEAP_BASE + 0x40;
-        let data = HEAP_BASE + 0x100;
-        m.mem.write_u32(desc, 2).unwrap(); // sw
-        m.mem.write_u32(desc + 4, 2).unwrap(); // sh
-        m.mem.write_u32(desc + 8, 0).unwrap(); // key: none
+        let data = HEAP_BASE + 0x300;
+        m.mem.write_u32(desc, 3).unwrap(); // sw
+        m.mem.write_u32(desc + 4, 1).unwrap(); // sh
+        m.mem.write_u32(desc + 8, 0).unwrap(); // key: index 0
         m.mem.write_u32(desc + 12, pal).unwrap(); // palette pointer
         m.mem.write_u32(desc + 16, data).unwrap(); // indices
         m.mem.write_u16(pal, 0xF800).unwrap(); // index 0: red
         m.mem.write_u16(pal + 2, 0x001F).unwrap(); // index 1: blue
-                                                   // index 0 first (red), index 1 second (blue)
-        m.mem.write_u16(data, 0x0100).unwrap(); // bytes [0, 1]
-        m.mem.write_u16(data + 2, 0x0100).unwrap();
+        m.mem.write_u16(pal + 255 * 2, 0xF800).unwrap();
+        m.mem.write(data, &[0, 1, 255]).unwrap();
         m.gdi.fill(&mut m.mem, 0, 0, 240, 320, 0xFFFF);
-        m.cpu.reg_set(0, HEAP_BASE + 0x300);
+        m.cpu.reg_set(0, HEAP_BASE + 0x400);
         m.cpu.reg_set(1, desc);
         m.cpu.reg_set(2, 0);
         m.cpu.reg_set(3, 0);
         m.exec_gdi(0x134, 0).unwrap();
-        let px = m.gdi.frame_pixels(&m.mem);
-        assert_eq!(px[0], RED, "index-0 pixel must draw when key=0");
-        assert_eq!(px[1], BLUE, "index-1 pixel draws its palette colour");
+        assert_eq!(&m.frame_pixels()[..3], &[WHITE, BLUE, RED]);
+
+        m.mem.write_u32(desc + 8, 0x7fff_ffff).unwrap();
+        m.exec_gdi(0x134, 0).unwrap();
+        assert_eq!(&m.frame_pixels()[..3], &[RED, BLUE, RED]);
     }
 
     /// Dialog bodies are drawn by `+0x14C`, which carries a character range

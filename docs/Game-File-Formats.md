@@ -94,6 +94,7 @@ executes through the root-table stubs unchanged.
 | Slot | Service |
 |---|---|
 | `+0x010` | GDI flush |
+| `+0x018` | Glyph width from the UTF-16 code unit in r0, returned in pixels for the supported Three Kingdoms QVGA package |
 | `+0x058` | File open (UTF-16 path) |
 | `+0x05C` | File read |
 | `+0x064` | File seek |
@@ -101,16 +102,16 @@ executes through the root-table stubs unchanged.
 | `+0x07C` | Log (format string at r0) |
 | `+0x0AC` | UI timer arm(owner, period ms, callback) |
 | `+0x108` | LZ decompression |
-| `+0x12C` | GDI update(obj, x, y, w, h) — commit a rectangle |
+| `+0x12C` | GDI set_clip(obj, x, y, w, h) |
 | `+0x130` / `+0x140` | Long-form fill variants (dialog chrome rows) |
 | `+0x134` | GDI blit(obj, bmp, x, y, flags) — bitmap at its own size |
 | `+0x14C` | GDI text run(obj, u16 string, first, count, x, y, flags) |
-| `+0x154` | GDI text(obj, u16 string, x, y, font) |
+| `+0x154` | GDI text(obj, u16 string, x, y, font), using the canvas RGB888 pen |
 | `+0x15C` | GDI fill(obj, x, y, w, h) with the canvas pen |
 | `+0x180` | GDI set-color(obj, rgb888) |
 | `+0x184` | GDI clear / pen color |
 | `+0x194` | GDI bitmap register |
-| `+0x198` | GDI draw(obj, bmp, sx, sy, w, h, _, dx, dy, _) |
+| `+0x198` | GDI draw(obj, bmp, sx, sy, w, h, transform, dx, dy, _) |
 | `+0x4C` | Carrier-billing capability query (1 = phone can bill) |
 | `+0x500` | Timer start (id, callback, context) |
 | `+0x524` | Service lookup (see below) |
@@ -138,11 +139,11 @@ at that origin with the canvas pen; dropping the slot leaves the dialog
 frame painted and the body blank, which is what every notice looked like
 before it was served.
 
-`+0x12C` takes five arguments; the word that follows the height is *not*
-a colour. Titles leave stale caller data there (code pointers, string
-pointers, the residue of an earlier call), so the slot is served as a
-dirty-rectangle commit: the guest has already drawn into the surface and
-is asking the platform to push that rectangle to the display.
+`+0x12C` sets the destination clip for subsequent drawing. The rectangle
+uses a top-left origin and dimensions, intersected with the framebuffer.
+Set it to `(0, 0, 240, 320)` to restore the full screen. A guest can draw an
+individual tile by clipping to its destination and offsetting the atlas
+so the selected tile lines up with the clip.
 
 `+0x4C` is the purchase service's first question: *can this handset bill
 over the carrier channel?* The SDK asks once at boot and every title
@@ -280,7 +281,9 @@ Two optional platform facilities close that loop:
 
 `+0x134` and `+0x198` consume the same bitmap descriptor. `+0x198` takes
 the source origin `(sx, sy)` in r2/r3 and the crop dimensions `(w, h)`
-on the stack. `+0x134` draws the bitmap at its own size.
+on the stack. Its transform values 1, 2 and 3 mirror the selected region
+horizontally, vertically and along both axes, respectively. `+0x134`
+uses the entire source bitmap. Both calls honor the destination clip.
 
 `+0x0AC` returns a handle and arms a repeating callback. The callback is
 a trampoline that treats r0 as the SDK's delayed-message record
@@ -301,9 +304,9 @@ Draw calls take a descriptor at r1:
 | 0x10 | 4 | Pixel data pointer (fallback: `*(desc+0x14)`) |
 
 Palette mode stores one byte per pixel indexing a 256-entry RGB565
-palette. Direct mode stores RGB565 words. Universe Storm's palette
-descriptors use index 0 as a valid color key and `0x7fffffff` for an
-opaque bitmap.
+palette. Palette keys in the range 0–255 select the transparent index,
+including index 0. An out-of-range key such as `0x7fffffff` makes the bitmap
+opaque. Direct mode stores RGB565 words.
 
 ## LZ stream format
 

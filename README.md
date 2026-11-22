@@ -33,9 +33,9 @@ identifiers. Save states use the `SFEMSTAT` signature.
   logging, guest file I/O over the package container, and the LZ stream
   decompressor (bit-exact with the platform's decoder)
 - **GDI display bridge** — RGB565 framebuffer (240x320) with region
-  fills, palette/RGB bitmap blits with source cropping and color-key
-  transparency, CJK text rendering, and the pen/colour state the titles
-  drive through the canvas object
+  fills, destination clipping, palette/RGB bitmap blits with source cropping,
+  mirroring and color-key transparency, and CJK text rendering with
+  glyph-width queries for the supported Three Kingdoms QVGA package
 - **UI timer service** — the repeating arm/callback pair every title
   registers during create, pumped on a millisecond frame clock so the
   guest's own 60-120 ms screen pumps fire at their designed rates

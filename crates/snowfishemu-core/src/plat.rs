@@ -41,6 +41,8 @@ pub const STUB_PASSTHROUGH_ADDR: u32 = STUB_ADDR + 0x78;
 pub const MEMDESC_ADDR: u32 = PLAT_BASE + 0x25F20;
 /// Guest address of the cell the state-store stub writes r2 into.
 pub const STATE_PTR_ADDR: u32 = PLAT_BASE + 0x25F30;
+/// Platform scratch space for the display clip, included in guest snapshots.
+pub(crate) const GDI_CLIP_ADDR: u32 = PLAT_BASE + 0x25F34;
 /// Guest address of the synthetic service object handed out by root slot
 /// +0x524 (`service(type, id, &out)`).
 ///

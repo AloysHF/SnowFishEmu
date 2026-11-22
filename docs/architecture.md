@@ -112,14 +112,20 @@ bridge (`gdi.rs`). The GDI slots the corpus drives are served natively:
 fills and long-form fill variants, the canvas pen/colour state
 (`+0x180` set-color, `+0x184` clear), text runs in UTF-16 (`+0x154`, the
 `+0x14C` character-range sibling), bitmap register/draw with palette and
-color-key semantics (`+0x194`/`+0x198`/`+0x134`), dirty-rectangle commits
+color-key semantics (`+0x194`/`+0x198`/`+0x134`), canvas clipping
 (`+0x12C`), and flush (`+0x010`). Text rasterizes from an embedded Unicode
-bitmap font (`unifont`), so the core does not depend on host fonts.
+bitmap font (`unifont`), so the core does not depend on host fonts. The
+glyph-width query (`+0x018`) uses the same advances as text rendering
+for the supported Three Kingdoms QVGA package.
 
 Bitmap descriptors carry width, height, color key, palette pointer/mode and
 a data pointer with a fallback read; palette mode is detected from whether
 the palette word is a pointer. Colors reach the framebuffer in RGB565; the
 canvas keeps the guest's RGB888 pen.
+
+The clip bounds subsequent fills, text and bitmap draws. Guests can position
+an entire sprite atlas behind a small clip to render one tile. The emulator
+stores the clip in platform scratch memory so it persists across save states.
 
 ## LZ decompressor
 
