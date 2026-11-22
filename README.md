@@ -130,6 +130,13 @@ or **Z** confirms Continue. Press **Enter** next to the first NPC to
 talk, advance the dialogue with **Enter**, and use the arrows to walk
 away after the last page.
 
+In the supported StarBall (新星际撞球) QVGA build, use **Enter** to
+confirm and serve. Use **Up** and **Down** to highlight a menu item,
+the arrows to move the red outline to a level, and **Left** and **Right**
+to move the paddle during play.
+When the last ball is lost offline, the game returns to the main menu
+after showing Game Over. Use **Enter** on **New Game** to play again.
+
 In the supported Gold Miner (黄金矿工) QVGA build, press **X** or
 **Enter** on the title screen to start the first level offline. Use **Z**
 to open Options and choose Start Game to reach the level selection menu.

@@ -1236,6 +1236,13 @@ impl SnowFishMachine {
                 // a non-zero one.  SF_4C="lr:val;lr:val;*:val" (hex) overrides
                 // it per call site for experiments.
                 let mut base = 1u32;
+                if self.compatibility == Compatibility::StarBall
+                    && self.free_play
+                    && self.http.enabled
+                    && compat::star_ball_is_continue_query(&self.mem, lr)?
+                {
+                    base = 0;
+                }
                 let mut result = None;
                 if let Ok(policy) = std::env::var("SF_4C") {
                     // "*" sets the base value; a matching `lr:val` entry
@@ -1645,15 +1652,17 @@ impl SnowFishMachine {
                 }
                 self.gdi.line(&mut self.mem, start, end, color);
             }
-            // +0x140: approximate the dialog chrome with a filled row.
             0x140 => {
+                let adj = self.sp_adjust(ret);
                 let x = r(1) as i32;
                 let y = r(2) as i32;
-                let color = self.gdi.fill_color();
+                let w = r(3) as i32;
+                let h = self.stack_arg(sp, adj, 1)? as i32;
+                let color = self.pen_color(r(0));
                 if self.trace {
-                    debug!("[gdi]+0x{slot:X} fill @({x},{y}) c={color:#06x}");
+                    debug!("[gdi]+0x{slot:X} outline @({x},{y}) {w}x{h} c={color:#06x}");
                 }
-                self.gdi.op_fill2(&mut self.mem, x, y, 240, 8, color);
+                self.gdi.rect_outline(&mut self.mem, (x, y), (w, h), color);
             }
             _ => {
                 if self.trace {
@@ -2288,7 +2297,7 @@ impl SnowFishMachine {
         if index > 31 {
             return Err(MachineError::BadKey(index));
         }
-        let code = KEY_MAP[index as usize];
+        let code = KEY_MAP[self.compatibility.key_index(index) as usize];
         if code != 0 {
             self.events.post(if pressed { 6 } else { 5 }, code as u32);
         }
@@ -2412,13 +2421,14 @@ impl SnowFishMachine {
         &mut self,
         callback: u32,
         context: u32,
+        result: u32,
         budget: u64,
     ) -> Result<(), MachineError> {
         self.cpu.reg_set(armv4t_emu::reg::SP, STACK_TOP);
         self.cpu.reg_set(armv4t_emu::reg::LR, STOP_ADDRESS);
         self.cpu.reg_set(armv4t_emu::reg::CPSR, 0x10);
         self.cpu.reg_set(0, context);
-        self.cpu.reg_set(1, 0);
+        self.cpu.reg_set(1, result);
         self.cpu.reg_set(2, 0);
         self.cpu.reg_set(armv4t_emu::reg::PC, callback);
         self.run_until_return(budget)?;
@@ -2460,14 +2470,22 @@ impl SnowFishMachine {
         if let Some((cb, arg)) = self.deliver_http_completion() {
             debug!("[plat] HTTP result callback {cb:#010x} arg={arg:#x}");
             if cb > 0x1000 {
-                self.run_guest_callback(cb, arg, budget)?;
+                self.run_guest_callback(cb, arg, 0, budget)?;
             }
         }
         if self.compatibility == Compatibility::MengdePe && self.free_play && self.http.enabled {
             if let Some((callback, context)) = compat::take_mengde_pe_offline_check(&mut self.mem)?
             {
                 debug!("[plat] completing the local Mengde Pe check");
-                self.run_guest_callback(callback, context, budget)?;
+                self.run_guest_callback(callback, context, 0, budget)?;
+            }
+        }
+        if self.compatibility == Compatibility::StarBall && self.free_play && self.http.enabled {
+            if let Some((callback, context)) =
+                compat::take_star_ball_unavailable_continue(&mut self.mem)?
+            {
+                debug!("[plat] declining the unavailable StarBall continue");
+                self.run_guest_callback(callback, context, 1, budget)?;
             }
         }
         let poll_keys = self.compatibility == Compatibility::MengdePe

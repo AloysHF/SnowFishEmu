@@ -116,9 +116,9 @@ $recipes = @{
     }
     "StarBall_QVGA_SNOWFISHV2" = @{
         Image  = "新星际撞球"
-        Frames = 520
+        Frames = 247
         Flags  = @()
-        Press  = @("30:10", "200:10", "400:10")
+        Press  = @("30:5", "60:5", "90:5", "180:5", "213:6", "240:5")
     }
     "Mengde_pe_QVGA_SNOWFISHV2" = @{
         Image  = "新鬼吹灯"

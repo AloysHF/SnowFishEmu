@@ -33,7 +33,7 @@ documented play state; regenerate them with `scripts/batch-screenshots.ps1`.
 | 曹操冢超豪华版 (Mengde i) | <img src="images/曹操冢超豪华版.png" width="120" alt="曹操冢超豪华版"> | **playable** | Gameplay; the help bar renders (按数字键3可以查看大地图显示) and the sprite pages load |
 | 永恒魔塔 (yonghengmota) | <img src="images/永恒魔塔.png" width="120" alt="永恒魔塔"> | **playable** | The magic-tower floor renders with the story dialog fully readable (宙斯：好女儿，乖女儿，就让我一次嘛…), the characters and the floor counter |
 | 胭脂戏游龙 (yzxyl) | <img src="images/胭脂戏游龙.png" width="120" alt="胭脂戏游龙"> | **playable** | The 西门庆居 scene, the dialog box (与春梅对话) and the movement tutorial (使用8,2,4,6可以进行移动) |
-| 新星际撞球 (StarBall) | <img src="images/新星际撞球.png" width="120" alt="新星际撞球"> | **playable** | The brick board, ball and paddle run. Canvas clipping selects individual score digits. |
+| 新星际撞球 (StarBall) | <img src="images/新星际撞球.png" width="120" alt="新星际撞球"> | **playable** | Arrow keys navigate the main menu and level selection. Losing the last ball offline shows Game Over and returns to the main menu. |
 | 新鬼吹灯 (Mengde pe) | <img src="images/新鬼吹灯.png" width="120" alt="新鬼吹灯"> | **playable** | The title, intro, and cave render. Movement resumes after Continue and after the first NPC dialogue |
 | 黄金矿工 (hjkg) | <img src="images/黄金矿工.png" width="120" alt="黄金矿工"> | **playable** | Start on the title screen opens the first level directly. Options → Start Game opens the local New Game / Level Select menu |
 | 宇宙风暴 (yzfb) | <img src="images/宇宙风暴.png" width="120" alt="宇宙风暴"> | **playable** | The music prompt, title, and main menu render. New Game enters the scrolling first level, and directional keys move the ship |
@@ -58,9 +58,22 @@ sfa_headless <game.app> --frames 200 --no-keys \
 
 That recipe (six left-soft-key presses over 200 frames) lands 五子棋 on
 its board, 三国危城无双 on its splash/tutorial, both 曹操冢 builds and
-永恒魔塔 in gameplay, and 胭脂戏游龙 on its first scene. For 新星际撞球
-three presses over 500 frames suffice — its tariff wait dismisses
-itself and the game starts.
+永恒魔塔 in gameplay, and 胭脂戏游龙 on its first scene.
+
+### StarBall (新星际撞球)
+
+Use Up and Down to highlight a menu item and OK to open it. On the
+level selection screen, Left and Right step by one level and Up and
+Down step by four. The red outline marks the selected level.
+
+The first three OK presses enter the game and serve. In this replay the
+last ball is lost, so the game shows Game Over and reopens the menu. The
+next OK starts a new round, then Right moves the paddle and OK serves again.
+
+```sh
+sfa_headless <game.app> --frames 247 --no-keys \
+  --press 30:5 --press 60:5 --press 90:5 --press 180:5 --press 213:6 --press 240:5
+```
 
 ### Three Kingdoms (三国危城无双)
 

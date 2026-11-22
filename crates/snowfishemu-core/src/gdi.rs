@@ -211,6 +211,25 @@ impl Gdi {
         }
     }
 
+    /// Draws a one-pixel border inside the given rectangle.
+    pub(crate) fn rect_outline(
+        &mut self,
+        mem: &mut GuestMem,
+        (x, y): (i32, i32),
+        (width, height): (i32, i32),
+        color: u16,
+    ) {
+        if width <= 0 || height <= 0 {
+            return;
+        }
+        let right = x.saturating_add(width - 1);
+        let bottom = y.saturating_add(height - 1);
+        self.line(mem, (x, y), (right, y), color);
+        self.line(mem, (x, bottom), (right, bottom), color);
+        self.line(mem, (x, y), (x, bottom), color);
+        self.line(mem, (right, y), (right, bottom), color);
+    }
+
     /// Fill a rectangle with an explicit RGB565 color.
     pub fn op_fill(
         &mut self,

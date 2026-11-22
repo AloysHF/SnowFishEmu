@@ -11,6 +11,7 @@ pub(crate) enum Compatibility {
     GoldMiner,
     MengdePe,
     SanguoTd8,
+    StarBall,
     UniverseStorm,
 }
 
@@ -18,12 +19,25 @@ impl Compatibility {
     pub(crate) fn detect(container: &[u8]) -> Self {
         match container.len() {
             156_976 if content_fingerprint([container]) == 0xe09d_72f8_2a77_3eb4 => Self::MengdePe,
+            172_920 if content_fingerprint([container]) == 0xf0be_68ce_e8f1_d536 => Self::StarBall,
             194_174 if content_fingerprint([container]) == 0x9ee3_83e6_808c_a8df => Self::GoldMiner,
             216_610 if content_fingerprint([container]) == 0x6960_1884_6a4d_15f6 => Self::SanguoTd8,
             269_688 if content_fingerprint([container]) == 0x06ba_3789_c896_1ea6 => {
                 Self::UniverseStorm
             }
             _ => Self::Unmodified,
+        }
+    }
+
+    pub(crate) fn key_index(self, index: u8) -> u8 {
+        // StarBall menus need dedicated navigation codes. Other packages
+        // can use the keypad aliases for direction input.
+        match (self, index) {
+            (Self::StarBall, 2) => 13, // Up
+            (Self::StarBall, 8) => 14, // Down
+            (Self::StarBall, 4) => 15, // Left
+            (Self::StarBall, 6) => 16, // Right
+            _ => index,
         }
     }
 }
@@ -67,6 +81,46 @@ pub(crate) fn take_mengde_pe_offline_check(
     mem.write_u32(sdk.wrapping_add(0x18), u32::MAX)?;
     mem.write_u32(sdk.wrapping_add(0x10), 0)?;
     Ok(Some((COMPLETE_CHECK, context)))
+}
+
+const STAR_BALL_TARIFF_CALLBACK: u32 = CODE_BASE + 0xcd40;
+const STAR_BALL_SDK_CALLBACK: u32 = CODE_BASE + 0x2_a04c;
+const STAR_BALL_SDK_CONTEXT: u32 = CODE_BASE + 0x2_a050;
+const STAR_BALL_REQUEST_KIND: u32 = 0x684;
+const STAR_BALL_CONTINUE_ROUND: u32 = 0x38;
+
+fn star_ball_continue_context(mem: &GuestMem) -> Result<Option<u32>, MemError> {
+    if mem.read_u32(STAR_BALL_SDK_CALLBACK)? != STAR_BALL_TARIFF_CALLBACK {
+        return Ok(None);
+    }
+    let context = mem.read_u32(STAR_BALL_SDK_CONTEXT)?;
+    let kind = mem.read_u32(context + STAR_BALL_REQUEST_KIND)?;
+    Ok((kind == STAR_BALL_CONTINUE_ROUND).then_some(context))
+}
+
+pub(crate) fn star_ball_is_continue_query(
+    mem: &GuestMem,
+    return_pc: u32,
+) -> Result<bool, MemError> {
+    Ok(return_pc == CODE_BASE + 0x1_0b7c && star_ball_continue_context(mem)?.is_some())
+}
+
+pub(crate) fn take_star_ball_unavailable_continue(
+    mem: &mut GuestMem,
+) -> Result<Option<(u32, u32)>, MemError> {
+    const SDK_SCREEN: u32 = CODE_BASE + 0x2_a8b8;
+    const SDK_PENDING: u32 = CODE_BASE + 0x2_9f30;
+    const CHANNEL_UNAVAILABLE: u32 = 6;
+    if mem.read_u32(SDK_SCREEN)? != CHANNEL_UNAVAILABLE {
+        return Ok(None);
+    }
+    let Some(context) = star_ball_continue_context(mem)? else {
+        return Ok(None);
+    };
+    // Close the SDK dialog before reporting the declined continue.
+    mem.write_u32(SDK_SCREEN, 0)?;
+    mem.write_u32(SDK_PENDING, 0)?;
+    Ok(Some((STAR_BALL_TARIFF_CALLBACK, context)))
 }
 
 pub(crate) fn repair_universe_storm_bitmap_block(src: u32, data: &mut [u8]) {

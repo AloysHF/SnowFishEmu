@@ -106,7 +106,7 @@ executes through the root-table stubs unchanged.
 | `+0x12C` | GDI set_clip(obj, x, y, w, h) |
 | `+0x130` | GDI line(obj, x0, y0, x1, y1) with the canvas pen |
 | `+0x134` | GDI blit(obj, bmp, x, y, flags) — bitmap at its own size |
-| `+0x140` | Dialog chrome approximation |
+| `+0x140` | GDI rectangle outline(obj, x, y, w, h) with the canvas pen |
 | `+0x14C` | GDI text run(obj, u16 string, first, count, x, y, flags) |
 | `+0x154` | GDI text(obj, u16 string, x, y, font), using the canvas RGB888 pen |
 | `+0x15C` | GDI fill(obj, x, y, w, h) with the canvas pen |
@@ -152,7 +152,10 @@ over the carrier channel?* The SDK asks once at boot and every title
 gates its own state machine on the answer. A zero makes
 `SFPaySvc_CheckSms` return before it looks anything up and leaves most of
 the corpus parked on its pay page, so the platform answers 1 — it is a
-phone with a SIM.
+phone with a SIM. With offline provisioning enabled, the supported
+StarBall build receives 0 for the query to continue a spent round. The
+emulator completes that SDK request as declined, allowing the guest to
+show its normal Game Over screen.
 
 `+0x524` is the generic service lookup and takes two shapes:
 

@@ -102,10 +102,16 @@ The offline services are opt-in per run:
   build also receives completion for the legacy SDK check it starts
   after the first NPC dialogue. The game's callback records the outcome
   and its regular timer resumes movement.
+- With the same options active, the supported StarBall build receives a
+  decline through its SDK callback when it asks to continue after the last
+  ball. The game's own Game Over sequence returns it to the main menu.
 - The per-frame app-resume pump (selector 3) is enabled for most packages.
   The supported 新鬼吹灯 build uses its boot resume and the SDK timer.
   Its key events are queued until the next timer poll, with one press per
   poll, so a short tap reaches the game before its release.
+
+The supported StarBall build receives dedicated navigation key codes
+for all four D-pad directions. Its menus rely on these codes.
 
 Unknown slots are not silently ignored: unimplemented slots the corpus
 exercises are recorded, and `SF_TRACE` logs every platform slot and GDI
@@ -115,7 +121,8 @@ operation for compatibility work.
 
 The guest owns a 240x320 RGB565 surface at `0x540720`, managed by the GDI
 bridge (`gdi.rs`). The GDI slots the corpus drives are served natively:
-rectangular fills, clipped one-pixel lines (`+0x130`), the canvas pen/colour state
+rectangular fills, clipped one-pixel lines (`+0x130`) and outlines (`+0x140`),
+the canvas pen/colour state
 (`+0x180` set-color, `+0x184` clear), text runs in UTF-16 (`+0x154`, the
 `+0x14C` character-range sibling), bitmap register/draw with palette and
 color-key semantics (`+0x194`/`+0x198`/`+0x134`), canvas clipping
