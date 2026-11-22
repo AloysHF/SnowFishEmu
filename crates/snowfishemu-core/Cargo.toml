@@ -7,13 +7,12 @@ license.workspace = true
 
 [dependencies]
 unarm = "2.3"
-anyhow.workspace = true
 thiserror.workspace = true
 log.workspace = true
 serde.workspace = true
 bincode.workspace = true
 armv4t_emu.workspace = true
-unifont = "1.1"
+unifont.workspace = true
 
 [dev-dependencies]
 cargo-husky = { version = "1", default-features = false, features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"] }
