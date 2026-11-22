@@ -32,14 +32,15 @@ const DEFAULT_INSTRUCTION_LIMIT: u64 = 200_000_000;
 struct Args {
     /// Path to a `.app` package.
     path: PathBuf,
-    /// Answer the purchase service as a registered handset (the same
-    /// switch as sfa_headless `--free-play` / `SF_FREE_PLAY=1`).
+    /// Turn the registered-handset purchase answers off for diagnostics
+    /// (they are on by default; `SF_FREE_PLAY=0` is the environment
+    /// opt-out).
     #[arg(long)]
-    free_play: bool,
-    /// Answer the SDK's HTTP transactions locally (the same switch as
-    /// sfa_headless `--offline-http` / `SF_OFFLINE_HTTP=1`).
+    no_free_play: bool,
+    /// Turn the local HTTP responder off for diagnostics (it is on by
+    /// default; `SF_OFFLINE_HTTP=0` is the environment opt-out).
     #[arg(long)]
-    offline_http: bool,
+    no_offline_http: bool,
     /// Run without opening a window.
     #[arg(long)]
     headless: bool,
@@ -108,14 +109,14 @@ fn main() -> Result<()> {
         std::fs::read(&args.path).with_context(|| format!("read {}", args.path.display()))?;
     let res = discover_res_containers(&args.path)?;
     let mut machine = SnowFishMachine::load(container, &res)?;
-    // The flags only ever turn the switches ON: `SF_FREE_PLAY` /
-    // `SF_OFFLINE_HTTP` are honoured by the core at load, and a flag adds
-    // the switch on top rather than overriding an env var back off.
-    if args.free_play {
-        machine.set_free_play(true);
+    // Both provisioning switches are on by default (the core installs the
+    // registered-handset answers and the HTTP responder at load);
+    // `--no-free-play` / `--no-offline-http` turn one off for diagnostics.
+    if args.no_free_play {
+        machine.set_free_play(false);
     }
-    if args.offline_http {
-        machine.set_offline_http(true);
+    if args.no_offline_http {
+        machine.set_offline_http(false);
     }
     machine.boot(args.instruction_limit)?;
 

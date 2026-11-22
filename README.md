@@ -46,17 +46,18 @@ identifiers. Save states use the `SFEMSTAT` signature.
   every frame by default; without it several titles never leave their
   loading screen. `set_app_pump(false)` / `--no-app-pump` /
   `SF_NO_APP_PUMP=1` disables it for diagnostics
-- **Offline HTTP responder** — `SF_OFFLINE_HTTP=1` (or `--offline-http`)
-  answers the SDK's carrier-facing HTTP transaction locally with a
-  payload-free `200 OK`, runs the SDK's own result parser and notifies its
-  registered completion callback for every transaction. It is off by
-  default so titles that never reach the network are untouched;
-  `set_offline_http(bool)` is the library equivalent
-- **Free play** — `SF_FREE_PLAY=1` (or `--free-play`) makes the platform
-  answer the purchase service as a registered, billing-capable handset:
-  carrier billing present, subscriber identity found, and the
-  `__sfssuid`/`ssu<id>` account record backed by the service store. The
-  guest still runs its own flow; nothing is forced into its state
+- **Offline HTTP responder** — the platform answers the SDK's
+  carrier-facing HTTP transaction locally with a payload-free `200 OK`,
+  runs the SDK's own result parser and notifies its registered completion
+  callback for every transaction. On by default and inert for titles that
+  never reach the network; `set_offline_http(bool)` is the library
+  equivalent, `SF_OFFLINE_HTTP=0` / `--no-offline-http` the opt-outs
+- **Free play** — the platform answers the purchase service as a
+  registered, billing-capable handset by default: carrier billing present,
+  subscriber identity found, and the `__sfssuid`/`ssu<id>` account record
+  backed by the service store. The guest still runs its own flow; nothing
+  is forced into its state. `set_free_play(bool)` is the library
+  equivalent, `SF_FREE_PLAY=0` / `--no-free-play` the opt-outs
 - **RetroArch core** — the `snowfishemu_libretro` core runs the same
   machine under RetroArch and other libretro frontends
 
@@ -106,12 +107,14 @@ the headless harness, and all command-line options.
 Standalone (240x320 window, keyboard controls):
 
 ```sh
-snowfishemu <path/to/game.app> [--free-play] [--offline-http] [--scale N]
+snowfishemu <path/to/game.app> [--scale N]
 ```
 
-`--free-play` and `--offline-http` are the same switches as sfa_headless's
-(they turn on what `SF_FREE_PLAY=1` / `SF_OFFLINE_HTTP=1` turn on; those
-environment variables are honoured too).
+The offline startup answers (registered-handset purchase service, local
+HTTP transactions) are on by default, so every title launches with the
+same command. `--no-free-play` / `--no-offline-http` turn one off for
+diagnostics; `SF_FREE_PLAY=0` / `SF_OFFLINE_HTTP=0` are the environment
+opt-outs.
 
 | Key | Phone control |
 |---|---|
@@ -139,11 +142,12 @@ Headless bring-up harness (used by the test tooling; per-frame
 framebuffer dumps for offline analysis):
 
 ```sh
-sfa_headless <path/to/game.app> --frames 30 [--dump-fb <dir>] [--keys 10 --keys 5] [--press frame:key] [--free-play] [--offline-http] [--no-app-pump] [--no-keys]
+sfa_headless <path/to/game.app> --frames 30 [--dump-fb <dir>] [--keys 10 --keys 5] [--press frame:key] [--no-free-play] [--no-offline-http] [--no-app-pump] [--no-keys]
 ```
 
-`--free-play` is the same switch as `SF_FREE_PLAY=1`; `--offline-http` is
-the same as `SF_OFFLINE_HTTP=1`. A download request naming a pack is
+`--no-free-play` / `--no-offline-http` turn a provisioning switch off
+for diagnostics (`SF_FREE_PLAY=0` / `SF_OFFLINE_HTTP=0` are the
+environment equivalents). A download request naming a pack is
 answered with that pack's own bytes. `--no-keys` skips the
 automatic bring-up key replay so an explicit `--keys` sequence is the
 only input. `--press frame:key` fires a single key at an exact frame,
@@ -156,7 +160,7 @@ reach the gobang board; a directional key then moves the cursor and OK
 places a stone — see docs/Game-Compatibility.md for each title's recipe):
 
 ```sh
-sfa_headless <game.app> --frames 200 --no-keys --free-play --offline-http   --press 30:10 --press 60:10 --press 90:10 --press 120:10 --press 150:10 --press 180:10
+sfa_headless <game.app> --frames 200 --no-keys --press 30:10 --press 60:10 --press 90:10 --press 120:10 --press 150:10 --press 180:10
 ```
 
 Package inspector:
@@ -174,7 +178,7 @@ with scripted `--press frame:key` phone-key presses, prints
 window:
 
 ```sh
-snowfishemu <game.app> -S shot.png --screenshot-frames 200 --free-play --offline-http \
+snowfishemu <game.app> -S shot.png --screenshot-frames 200 \
   --press 30:10 --press 60:10 --press 90:10 --press 120:10 --press 150:10 --press 180:10
 ```
 

@@ -81,49 +81,49 @@ $recipes = @{
     "SanguoTD8_QVGA_SNOWFISHV2" = @{
         Image  = "三国危城无双"
         Frames = 200
-        Flags  = @("--free-play", "--offline-http")
+        Flags  = @()
         Press  = @("30:10", "60:10", "90:10", "120:10", "150:10", "180:10")
     }
     "trunk_QVGA_SNOWFISHV2" = @{
         Image  = "五子棋"
         Frames = 200
-        Flags  = @("--free-play", "--offline-http")
+        Flags  = @()
         Press  = @("30:10", "60:10", "90:10", "120:10", "150:10", "180:10")
     }
     "Mengde_QVGA_SNOWFISHV2" = @{
         Image  = "巨作RPG曹操冢"
         Frames = 200
-        Flags  = @("--free-play", "--offline-http")
+        Flags  = @()
         Press  = @("30:10", "60:10", "90:10", "120:10", "150:10", "180:10")
     }
     "Mengde_i_QVGA_SNOWFISHV2" = @{
         Image  = "曹操冢超豪华版"
         Frames = 200
-        Flags  = @("--free-play", "--offline-http")
+        Flags  = @()
         Press  = @("30:10", "60:10", "90:10", "120:10", "150:10", "180:10")
     }
     "yonghengmota_QVGA_SNOWFISHV2" = @{
         Image  = "永恒魔塔"
         Frames = 200
-        Flags  = @("--free-play", "--offline-http")
+        Flags  = @()
         Press  = @("30:10", "60:10", "90:10", "120:10", "150:10", "180:10")
     }
     "yzxyl_QVGA_SNOWFISHV2" = @{
         Image  = "胭脂戏游龙"
         Frames = 200
-        Flags  = @("--free-play", "--offline-http")
+        Flags  = @()
         Press  = @("30:10", "60:10", "90:10", "120:10", "150:10", "180:10")
     }
     "StarBall_QVGA_SNOWFISHV2" = @{
         Image  = "新星际撞球"
         Frames = 520
-        Flags  = @("--free-play", "--offline-http")
+        Flags  = @()
         Press  = @("30:10", "200:10", "400:10")
     }
     "Mengde_pe_QVGA_SNOWFISHV2" = @{
         Image  = "新鬼吹灯"
         Frames = 300
-        Flags  = @("--free-play", "--offline-http")
+        Flags  = @()
         Press  = @("30:5", "60:5", "90:5", "120:5")
     }
     "hjkg_QVGA_SNOWFISHV2" = @{

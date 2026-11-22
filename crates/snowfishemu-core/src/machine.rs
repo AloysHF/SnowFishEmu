@@ -268,13 +268,15 @@ impl EventQueue {
     }
 }
 
-/// State of the optional offline HTTP responder.
+/// State of the offline HTTP responder.
 ///
 /// The shared SDK opens one socket, writes its request through +0xE4, then
 /// reads the whole response through +0xE0 before its completion callback is
 /// allowed to run. On a real handset the carrier-facing endpoint answers;
-/// here the platform can stand in for that endpoint locally. The responder
-/// is inert unless enabled.
+/// here the platform stands in for that endpoint locally. The responder is
+/// on by default and only acts when the guest actually drives the socket
+/// path, so titles that never reach the network are untouched;
+/// `SF_OFFLINE_HTTP=0` opts out.
 #[derive(Default)]
 struct HttpResponder {
     enabled: bool,
@@ -547,7 +549,7 @@ impl SnowFishMachine {
                 .then_with(|| a.name.cmp(&b.name))
         });
         res_packs.dedup_by(|a, b| a.name == b.name);
-        Ok(Self {
+        let mut machine = Self {
             mem,
             cpu: ArmCpu::new(),
             code_base: CODE_BASE,
@@ -572,9 +574,13 @@ impl SnowFishMachine {
             ui_timers: Vec::new(),
             ui_clock_ms: 0,
             named_files: std::collections::HashMap::new(),
-            free_play: std::env::var_os("SF_FREE_PLAY").is_some_and(|v| v != "0"),
+            // Free-play provisioning and the offline HTTP responder are on
+            // by default so every title launches the same way;
+            // SF_FREE_PLAY=0 / SF_OFFLINE_HTTP=0 are the environment
+            // opt-outs.
+            free_play: !std::env::var_os("SF_FREE_PLAY").is_some_and(|v| v == "0"),
             http: HttpResponder {
-                enabled: std::env::var_os("SF_OFFLINE_HTTP").is_some_and(|v| v != "0"),
+                enabled: !std::env::var_os("SF_OFFLINE_HTTP").is_some_and(|v| v == "0"),
                 asset: std::env::var_os("SF_SERVE_ASSET")
                     .and_then(|p| std::fs::read(p).ok())
                     .unwrap_or_default(),
@@ -582,7 +588,14 @@ impl SnowFishMachine {
                 ..HttpResponder::default()
             },
             app_pump: std::env::var_os("SF_NO_APP_PUMP").is_none(),
-        })
+        };
+        // The registered-handset callables back the default-on answers; a
+        // later `set_free_play(false)` turns the answers off without
+        // rewriting guest memory (the +0x524 handler gates on the flag).
+        if machine.free_play {
+            machine.install_free_play_provisioning();
+        }
+        Ok(machine)
     }
 
     /// Finds the resource pack a request path asks for.
@@ -617,38 +630,45 @@ impl SnowFishMachine {
     /// (`__sfssuid`/`ssu<id>`) on every drive root. A platform that answers
     /// "no" to any of those parks the title on a registration page.
     ///
-    /// Free play answers the way a registered handset would. It does not
-    /// touch the guest's own state machine: the title still has to accept the
-    /// answers and open its own play state.
+    /// Free play is on by default (`SF_FREE_PLAY=0` opts out) and answers
+    /// the way a registered handset would. It does not touch the guest's own
+    /// state machine: the title still has to accept the answers and open its
+    /// own play state.
     pub fn set_free_play(&mut self, on: bool) {
         self.free_play = on;
-        // The identity callable gains a real body: the SDK calls it with
-        // r0 = its ICCID buffer, so the entry copies the SIM serial into
-        // the buffer and returns 0. The method-table words beyond the
-        // stublet (offsets +0x48 and up) still point at the entry.
         if on {
-            let image = crate::plat::iccid_stublet_image();
-            if image.len() <= crate::plat::SERVICE_CALLABLE_LEN as usize * 4 {
-                let _ = self.mem.write(crate::plat::SERVICE_CALLABLE_ADDR, &image);
-                for i in (image.len() / 4)..crate::plat::SERVICE_CALLABLE_LEN as usize {
-                    let _ = self.mem.write_u32(
-                        crate::plat::SERVICE_CALLABLE_ADDR + i as u32 * 4,
-                        crate::plat::SERVICE_CALLABLE_ADDR,
-                    );
-                }
+            self.install_free_play_provisioning();
+        }
+    }
+
+    /// Writes the registered-handset callables into the platform region.
+    ///
+    /// The identity callable gains a real body: the SDK calls it with
+    /// r0 = its ICCID buffer, so the entry copies the SIM serial into
+    /// the buffer and returns 0. The method-table words beyond the
+    /// stublet (offsets +0x48 and up) still point at the entry.
+    fn install_free_play_provisioning(&mut self) {
+        let image = crate::plat::iccid_stublet_image();
+        if image.len() <= crate::plat::SERVICE_CALLABLE_LEN as usize * 4 {
+            let _ = self.mem.write(crate::plat::SERVICE_CALLABLE_ADDR, &image);
+            for i in (image.len() / 4)..crate::plat::SERVICE_CALLABLE_LEN as usize {
+                let _ = self.mem.write_u32(
+                    crate::plat::SERVICE_CALLABLE_ADDR + i as u32 * 4,
+                    crate::plat::SERVICE_CALLABLE_ADDR,
+                );
             }
-            // SF_IDENTITY="field,field,..." carries the plain identity
-            // field list the SDK's record checksum gate wants. The core
-            // encodes it (XOR-0xF5 + the trailing checksum byte) and
-            // installs the record callable behind it; the +0x524 handler
-            // routes the record lookup to it. Without the record the SDK
-            // fails the checksum and parks the session on the invalid-SIM
-            // dialog.
-            if let Ok(fields) = std::env::var("SF_IDENTITY") {
-                let record = crate::plat::identity_record(&fields);
-                let image = crate::plat::identity_record_image(&record);
-                let _ = self.mem.write(crate::plat::SERVICE_CALLABLE2_ADDR, &image);
-            }
+        }
+        // SF_IDENTITY="field,field,..." carries the plain identity
+        // field list the SDK's record checksum gate wants. The core
+        // encodes it (XOR-0xF5 + the trailing checksum byte) and
+        // installs the record callable behind it; the +0x524 handler
+        // routes the record lookup to it. Without the record the SDK
+        // fails the checksum and parks the session on the invalid-SIM
+        // dialog.
+        if let Ok(fields) = std::env::var("SF_IDENTITY") {
+            let record = crate::plat::identity_record(&fields);
+            let image = crate::plat::identity_record_image(&record);
+            let _ = self.mem.write(crate::plat::SERVICE_CALLABLE2_ADDR, &image);
         }
     }
 
@@ -657,9 +677,10 @@ impl SnowFishMachine {
         self.free_play
     }
 
-    /// Enables the local HTTP responder (`SF_OFFLINE_HTTP=1`).
+    /// Turns the local HTTP responder off or back on.
     ///
-    /// The SDK's billing endpoint is long gone. With this switch the
+    /// The responder is on by default (`SF_OFFLINE_HTTP=0` opts out). The
+    /// SDK's billing endpoint is long gone; with the responder active the
     /// platform answers the socket read path itself with a payload-free
     /// `200 OK` and delivers the async completion notification the SDK
     /// registered through +0x570, so the guest's own HTTP result parser
@@ -3239,8 +3260,10 @@ mod tests {
         assert_eq!(m.mem.read_u32(out).unwrap(), plat::SERVICE_OBJ_ADDR);
         assert_eq!(m.cpu.reg_get(0), 1);
 
-        // Untargeted call (register garbage as the type): the historical
-        // record-the-pointer behaviour, with the out-pointer left alone.
+        // Untargeted call (register garbage as the type) with free play
+        // off: the historical record-the-pointer behaviour, with the
+        // out-pointer left alone.
+        m.set_free_play(false);
         let junk_out = plat::ROOT_ADDR + 0x2100;
         m.cpu.reg_set(0, 0x120D_E2BD);
         m.cpu.reg_set(1, 0xCF14_D7B7);
@@ -3288,6 +3311,9 @@ mod tests {
     #[test]
     fn sim_lookup_is_answered_under_free_play() {
         let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        // The negative phase pins the off state, which the default-on
+        // load must opt out of explicitly here.
+        m.set_free_play(false);
         let out = plat::ROOT_ADDR + 0x2200;
         // type/id as the pay service passes them, out-pointer to a scratch word.
         m.cpu.reg_set(0, 0x120D_E2BD);
@@ -3364,6 +3390,9 @@ mod tests {
     #[test]
     fn account_record_files_are_served_under_free_play() {
         let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        // The negative phase pins the off state, which the default-on
+        // load must opt out of explicitly here.
+        m.set_free_play(false);
         let path_at = plat::ROOT_ADDR + 0x3000;
         let write_path = |m: &mut SnowFishMachine, s: &str| {
             let mut bytes = Vec::new();
@@ -3727,6 +3756,9 @@ mod tests {
     #[test]
     fn network_slots_stay_generic_when_the_responder_is_off() {
         let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        // The negative phase pins the off state, which the default-on
+        // load must opt out of explicitly here.
+        m.set_offline_http(false);
         for slot in [0xC8, 0xE0, 0xEC, 0x570] {
             let w = Wrapper {
                 slot,

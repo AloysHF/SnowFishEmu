@@ -41,14 +41,15 @@ struct Args {
     /// hex len). Repeatable, e.g. `--dump-mem 60d5ec:400:heap.bin`.
     #[arg(long = "dump-mem")]
     dump_mem: Vec<String>,
-    /// Answer the purchase service as a registered, billing-capable handset
-    /// so trial titles reach their own play state (same as `SF_FREE_PLAY=1`).
+    /// Turn the registered-handset purchase answers off for diagnostics
+    /// (they are on by default; `SF_FREE_PLAY=0` is the environment
+    /// opt-out).
     #[arg(long)]
-    free_play: bool,
-    /// Answer the SDK's carrier-facing HTTP request locally instead of
-    /// leaving the transaction pending (same as `SF_OFFLINE_HTTP=1`).
+    no_free_play: bool,
+    /// Turn the local HTTP responder off for diagnostics (it is on by
+    /// default; `SF_OFFLINE_HTTP=0` is the environment opt-out).
     #[arg(long)]
-    offline_http: bool,
+    no_offline_http: bool,
     /// Side-load a local file to answer download requests whose path contains
     /// the `--serve-match` substring (default `.pak`). Same as `SF_SERVE_ASSET`.
     /// The bytes are a real local artifact, not fabricated server data.
@@ -70,11 +71,13 @@ fn main() -> Result<()> {
         std::fs::read(&args.path).with_context(|| format!("read {}", args.path.display()))?;
     let res = discover_res_containers(&args.path)?;
     let mut m = SnowFishMachine::load(container, &res)?;
-    if args.free_play {
-        m.set_free_play(true);
+    // Both provisioning switches are on by default; `--no-free-play` /
+    // `--no-offline-http` turn one off for diagnostics.
+    if args.no_free_play {
+        m.set_free_play(false);
     }
-    if args.offline_http {
-        m.set_offline_http(true);
+    if args.no_offline_http {
+        m.set_offline_http(false);
     }
     if let Some(path) = &args.serve_asset {
         let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;

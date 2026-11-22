@@ -8,14 +8,17 @@ The billing service reports "present" by default (the +0x4C slot
 returns 1): the platform is a handset with a SIM, so the SDK's pay
 service runs its whole SMS pass instead of exiting at the first check.
 
-`--free-play` additionally answers the subscriber-identity lookup and
+Free play additionally answers the subscriber-identity lookup and
 backs the account record files with the service store — i.e. the
 platform claims to be a *registered* handset. It does not patch the
 guest: the title still has to accept the answers and open its own play
-state. `--offline-http` answers the SDK's carrier-facing HTTP
-transactions locally and runs the SDK's own result parser. The
-app-activate pump (selector 3) is on by default;
-`--no-app-pump` turns it off for diagnostics.
+state. The offline HTTP responder answers the SDK's carrier-facing HTTP
+transactions locally and runs the SDK's own result parser. Both are on
+by default so every title launches the same way;
+`SF_FREE_PLAY=0` / `--no-free-play` and `SF_OFFLINE_HTTP=0` /
+`--no-offline-http` turn one off for diagnostics. The app-activate pump
+(selector 3) is on by default; `--no-app-pump` turns it off for
+diagnostics.
 
 ## Corpus status
 
@@ -49,7 +52,7 @@ presses OK every ten frames and can cycle a title back into the SDK
 session page.
 
 ```sh
-sfa_headless <game.app> --frames 200 --free-play --offline-http --no-keys \
+sfa_headless <game.app> --frames 200 --no-keys \
   --press 30:10 --press 60:10 --press 90:10 --press 120:10 --press 150:10 --press 180:10
 ```
 
@@ -96,9 +99,10 @@ reaches the first level and steers the ship right.
 sfa_headless <game.app> --frames 132 --press 30:10 --press 60:5 --press 98:5 --press 130:6
 ```
 
-The desktop replay also works with `--free-play --offline-http`. The
-standalone frontend keeps servicing window messages during static frames,
-including the first-level loading screen.
+The recipe runs on the default launch settings (the provisioning answers
+are on by default and this title tolerates them). The standalone frontend
+keeps servicing window messages during static frames, including the
+first-level loading screen.
 
 Set `SF_UNIVERSE_STORM_APP` to the package path and run
 `cargo test -p snowfishemu-core --test universe_storm -- --ignored` to
@@ -128,7 +132,7 @@ The headless harness drives the same machine without a window:
 
 ```sh
 sfa_headless <game.app> --frames 30 [--dump-fb <dir>] \
-  [--free-play] [--offline-http] [--no-keys] [--keys 10] [--press frame:key]
+  [--no-free-play] [--no-offline-http] [--no-keys] [--keys 10] [--press frame:key]
 ```
 
 Sibling resource containers are discovered next to the package
@@ -144,10 +148,10 @@ framebuffer at `540720:25800` (raw RGB565).
 
 - `SF_4C="lr:val;*:val"` — override the +0x4C billing-capability result
   per call site (hex LRs; `*` sets the base, default 1)
-- `SF_FREE_PLAY=1` — answer the purchase service as a registered handset
-  (`sfa_headless --free-play` does the same)
-- `SF_OFFLINE_HTTP=1` — answer the SDK's HTTP transactions locally
-  (`sfa_headless --offline-http` does the same)
+- `SF_FREE_PLAY=0` — turn the registered-handset purchase answers off
+  (they are on by default; `--no-free-play` does the same)
+- `SF_OFFLINE_HTTP=0` — turn the local HTTP responder off
+  (`--no-offline-http` does the same)
 - `SF_NO_APP_PUMP=1` — suppress the per-frame selector-3 event
   (`sfa_headless --no-app-pump` does the same)
 - `SF_SEED="addr:val;..."` — write guest words once after boot
