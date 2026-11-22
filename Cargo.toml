@@ -27,6 +27,7 @@ bincode = "1"             # Compact save-state binary encoding
 armv4t_emu = { version = "0.1.3", features = ["serde-serialize"] }  # Pure Rust ARMv4T/Thumb interpreter
 unifont = "1.1"           # Embedded Unicode bitmap font (text rendering)
 clap = { version = "4", features = ["derive"] }  # CLI argument parsing (standalone)
+image = { version = "0.25", default-features = false, features = ["png"] }  # PNG screenshots (standalone)
 minifb = "0.29"           # Window creation and pixel rendering (standalone)
 env_logger = "0.11"       # Log output to stderr (standalone)
 

@@ -168,37 +168,40 @@
 
   /* --------------------------------------------------------- gallery */
 
-  // The local validation corpus (docs/Game-Compatibility.md). The tiles are
-  // original monogram art — no game assets are distributed with the site.
+  // The local validation corpus (docs/Game-Compatibility.md). The
+  // screenshots are emulator-rendered frame captures committed under
+  // docs/images/ (regenerate with scripts/corpus_screenshots.py) and
+  // hot-linked from the repository, so the site itself ships no game data.
+  var REPO = 'https://raw.githubusercontent.com/AloysHF/SnowFishEmu/master';
   var GAMES = [
-    { name: '五子棋', en: 'Gobang', monogram: '棋', grad: ['#7bbf9a', '#2f7d5f'],
+    { name: '五子棋', en: 'Gobang', img: '五子棋',
       noteZh: '木纹棋盘与光标可用：方向键移动、OK 落子',
       noteEn: 'The wooden board with a working cursor; arrows move, OK places a stone' },
-    { name: '(终身)三国危城无双', en: 'Sanguo: Besieged City', monogram: '危', grad: ['#e08a5a', '#a33e28'],
-      noteZh: '自有开场（危城龙纹）与塔防教程菜单',
+    { name: '(终身)三国危城无双', en: 'Sanguo: Besieged City', img: '三国危城无双',
+      noteZh: '危城龙纹开场，随后进入塔防教程菜单',
       noteEn: 'The dragon-art splash and the tower-defence tutorial menu' },
-    { name: '巨作RPG曹操冢', en: 'Caocao Tomb (RPG)', monogram: '曹', grad: ['#c9856a', '#7a3b52'],
+    { name: '巨作RPG曹操冢', en: 'Caocao Tomb (RPG)', img: '巨作RPG曹操冢',
       noteZh: '游戏进行中，帮助对话框文本可读',
       noteEn: 'Gameplay with the help dialog text readable' },
-    { name: '曹操冢超豪华版', en: 'Caocao Tomb Deluxe', monogram: '豪', grad: ['#d4a55e', '#8a5a2f'],
+    { name: '曹操冢超豪华版', en: 'Caocao Tomb Deluxe', img: '曹操冢超豪华版',
       noteZh: '游戏进行中，帮助栏与精灵图页正常',
       noteEn: 'Gameplay; the help bar and sprite pages render' },
-    { name: '永恒魔塔', en: 'Eternal Magic Tower', monogram: '塔', grad: ['#8f7fd0', '#4a3f8f'],
+    { name: '永恒魔塔', en: 'Eternal Magic Tower', img: '永恒魔塔',
       noteZh: '魔塔楼层渲染，剧情对话完整可读',
       noteEn: 'The magic-tower floor with fully readable story dialog' },
-    { name: '胭脂戏游龙', en: 'Rouge Dragon', monogram: '胭', grad: ['#e37f95', '#99304e'],
-      noteZh: '首场景、对话框与移动教程正常',
+    { name: '胭脂戏游龙', en: 'Rouge Dragon', img: '胭脂戏游龙',
+      noteZh: '西门庆居场景、对话框与移动教程正常',
       noteEn: 'The first scene, the dialog box and the movement tutorial' },
-    { name: '新星际撞球', en: 'Star Ball', monogram: '星', grad: ['#5aa8d8', '#1f5f9e'],
+    { name: '新星际撞球', en: 'Star Ball', img: '新星际撞球',
       noteZh: '砖块棋盘、球与挡板可玩（计分区有已知的显示小问题）',
       noteEn: 'The board, ball and paddle run; a cosmetic score-strip gap' },
-    { name: '新鬼吹灯', en: 'Ghost Blowing Lantern', monogram: '灯', grad: ['#d9a441', '#7a4a1f'],
+    { name: '新鬼吹灯', en: 'Ghost Blowing Lantern', img: '新鬼吹灯',
       noteZh: '完整标题、剧情过场、菜单与战斗',
       noteEn: 'The full title, story intro, menu and battle' },
-    { name: '黄金矿工', en: 'Gold Miner', monogram: '金', grad: ['#f0c34e', '#c98a1e'],
+    { name: '黄金矿工', en: 'Gold Miner', img: '黄金矿工',
       noteZh: '标题即可开始第一关（离线）',
       noteEn: 'The title starts the first level directly, offline' },
-    { name: '宇宙风暴', en: 'Universe Storm', monogram: '宇', grad: ['#64c9e8', '#1668a0'],
+    { name: '宇宙风暴', en: 'Universe Storm', img: '宇宙风暴',
       noteZh: '菜单与第一关可玩，内嵌音乐与位图正常加载',
       noteEn: 'Menu and first level; embedded music and bitmaps load' }
   ];
@@ -212,22 +215,12 @@
 
       var tile = document.createElement('div');
       tile.className = 'gallery-tile';
-      tile.style.background = 'linear-gradient(160deg, ' + game.grad[0] + ', ' + game.grad[1] + ')';
-      tile.setAttribute('aria-hidden', 'true');
-
-      var gloss = document.createElement('span');
-      gloss.className = 'tile-gloss';
-      tile.appendChild(gloss);
-      [['f1', '❄'], ['f2', '❄'], ['f3', '✦']].forEach(function (flake) {
-        var el = document.createElement('span');
-        el.className = 'tile-flake ' + flake[0];
-        el.textContent = flake[1];
-        tile.appendChild(el);
-      });
-      var mono = document.createElement('span');
-      mono.className = 'monogram';
-      mono.textContent = game.monogram;
-      tile.appendChild(mono);
+      var shot = document.createElement('img');
+      shot.className = 'gallery-shot';
+      shot.loading = 'lazy';
+      shot.src = REPO + '/docs/images/' + encodeURIComponent(game.img) + '.png';
+      shot.alt = lang === 'en' ? game.en : game.name;
+      tile.appendChild(shot);
 
       var name = document.createElement('figcaption');
       name.className = 'gallery-name';
@@ -240,15 +233,9 @@
       chip.innerHTML = '<span class="chip-dot"></span>' + (translations[lang] && translations[lang]['gallery-playable']);
       meta.appendChild(chip);
 
-      var note = document.createElement('div');
-      note.className = 'gallery-note-text';
-      note.style.display = 'none';
-      note.textContent = lang === 'en' ? game.noteEn : game.noteZh;
-
       card.appendChild(tile);
       card.appendChild(name);
       card.appendChild(meta);
-      card.appendChild(note);
       card.title = lang === 'en' ? game.noteEn : game.noteZh;
       grid.appendChild(card);
     });

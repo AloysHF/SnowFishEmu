@@ -165,9 +165,10 @@ frontend. It can schedule phone-key presses at exact frames
 (`--press frame:key`), pump a fixed frame count, dump per-frame framebuffers
 (`--dump-fb`) and guest memory ranges (`--dump-mem`), side-load a local file
 for download requests (`--serve-asset`), and run with the offline switches.
-This is the preferred path for deterministic runtime regression checks, and
-`scripts/corpus_screenshots.py` uses it to produce the per-title captures in
-`docs/images/`.
+This is the preferred path for deterministic runtime regression checks. The
+standalone frontend's headless screenshot mode (`-S` with `--press` and
+`--screenshot-frames`) drives the same machine for the per-title captures in
+`docs/images/` (`scripts/batch-screenshots.ps1`).
 
 `sfa_info` inspects a package's header fields, segment layout, and
 relocation summary without running anything.

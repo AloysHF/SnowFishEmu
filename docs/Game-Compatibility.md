@@ -19,18 +19,21 @@ app-activate pump (selector 3) is on by default;
 
 ## Corpus status
 
-| Title | Status | Notes |
-|---|---|---|
-| 五子棋 (trunk) | **playable** | The wooden gobang board with a working cursor; directional keys move it and OK places a stone |
-| (终身)三国危城无双 | **playable** | The game's own splash (dragon art, 危城) and then the tower-defence tutorial with its menu (返回主菜单/优先完成) |
-| 巨作RPG曹操冢 (Mengde) | **playable** | Gameplay with the help dialog text readable (如当前武器为铲子时，可长按确定/5号键挖地) |
-| 曹操冢超豪华版 (Mengde i) | **playable** | Gameplay; the help bar renders (按数字键3可以查看大地图显示) and the sprite pages load |
-| 永恒魔塔 (yonghengmota) | **playable** | The magic-tower floor renders with the story dialog fully readable (宙斯：好女儿，乖女儿，就让我一次嘛…), the characters and the floor counter |
-| 胭脂戏游龙 (yzxyl) | **playable** | The 西门庆居 scene, the dialog box (与春梅对话) and the movement tutorial (使用8,2,4,6可以进行移动) |
-| 新星际撞球 (StarBall) | **playable** | The brick board, the ball and the paddle run; the top score strip draws the whole digit atlas instead of the score (cosmetic, see the known gaps) |
-| 新鬼吹灯 (Mengde pe) | **playable** | The full title screen; OK opens the story intro (scrolling, wrapped) and then the menu (新的游戏/继续游戏/帮助/退出) and the battle |
-| 黄金矿工 (hjkg) | **playable** | Start on the title screen opens the first level directly. Options → Start Game opens the local New Game / Level Select menu |
-| 宇宙风暴 (yzfb) | **playable** | The music prompt, title, and main menu render. New Game enters the scrolling first level, and directional keys move the ship |
+The screenshots are emulator-rendered frame captures at each title's
+documented play state; regenerate them with `scripts/batch-screenshots.ps1`.
+
+| Title | Screenshot | Status | Notes |
+|---|---|---|---|
+| 五子棋 (trunk) | <img src="images/五子棋.png" width="120" alt="五子棋"> | **playable** | The wooden gobang board with a working cursor; directional keys move it and OK places a stone |
+| (终身)三国危城无双 | <img src="images/三国危城无双.png" width="120" alt="三国危城无双"> | **playable** | The game's own splash (dragon art, 危城) and then the tower-defence tutorial with its menu (返回主菜单/优先完成) |
+| 巨作RPG曹操冢 (Mengde) | <img src="images/巨作RPG曹操冢.png" width="120" alt="巨作RPG曹操冢"> | **playable** | Gameplay with the help dialog text readable (如当前武器为铲子时，可长按确定/5号键挖地) |
+| 曹操冢超豪华版 (Mengde i) | <img src="images/曹操冢超豪华版.png" width="120" alt="曹操冢超豪华版"> | **playable** | Gameplay; the help bar renders (按数字键3可以查看大地图显示) and the sprite pages load |
+| 永恒魔塔 (yonghengmota) | <img src="images/永恒魔塔.png" width="120" alt="永恒魔塔"> | **playable** | The magic-tower floor renders with the story dialog fully readable (宙斯：好女儿，乖女儿，就让我一次嘛…), the characters and the floor counter |
+| 胭脂戏游龙 (yzxyl) | <img src="images/胭脂戏游龙.png" width="120" alt="胭脂戏游龙"> | **playable** | The 西门庆居 scene, the dialog box (与春梅对话) and the movement tutorial (使用8,2,4,6可以进行移动) |
+| 新星际撞球 (StarBall) | <img src="images/新星际撞球.png" width="120" alt="新星际撞球"> | **playable** | The brick board, the ball and the paddle run; the top score strip draws the whole digit atlas instead of the score (cosmetic, see the known gaps) |
+| 新鬼吹灯 (Mengde pe) | <img src="images/新鬼吹灯.png" width="120" alt="新鬼吹灯"> | **playable** | The full title screen; OK opens the story intro (scrolling, wrapped) and then the menu (新的游戏/继续游戏/帮助/退出) and the battle |
+| 黄金矿工 (hjkg) | <img src="images/黄金矿工.png" width="120" alt="黄金矿工"> | **playable** | Start on the title screen opens the first level directly. Options → Start Game opens the local New Game / Level Select menu |
+| 宇宙风暴 (yzfb) | <img src="images/宇宙风暴.png" width="120" alt="宇宙风暴"> | **playable** | The music prompt, title, and main menu render. New Game enters the scrolling first level, and directional keys move the ship |
 
 Every title now paints through the platform's UI timer: all ten arm
 `+0xAC` during create and drive their screens from the callback's

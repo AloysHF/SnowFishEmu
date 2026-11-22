@@ -157,13 +157,16 @@ sfa_info <path/to/game.app>
 The compatibility documentation and the site gallery use
 emulator-rendered captures, one per corpus title, produced by:
 
-```bash
-python scripts/corpus_screenshots.py --games <corpus-dir> [--out docs/images]
+```powershell
+scripts/batch-screenshots.ps1 -GameDirectory <corpus-dir>
 ```
 
-The script runs `sfa_headless` with each title's documented bring-up recipe
-from [Game Compatibility](Game-Compatibility.md), decodes the final dumped
-framebuffer, and writes `<display-name>.png`. No game data is distributed.
+The script drives the standalone emulator's headless screenshot mode
+(`-S <path>` with `--screenshot-frames` and scripted `--press frame:key`
+key presses) through each title's documented bring-up recipe from
+[Game Compatibility](Game-Compatibility.md), discovers the sibling
+resource containers next to each package, and writes `<display-name>.png`
+into `docs/images`. No game data is distributed.
 
 ## Examples
 

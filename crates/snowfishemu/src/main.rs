@@ -1,11 +1,15 @@
 //! SnowFishEmu standalone frontend: loads a `.app` package, boots the
 //! guest, and presents the 240x320 RGB565 surface in a scaled window.
+//! A headless mode with scripted key presses drives the corpus capture
+//! recipes (`scripts/batch-screenshots.ps1`).
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
+use log::{debug, info};
 use snowfishemu_core::plat::{FB_HEIGHT, FB_WIDTH};
 use snowfishemu_core::SnowFishMachine;
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 /// MTK key codes for the frontend's key map, mirroring the platform's
 /// logical indices (see core::machine::KEY_MAP for index → code).
@@ -19,6 +23,10 @@ mod keys {
     pub const SOFT_R: u8 = 25;
     pub const OK: u8 = 5;
 }
+
+/// Instruction budget per guest call. The corpus capture recipes in
+/// docs/Game-Compatibility.md are verified against this limit.
+const DEFAULT_INSTRUCTION_LIMIT: u64 = 200_000_000;
 
 #[derive(Parser)]
 struct Args {
@@ -36,17 +44,70 @@ struct Args {
     /// sfa_headless `--offline-http` / `SF_OFFLINE_HTTP=1`).
     #[arg(long)]
     offline_http: bool,
-    /// Window scale factor (default: fit 240x320 into ~640x854).
+    /// Run without opening a window.
+    #[arg(long)]
+    headless: bool,
+    /// Number of frames to run in headless mode.
+    #[arg(long, default_value_t = 60)]
+    frames: u32,
+    /// Instruction budget per guest call.
+    #[arg(long, default_value_t = DEFAULT_INSTRUCTION_LIMIT)]
+    instruction_limit: u64,
+    /// Take a PNG screenshot after running headlessly, then exit.
+    #[arg(short = 'S', long, value_name = "PATH")]
+    screenshot: Option<PathBuf>,
+    /// Number of frames to run before taking a screenshot.
+    #[arg(long, default_value_t = 30)]
+    screenshot_frames: u32,
+    /// Scripted phone-key press at an exact frame, `frame:key` with the
+    /// core's key indices (10 = left soft key, 5 = OK, 25 = right soft
+    /// key). Repeatable. Headless and screenshot runs only.
+    #[arg(long)]
+    press: Vec<String>,
+    /// Window scale factor (default: 2).
     #[arg(long)]
     scale: Option<u32>,
-    /// Instruction budget per guest call.
-    #[arg(long, default_value = "200000000")]
-    budget: u64,
+    /// Enable verbose logging.
+    #[arg(short, long)]
+    verbose: bool,
+}
+
+/// One scripted press: fire the key at `frame` for two guest frames.
+struct Press {
+    frame: u32,
+    key: u8,
+}
+
+fn parse_presses(specs: &[String]) -> Result<Vec<Press>> {
+    let mut script: Vec<Press> = specs
+        .iter()
+        .map(|spec| {
+            let (frame, key) = spec
+                .split_once(':')
+                .with_context(|| format!("--press wants frame:key, got {spec:?}"))?;
+            Ok(Press {
+                frame: frame
+                    .parse()
+                    .with_context(|| format!("bad frame in {spec:?}"))?,
+                key: key
+                    .parse()
+                    .with_context(|| format!("bad key in {spec:?}"))?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    script.sort_by_key(|press| press.frame);
+    Ok(script)
 }
 
 fn main() -> Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let args = Args::parse();
+    let log_level = if args.verbose {
+        log::LevelFilter::Debug
+    } else {
+        log::LevelFilter::Info
+    };
+    env_logger::Builder::new().filter_level(log_level).init();
+    let presses = parse_presses(&args.press)?;
     let container =
         std::fs::read(&args.path).with_context(|| format!("read {}", args.path.display()))?;
     let mut res = Vec::new();
@@ -63,7 +124,24 @@ fn main() -> Result<()> {
     if args.offline_http {
         machine.set_offline_http(true);
     }
-    machine.boot(args.budget)?;
+    machine.boot(args.instruction_limit)?;
+
+    if let Some(path) = &args.screenshot {
+        capture_screenshot(
+            &mut machine,
+            &presses,
+            args.screenshot_frames,
+            args.instruction_limit,
+            path,
+        )?;
+        return Ok(());
+    }
+
+    if args.headless {
+        run_scripted_frames(&mut machine, &presses, args.frames, args.instruction_limit)?;
+        info!("Headless run completed: {} frames", args.frames);
+        return Ok(());
+    }
 
     let scale = args.scale.unwrap_or(2).max(1) as usize;
     let width = FB_WIDTH as usize * scale;
@@ -88,7 +166,7 @@ fn main() -> Result<()> {
     while window.is_open() && !window.is_key_down(minifb::Key::Escape) {
         pump_keys(&mut window, &mut machine)?;
 
-        machine.run_frame(args.budget)?;
+        machine.run_frame(args.instruction_limit)?;
         let frame = machine.take_dirty().then(|| machine.frame_pixels());
         present_frame(frame.as_deref(), &mut pixels, scale, |pixels| {
             window.update_with_buffer(pixels, width, height)
@@ -99,6 +177,77 @@ fn main() -> Result<()> {
         }
         frame_start = std::time::Instant::now();
     }
+    Ok(())
+}
+
+/// Pump `frames` guest frames, firing the scripted presses at their
+/// scheduled frames (each press consumes two frames: down, then up).
+fn run_scripted_frames(
+    machine: &mut SnowFishMachine,
+    presses: &[Press],
+    frames: u32,
+    instruction_limit: u64,
+) -> Result<()> {
+    let total = presses
+        .last()
+        .map_or(frames, |press| frames.max(press.frame + 2));
+    let mut next = 0usize;
+    let mut i = 0u32;
+    while i < total {
+        if next < presses.len() && presses[next].frame <= i {
+            let press = &presses[next];
+            next += 1;
+            machine.set_key(press.key, true)?;
+            machine.run_frame(instruction_limit)?;
+            machine.set_key(press.key, false)?;
+            machine.run_frame(instruction_limit)?;
+            debug!("frame {i} press={}", press.key);
+            i += 2;
+            continue;
+        }
+        machine.run_frame(instruction_limit)?;
+        i += 1;
+    }
+    Ok(())
+}
+
+/// Save the presented frame as a PNG, with the blank-frame guard and the
+/// `frame nonzero=N colors=N` statistic the batch script parses.
+fn capture_screenshot(
+    machine: &mut SnowFishMachine,
+    presses: &[Press],
+    frames: u32,
+    instruction_limit: u64,
+    path: &Path,
+) -> Result<()> {
+    run_scripted_frames(machine, presses, frames, instruction_limit)?;
+
+    let pixels = machine.frame_pixels();
+    let colors: HashSet<u32> = pixels.iter().copied().collect();
+    if colors.len() <= 1 {
+        bail!("guest did not render a screenshot within {frames} frames");
+    }
+    let nonzero = pixels.iter().filter(|pixel| **pixel != 0).count();
+    info!("frame nonzero={nonzero} colors={}", colors.len());
+    // The presentation words carry 5-6-5 RGB expanded from the guest's
+    // RGB565 surface; pack them back into RGB8 bytes for the PNG.
+    let rgb: Vec<u8> = pixels
+        .iter()
+        .flat_map(|pixel| {
+            let pixel = *pixel;
+            let r = (pixel >> 19) & 0x1F;
+            let g = (pixel >> 10) & 0x3F;
+            let b = (pixel >> 3) & 0x1F;
+            [
+                (r * 255 / 31) as u8,
+                (g * 255 / 63) as u8,
+                (b * 255 / 31) as u8,
+            ]
+        })
+        .collect();
+    image::save_buffer(path, &rgb, FB_WIDTH, FB_HEIGHT, image::ColorType::Rgb8)
+        .with_context(|| format!("failed to save screenshot: {}", path.display()))?;
+    info!("Screenshot saved to: {}", path.display());
     Ok(())
 }
 
@@ -162,6 +311,39 @@ fn pump_keys(window: &mut minifb::Window, machine: &mut SnowFishMachine) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_game_path_as_positional_argument() {
+        let args = Args::try_parse_from(["snowfishemu", "game.app"]).unwrap();
+
+        assert_eq!(args.path, PathBuf::from("game.app"));
+        assert!(Args::try_parse_from(["snowfishemu"]).is_err());
+    }
+
+    #[test]
+    fn parses_screenshot_and_press_schedule() {
+        let args = Args::try_parse_from([
+            "snowfishemu",
+            "game.app",
+            "-S",
+            "shot.png",
+            "--screenshot-frames",
+            "200",
+            "--press",
+            "30:10",
+            "--press",
+            "65:5",
+        ])
+        .unwrap();
+
+        assert_eq!(args.screenshot, Some(PathBuf::from("shot.png")));
+        assert_eq!(args.screenshot_frames, 200);
+        let presses = parse_presses(&args.press).unwrap();
+        assert_eq!(presses.len(), 2);
+        assert_eq!(presses[0].frame, 30);
+        assert_eq!(presses[0].key, 10);
+        assert_eq!(presses[1].key, 5);
+    }
 
     #[test]
     fn static_frame_updates_the_window_with_the_same_buffer() {

@@ -164,6 +164,23 @@ Package inspector:
 sfa_info <path/to/game.app>
 ```
 
+### Screenshots
+
+The standalone frontend also runs headlessly and saves a 240x320 PNG of
+the presented frame: `-S <path.png>` runs `--screenshot-frames` frames
+with scripted `--press frame:key` phone-key presses, prints
+`frame nonzero=N colors=N` statistics, and exits without opening a
+window:
+
+```sh
+snowfishemu <game.app> -S shot.png --screenshot-frames 200 --free-play --offline-http \
+  --press 30:10 --press 60:10 --press 90:10 --press 120:10 --press 150:10 --press 180:10
+```
+
+`scripts/batch-screenshots.ps1` drives the whole corpus into
+`docs/images` with each title's bring-up recipe (see
+[docs/Game-Compatibility.md](docs/Game-Compatibility.md)).
+
 ## Browser Mode (EmulatorJS)
 
 The project site hosts a browser player at
