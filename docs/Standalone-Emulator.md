@@ -168,7 +168,7 @@ sfa_headless <path/to/game.app> --frames 30 [--res <res.app>] \
 | `--serve-asset <PATH>` | Side-load a local file to answer download requests. |
 | `--serve-match <SUBSTR>` | Substring a request path must contain for `--serve-asset` (default `.pak`). |
 | `--free-play` / `--offline-http` | The same switches as the standalone frontend. |
-| `--budget <COUNT>` | Instruction budget per guest call (default 200000000). |
+| `--instruction-limit <COUNT>` | Maximum guest instructions per callback (default 200000000). |
 
 ## Package Inspector
 

@@ -39,7 +39,7 @@ def main():
             try:
                 subprocess.run(
                     [str(EMU), str(main), *res_arg,
-                     '--frames', str(FRAMES), '--budget', '100000000'],
+                     '--frames', str(FRAMES), '--instruction-limit', '100000000'],
                     timeout=110, stdout=lf, stderr=lf)
                 status = 'ran'
             except subprocess.TimeoutExpired:

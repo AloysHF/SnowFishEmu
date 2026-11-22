@@ -9,6 +9,10 @@ use clap::Parser;
 use snowfishemu_core::SnowFishMachine;
 use std::path::PathBuf;
 
+/// Default per-callback instruction budget, shared with the standalone
+/// frontend's `--instruction-limit`.
+const DEFAULT_INSTRUCTION_LIMIT: u64 = 200_000_000;
+
 #[derive(Parser)]
 struct Args {
     /// Path to a `.app` package.
@@ -17,9 +21,9 @@ struct Args {
     /// Repeat the option to serve more than one container.
     #[arg(long)]
     res: Vec<PathBuf>,
-    /// Instruction budget per guest call.
-    #[arg(long, default_value = "200000000")]
-    budget: u64,
+    /// Maximum guest instructions per callback.
+    #[arg(long, default_value_t = DEFAULT_INSTRUCTION_LIMIT)]
+    instruction_limit: u64,
     /// Number of frames to pump after boot.
     #[arg(long, default_value = "5")]
     frames: u32,
@@ -90,7 +94,7 @@ fn main() -> Result<()> {
     for (name, len) in m.resource_packs() {
         eprintln!("resource pack: {name} ({len} bytes)");
     }
-    m.boot(args.budget)?;
+    m.boot(args.instruction_limit)?;
     // An explicit `--press frame:key` schedule takes over the frame loop;
     // the bring-up replay below is only a convenience for idle runs.
     let mut script: Vec<(u32, u8)> = Vec::new();
@@ -135,9 +139,9 @@ fn main() -> Result<()> {
             let key = script[next].1;
             next += 1;
             m.set_key(key, true)?;
-            m.run_frame(args.budget)?;
+            m.run_frame(args.instruction_limit)?;
             m.set_key(key, false)?;
-            m.run_frame(args.budget)?;
+            m.run_frame(args.instruction_limit)?;
             eprintln!("frame {i} press={key} state={:?}", m.state());
             dump_frame(&m, i);
             i += 2;
@@ -148,23 +152,23 @@ fn main() -> Result<()> {
             // 10 frames afterwards (menus advance on OK/5).
             if i == 5 {
                 m.set_key(lsk, true)?;
-                m.run_frame(args.budget)?;
+                m.run_frame(args.instruction_limit)?;
                 m.set_key(lsk, false)?;
-                m.run_frame(args.budget)?;
+                m.run_frame(args.instruction_limit)?;
                 m.set_key(ok, true)?;
-                m.run_frame(args.budget)?;
+                m.run_frame(args.instruction_limit)?;
                 m.set_key(ok, false)?;
-                m.run_frame(args.budget)?;
+                m.run_frame(args.instruction_limit)?;
                 i += 4;
                 continue;
             }
             if i > 6 && (i - 6).is_multiple_of(10) {
                 m.set_key(ok, true)?;
-                m.run_frame(args.budget)?;
+                m.run_frame(args.instruction_limit)?;
                 m.set_key(ok, false)?;
             }
         }
-        m.run_frame(args.budget)?;
+        m.run_frame(args.instruction_limit)?;
         eprintln!("frame {i} state={:?}", m.state());
         dump_frame(&m, i);
         i += 1;
@@ -172,9 +176,9 @@ fn main() -> Result<()> {
     let mut key_frame = total;
     for k in &args.keys {
         m.set_key(*k, true)?;
-        m.run_frame(args.budget)?;
+        m.run_frame(args.instruction_limit)?;
         m.set_key(*k, false)?;
-        m.run_frame(args.budget)?;
+        m.run_frame(args.instruction_limit)?;
         if let Some(dir) = &args.dump_fb {
             let px = m.frame_pixels();
             let mut out = Vec::new();
