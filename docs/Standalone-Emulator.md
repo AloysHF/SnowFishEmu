@@ -37,7 +37,6 @@ snowfishemu [OPTIONS] <PATH>
 | Option | Value | Default | Description |
 |---|---|---|---|
 | `<PATH>` | path | *required* | Path to the `.app` package. |
-| `--res <PATH>` | path (repeatable) | — | Sibling resource container(s) whose packs back `res`/`.pak` paths. Repeat the option to serve more than one container. |
 | `--free-play` | flag | off | Answer the purchase service as a registered, billing-capable handset (the same switch as `sfa_headless --free-play` / `SF_FREE_PLAY=1`). |
 | `--offline-http` | flag | off | Answer the SDK's carrier-facing HTTP transactions locally (the same switch as `sfa_headless --offline-http` / `SF_OFFLINE_HTTP=1`). |
 | `--scale <SCALE>` | integer ≥ 1 | `2` | Integer window scale factor over the 240x320 surface. |
@@ -67,19 +66,23 @@ snowfishemu path/to/game.app --scale 4
 
 # Offline startup: purchase service + local HTTP answers
 snowfishemu path/to/game.app --free-play --offline-http
-
-# Serve one or more sibling resource containers
-snowfishemu path/to/game.app --res path/to/Res.app --res path/to/data.pak
 ```
 
 ### Resource files
 
-Titles that ship a companion resource container load it from a sibling of
-the `.app`: a file under the same stem whose name contains `Res`/`res`
-(for example `game.app` next to `gameRes.app`), or the explicit `--res`
-option. A download request naming a pack is answered with that pack's own
-bytes. See [Game Compatibility](Game-Compatibility.md) for the per-title
-resource notes.
+Titles that ship a companion resource container keep it next to the `.app`,
+and the emulator discovers it automatically — the same rule the libretro
+core follows:
+
+1. **Exact sibling**: `<content-stem>.pak` or `<content-stem>.res` next to
+   the content file wins outright.
+2. **Fuzzy siblings**: otherwise every sibling file whose name mentions
+   `.pak` or `res` (case-insensitive) is served, so a title that ships
+   more than one container takes all of them.
+
+A download request naming a pack is answered with that pack's own bytes.
+See [Game Compatibility](Game-Compatibility.md) for the per-title resource
+notes.
 
 ## Default Key Mappings
 
@@ -151,7 +154,7 @@ use the native 240x320 framebuffer resolution.
 deterministic path for compatibility work and regression testing:
 
 ```bash
-sfa_headless <path/to/game.app> --frames 30 [--res <res.app>] \
+sfa_headless <path/to/game.app> --frames 30 \
   [--dump-fb <dir>] [--keys 10 --keys 5] [--press frame:key] \
   [--free-play] [--offline-http] [--no-app-pump] [--no-keys]
 ```
@@ -203,9 +206,6 @@ snowfishemu path/to/game.app
 
 # 4x window with the offline startup switches
 snowfishemu path/to/game.app --scale 4 --free-play --offline-http
-
-# Serve a resource container
-snowfishemu path/to/game.app --res path/to/gameRes.app
 
 # Headless bring-up replay, then dump the framebuffer frames
 sfa_headless path/to/game.app --frames 200 --no-keys --free-play --offline-http \

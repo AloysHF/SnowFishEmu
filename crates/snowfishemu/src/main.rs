@@ -32,10 +32,6 @@ const DEFAULT_INSTRUCTION_LIMIT: u64 = 200_000_000;
 struct Args {
     /// Path to a `.app` package.
     path: PathBuf,
-    /// Sibling resource container(s) whose packs back `res`/`.pak` paths.
-    /// Repeat the option to serve more than one container.
-    #[arg(long)]
-    res: Vec<PathBuf>,
     /// Answer the purchase service as a registered handset (the same
     /// switch as sfa_headless `--free-play` / `SF_FREE_PLAY=1`).
     #[arg(long)]
@@ -110,10 +106,7 @@ fn main() -> Result<()> {
     let presses = parse_presses(&args.press)?;
     let container =
         std::fs::read(&args.path).with_context(|| format!("read {}", args.path.display()))?;
-    let mut res = Vec::new();
-    for path in &args.res {
-        res.push(std::fs::read(path).with_context(|| format!("read {}", path.display()))?);
-    }
+    let res = discover_res_containers(&args.path)?;
     let mut machine = SnowFishMachine::load(container, &res)?;
     // The flags only ever turn the switches ON: `SF_FREE_PLAY` /
     // `SF_OFFLINE_HTTP` are honoured by the core at load, and a flag adds
@@ -182,6 +175,44 @@ fn main() -> Result<()> {
 
 /// Pump `frames` guest frames, firing the scripted presses at their
 /// scheduled frames (each press consumes two frames: down, then up).
+/// Reads the sibling resource containers the shared discovery rule names.
+///
+/// The rule lives in `snowfishemu_core::res` and matches the libretro
+/// core's lookup: an exact `<stem>.pak`/`<stem>.res` sibling wins, else
+/// every sibling whose name mentions `.pak` or `res` is served. Non-`.app`
+/// files the fuzzy scan picks up are rejected by the package parser when
+/// the machine loads them.
+fn discover_res_containers(content_path: &Path) -> Result<Vec<Vec<u8>>> {
+    let Some(dir) = content_path.parent() else {
+        return Ok(Vec::new());
+    };
+    let entries: Vec<String> = std::fs::read_dir(dir)
+        .with_context(|| format!("read directory {}", dir.display()))?
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    let stem = content_path.file_stem().and_then(|s| s.to_str());
+    let content_name = content_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let candidates = snowfishemu_core::res::sibling_res_candidates(stem, content_name, entries);
+    let mut served = Vec::new();
+    let mut containers = Vec::new();
+    for name in &candidates {
+        let path = dir.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        containers.push(std::fs::read(&path).with_context(|| format!("read {}", path.display()))?);
+        served.push(name.as_str());
+    }
+    if !served.is_empty() {
+        info!("serving sibling resource containers: {}", served.join(", "));
+    }
+    Ok(containers)
+}
+
 fn run_scripted_frames(
     machine: &mut SnowFishMachine,
     presses: &[Press],

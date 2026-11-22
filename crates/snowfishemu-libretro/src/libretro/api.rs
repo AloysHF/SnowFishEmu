@@ -358,42 +358,32 @@ fn rebuild_machine(container: &[u8], res_data: &[Vec<u8>]) -> anyhow::Result<Sno
 /// Locates the sibling resource containers that back `res`/`.pak` file
 /// opens.
 ///
-/// The desktop frontend takes the resource file explicitly; a libretro
-/// frontend only provides the content path, so the lookup follows a fixed
-/// rule: `<content-stem>.pak` or `<content-stem>.res` next to the content
-/// file, else every sibling file whose name mentions `.pak` or `res`. A
-/// title may ship more than one container (each carries its own pack), so
-/// every match is served rather than only an unambiguous one.
+/// A libretro frontend only provides the content path, so the lookup
+/// follows the shared discovery rule in `snowfishemu_core::res`: an exact
+/// `<content-stem>.pak`/`<content-stem>.res` sibling wins, else every
+/// sibling whose name mentions `.pak` or `res` is served. A title may ship
+/// more than one container (each carries its own pack), so every match is
+/// served rather than only an unambiguous one.
 fn find_res_files(content_path: &Path) -> Vec<PathBuf> {
     let Some(dir) = content_path.parent() else {
         return Vec::new();
     };
     let stem = content_path.file_stem().and_then(|s| s.to_str());
-    for name in stem
-        .map(|stem| [format!("{stem}.pak"), format!("{stem}.res")])
-        .unwrap_or_default()
-    {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return vec![candidate];
-        }
-    }
-    let mut matches: Vec<PathBuf> = std::fs::read_dir(dir)
+    let content_name = content_path.file_name().and_then(|s| s.to_str());
+    let entries: Vec<PathBuf> = std::fs::read_dir(dir)
         .ok()
-        .map(|entries| entries.flatten().collect::<Vec<_>>())
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|entry| {
-            entry.file_name().to_str().is_some_and(|name| {
-                name.to_ascii_lowercase().contains(".pak")
-                    || name.to_ascii_lowercase().contains("res")
-            })
-        })
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file())
+        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default();
+    let names: Vec<String> = entries
+        .iter()
+        .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+        .map(String::from)
         .collect();
-    matches.sort();
-    matches
+    snowfishemu_core::res::sibling_res_candidates(stem, content_name.unwrap_or_default(), names)
+        .into_iter()
+        .map(|name| dir.join(name))
+        .filter(|path| path.is_file())
+        .collect()
 }
 
 #[no_mangle]

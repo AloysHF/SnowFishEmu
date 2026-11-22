@@ -127,13 +127,15 @@ overlapping SDK state write.
 The headless harness drives the same machine without a window:
 
 ```sh
-sfa_headless <game.app> --frames 30 [--res <res.app>] [--dump-fb <dir>] \
+sfa_headless <game.app> --frames 30 [--dump-fb <dir>] \
   [--free-play] [--offline-http] [--no-keys] [--keys 10] [--press frame:key]
 ```
 
-`--res` is repeatable: a title that ships two resource containers takes
-both, and a download request naming a pack is answered with that pack's
-own bytes. `--dump-fb` writes per-frame framebuffer dumps for offline
+Sibling resource containers are discovered next to the package
+automatically (the rule is documented in
+[Standalone Emulator](Standalone-Emulator.md#resource-files)), and a
+download request naming a pack is answered with that pack's own bytes.
+`--dump-fb` writes per-frame framebuffer dumps for offline
 comparison (one 32-bit-per-pixel word per pixel). `--dump-mem
 addr:len:path` (hex) exports a guest memory range, including the
 framebuffer at `540720:25800` (raw RGB565).

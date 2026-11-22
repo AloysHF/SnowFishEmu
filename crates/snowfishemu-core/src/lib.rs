@@ -16,6 +16,7 @@ pub mod lz;
 pub mod machine;
 pub mod mem;
 pub mod plat;
+pub mod res;
 pub mod save;
 pub mod sfa;
 

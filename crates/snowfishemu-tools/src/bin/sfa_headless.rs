@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use snowfishemu_core::SnowFishMachine;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Default per-callback instruction budget, shared with the standalone
 /// frontend's `--instruction-limit`.
@@ -17,10 +17,6 @@ const DEFAULT_INSTRUCTION_LIMIT: u64 = 200_000_000;
 struct Args {
     /// Path to a `.app` package.
     path: PathBuf,
-    /// Sibling resource container(s) whose packs back `res`/`.pak` paths.
-    /// Repeat the option to serve more than one container.
-    #[arg(long)]
-    res: Vec<PathBuf>,
     /// Maximum guest instructions per callback.
     #[arg(long, default_value_t = DEFAULT_INSTRUCTION_LIMIT)]
     instruction_limit: u64,
@@ -72,10 +68,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let container =
         std::fs::read(&args.path).with_context(|| format!("read {}", args.path.display()))?;
-    let mut res = Vec::new();
-    for path in &args.res {
-        res.push(std::fs::read(path).with_context(|| format!("read {}", path.display()))?);
-    }
+    let res = discover_res_containers(&args.path)?;
     let mut m = SnowFishMachine::load(container, &res)?;
     if args.free_play {
         m.set_free_play(true);
@@ -232,4 +225,32 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Reads the sibling resource containers the shared discovery rule names
+/// (`snowfishemu_core::res`, the same lookup the libretro core performs).
+fn discover_res_containers(content_path: &Path) -> Result<Vec<Vec<u8>>> {
+    let Some(dir) = content_path.parent() else {
+        return Ok(Vec::new());
+    };
+    let entries: Vec<String> = std::fs::read_dir(dir)
+        .with_context(|| format!("read directory {}", dir.display()))?
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    let stem = content_path.file_stem().and_then(|s| s.to_str());
+    let content_name = content_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let candidates = snowfishemu_core::res::sibling_res_candidates(stem, content_name, entries);
+    let mut containers = Vec::new();
+    for name in &candidates {
+        let path = dir.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        containers.push(std::fs::read(&path).with_context(|| format!("read {}", path.display()))?);
+    }
+    Ok(containers)
 }

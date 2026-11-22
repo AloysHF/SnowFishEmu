@@ -106,7 +106,7 @@ the headless harness, and all command-line options.
 Standalone (240x320 window, keyboard controls):
 
 ```sh
-snowfishemu <path/to/game.app> [--free-play] [--offline-http] [--res <res.app>] [--scale N]
+snowfishemu <path/to/game.app> [--free-play] [--offline-http] [--scale N]
 ```
 
 `--free-play` and `--offline-http` are the same switches as sfa_headless's
@@ -130,20 +130,21 @@ Use the arrow keys to steer. The standalone window continues processing
 input and close requests while a loading screen is static. The emulator
 loads embedded music and bitmaps directly from the package during play.
 
-Optional resource file: place it next to the `.app` under the same stem
-with `Res`/`res` in the name (see the compatibility notes).
+Optional resource file: a companion container is discovered next to the
+`.app` automatically — an exact `<stem>.pak`/`<stem>.res` sibling wins,
+otherwise every sibling whose name mentions `.pak` or `res` is served
+(the rule the libretro core follows; see the compatibility notes).
 
 Headless bring-up harness (used by the test tooling; per-frame
 framebuffer dumps for offline analysis):
 
 ```sh
-sfa_headless <path/to/game.app> --frames 30 [--res <res.app>] [--dump-fb <dir>] [--keys 10 --keys 5] [--press frame:key] [--free-play] [--offline-http] [--no-app-pump] [--no-keys]
+sfa_headless <path/to/game.app> --frames 30 [--dump-fb <dir>] [--keys 10 --keys 5] [--press frame:key] [--free-play] [--offline-http] [--no-app-pump] [--no-keys]
 ```
 
 `--free-play` is the same switch as `SF_FREE_PLAY=1`; `--offline-http` is
-the same as `SF_OFFLINE_HTTP=1`. `--res` is repeatable — a title that
-ships two resource containers takes both, and a download request naming a
-pack is answered with that pack's own bytes. `--no-keys` skips the
+the same as `SF_OFFLINE_HTTP=1`. A download request naming a pack is
+answered with that pack's own bytes. `--no-keys` skips the
 automatic bring-up key replay so an explicit `--keys` sequence is the
 only input. `--press frame:key` fires a single key at an exact frame,
 which is how the SDK's pay/session screens get walked deterministically.
