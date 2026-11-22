@@ -55,8 +55,10 @@ standalone frontend, resolved from the content path (see
   (`SFEMSTAT` envelope), so states from other packages or older builds are
   rejected instead of restored
 - Input descriptors for frontend button labeling
-- Audio: none — the platform exposes no audio service, so the core submits
-  silence so frontends pace on a steady clock
+- Audio: the titles' MIDI music renders through the platform's music slot
+  into a 44.1 kHz stereo stream (8 kHz mono synth resampled); a quiet tune
+  still submits a full silent batch so frontends keep pacing on the audio
+  clock
 - Core options for CPU/HLE debug logging
 
 ## Keyboard Input

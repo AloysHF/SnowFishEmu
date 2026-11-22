@@ -119,8 +119,6 @@ struct Emulator {
     key_state: [bool; 32],
     /// Guest tick credit accumulated from the frontend pacing rate.
     tick_pacer: GuestTickPacer,
-    /// Constant silence submitted to keep the sample flow at the pacing rate.
-    silence: Vec<i16>,
 }
 
 /// Global emulator instance.
@@ -296,7 +294,6 @@ pub extern "C" fn retro_load_game(info: *const retro_game_info) -> bool {
                     stopped: false,
                     key_state: [false; 32],
                     tick_pacer: GuestTickPacer::new(),
-                    silence: vec![0; PACING_SAMPLES_PER_RUN * 2],
                 });
                 if let Some(emulator) = EMULATOR.as_mut() {
                     apply_core_options();
@@ -442,10 +439,14 @@ pub extern "C" fn retro_run() {
         );
 
         // Keep the sample flow at exactly the reported pacing rate: the
-        // frontend paces the core by audio sync, so a silent guest must
-        // still submit silence or the frontend would fall back to
-        // display-rate pacing and the game would run too fast.
-        callbacks::audio_sample_batch(emulator.silence.as_ptr(), PACING_SAMPLES_PER_RUN);
+        // frontend paces the core by audio sync, so a quiet guest must
+        // still submit the full pacing batch or the frontend would fall
+        // back to display-rate pacing and the game would run too fast.
+        // The music engine's samples ride on top of that flow; a batch
+        // shorter than the pacing count is silence-padded.
+        let mut samples = emulator.machine.take_audio_samples(PACING_SAMPLES_PER_RUN);
+        samples.resize(PACING_SAMPLES_PER_RUN * 2, 0);
+        callbacks::audio_sample_batch(samples.as_ptr(), PACING_SAMPLES_PER_RUN);
     })
 }
 

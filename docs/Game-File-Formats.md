@@ -97,6 +97,7 @@ executes through the root-table stubs unchanged.
 | `+0x014` | Embedded font height in pixels, including the default font |
 | `+0x018` | Glyph width in pixels for the UTF-16 code unit in r0 |
 | `+0x01C` | String width in pixels from the UTF-16 buffer in r0 up to the count in r1 |
+| `+0x038` | Music play (r0 = SMF bytes, r1 = length, r2 = 1 plays / 0 stops, r3 = loop) |
 | `+0x058` | File open (UTF-16 path) |
 | `+0x05C` | File read |
 | `+0x064` | File seek |

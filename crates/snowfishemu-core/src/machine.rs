@@ -389,6 +389,9 @@ pub struct SnowFishMachine {
     // to report the SDK's SMS send as accepted.
     fn_skips: Vec<(u32, u32)>,
     gdi: Gdi,
+    /// The MIDI playback engine the +0x38 slot feeds and the frontends
+    /// drain each frame.
+    audio: crate::audio::AudioEngine,
     timers: Vec<GuestTimer>,
     ui_timers: Vec<UiTimer>,
     ui_clock_ms: u64,
@@ -585,6 +588,7 @@ impl SnowFishMachine {
             dcsms_injected: std::collections::HashSet::new(),
             fn_skips,
             gdi: Gdi::new(),
+            audio: crate::audio::AudioEngine::default(),
             timers: Vec::new(),
             ui_timers: Vec::new(),
             ui_clock_ms: 0,
@@ -792,6 +796,9 @@ impl SnowFishMachine {
             | 0x108 | 0x4E8 | 0x4EC | 0x524 | 0xAC | 0xE4 => Some(w.ret),
             0x12C | 0x130 | 0x134 | 0x140 | 0x14C | 0x154 | 0x158 | 0x180 | 0x198 | 0x194
             | 0x184 | 0x15C | 0x010 => Some(w.ret),
+            // The guest's music engine hands tunes to the platform through
+            // +0x38; the remaining generic slots keep the return-0 stubs.
+            0x038 => Some(w.ret),
             _ => None,
         }
     }
@@ -1261,6 +1268,41 @@ impl SnowFishMachine {
                 Some(u32::MAX) // fclose always returns -1
             }
             0x108 => Some(self.hook_lz(r(0), r(1), r(2), r(3))?),
+            0x038 => {
+                // The guest's music engine hands a tune to the platform:
+                // (r0 = SMF bytes, r1 = length, r2 = 1 plays / 0 stops,
+                // r3 = loop flag). The tune renders through the audio
+                // engine and the frontends drain the samples per frame.
+                let ptr = r(0);
+                let len = r(1);
+                let mode = r(2);
+                let arg = r(3);
+                debug!(
+                    "[plat] +0x38 audio ptr={ptr:#010x} len={len} mode={mode} arg={arg} lr={:#010x}",
+                    self.cpu.reg_get(armv4t_emu::reg::LR)
+                );
+                if mode == 0 {
+                    self.audio.stop();
+                } else if len > 0 && len <= 0x10_0000 && ptr > 0x1000 {
+                    // The guest re-issues the background-music request for
+                    // the tune already playing; restarting it every time
+                    // would stutter, so identical keys are answered in
+                    // place.
+                    let mut data = vec![0u8; len as usize];
+                    let same_key = self.audio.current_key() == Some((ptr, len));
+                    if self.mem.read(ptr, &mut data).is_ok() && !(same_key && self.audio.playing())
+                    {
+                        match self.audio.play_midi(&data, arg == 1) {
+                            Ok(()) => {
+                                self.audio.set_current_key(Some((ptr, len)));
+                                info!("[plat] +0x38 audio play: {len} bytes, loop={}", arg == 1);
+                            }
+                            Err(e) => debug!("[plat] +0x38 audio rejected: {e}"),
+                        }
+                    }
+                }
+                Some(0u32)
+            }
             0xAC => {
                 // arm(context, period_ms, callback) -> handle
                 //
@@ -2456,6 +2498,14 @@ impl SnowFishMachine {
     /// registered timer callback (the platform's +0x500 service is a
     /// passthrough on the wire, but a real device fires the callback on the
     /// frame cadence), and count the frame.
+    /// Pulls up to `max_frames` stereo samples from the music engine.
+    ///
+    /// The frontends call this once per presented frame at the pacing rate;
+    /// an empty result means no tune is playing (silence).
+    pub fn take_audio_samples(&mut self, max_frames: usize) -> Vec<i16> {
+        self.audio.pull_samples(max_frames)
+    }
+
     pub fn run_frame(&mut self, budget: u64) -> Result<(), MachineError> {
         // Debug seeding: SF_SEED="addr=value;addr=value" (hex) writes guest
         // words once after boot, before the first frame tick. Lets runtime
@@ -3920,5 +3970,64 @@ mod tests {
             .region_pointer(crate::consts::CODE_REGION_BASE)
             .unwrap();
         assert_eq!(ptr, ptr_after);
+    }
+    /// The +0x38 music slot queues the tune and the frame loop drains
+    /// audible samples: the full audio path end to end.
+    #[test]
+    fn music_slot_plays_and_the_frontend_drains_samples() {
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        // A one-note format-0 SMF, written to the guest heap.
+        let mut midi = Vec::new();
+        midi.extend_from_slice(b"MThd");
+        midi.extend_from_slice(&[0, 0, 0, 6, 0, 0, 0, 1, 0, 96]);
+        midi.extend_from_slice(b"MTrk");
+        midi.extend_from_slice(&[0, 0, 0, 11]);
+        midi.extend_from_slice(&[
+            0x00, 0x90, 0x3C, 0x64, 0x60, 0x80, 0x3C, 0x00, 0xFF, 0x2F, 0x00,
+        ]);
+        let ptr = 0x0060_1000u32;
+        m.mem.write(ptr, &midi).unwrap();
+
+        m.cpu.reg_set(0, ptr);
+        m.cpu.reg_set(1, midi.len() as u32);
+        m.cpu.reg_set(2, 1);
+        m.cpu.reg_set(3, 1);
+        m.exec_slot(0x38, 0x10_1004).unwrap();
+        assert!(m.audio.playing(), "the tune must be playing");
+
+        // A frame's worth of stereo samples drains non-silent audio.
+        let samples = m.take_audio_samples(2205);
+        assert_eq!(
+            samples.len(),
+            2205 * 2,
+            "a playing tune drains a full frame"
+        );
+        let nonzero = samples.iter().filter(|sample| **sample != 0).count();
+        assert!(nonzero > 100, "expected audible samples, got {nonzero}");
+
+        // A repeated play call for the same tune does not restart it: the
+        // queue keeps draining from where it was.
+        let first = m.take_audio_samples(1102);
+        m.cpu.reg_set(0, ptr);
+        m.cpu.reg_set(1, midi.len() as u32);
+        m.cpu.reg_set(2, 1);
+        m.cpu.reg_set(3, 1);
+        m.exec_slot(0x38, 0x10_1004).unwrap();
+        let second = m.take_audio_samples(1103);
+        assert_eq!(
+            first.len() + second.len(),
+            2205 * 2,
+            "the repeated play call must not restart the tune"
+        );
+
+        // mode 0 stops the tune and the next drain is silent.
+        m.cpu.reg_set(0, ptr);
+        m.cpu.reg_set(1, midi.len() as u32);
+        m.cpu.reg_set(2, 0);
+        m.exec_slot(0x38, 0x10_1004).unwrap();
+        assert!(
+            m.take_audio_samples(2205).is_empty(),
+            "stop silences the engine"
+        );
     }
 }

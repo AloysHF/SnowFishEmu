@@ -123,6 +123,15 @@ the guest's state — the guest still runs its own flow:
 diagnostics. The key recipes that reach each title's play state are
 documented per title in [Game Compatibility](Game-Compatibility.md).
 
+## Audio
+
+The titles' background music is standard MIDI (PsmPlayer-converted tunes
+embedded in the packages or their resource containers). The guest hands a
+tune to the platform through the music slot and the emulator renders it
+into a 44.1 kHz stereo stream; playback needs no flags and works
+everywhere, including headless runs. If no audio device is available the
+emulator continues silently.
+
 ## Logging
 
 Logs go to stderr through the `log`/`env_logger` facade; the default filter
