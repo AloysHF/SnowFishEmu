@@ -251,10 +251,7 @@ impl ArmCpu {
             self.reg_set(reg::CPSR, cpsr);
             return true;
         }
-        if self.step_dsp_multiply(pc, insn) {
-            return true;
-        }
-        false
+        self.step_dsp_multiply(pc, insn)
     }
 
     /// Applies a branch target with interworking (state bit from address).
