@@ -98,6 +98,10 @@ The offline services are opt-in per run:
 - `--offline-http` (`SF_OFFLINE_HTTP=1`) answers the SDK's carrier-facing
   HTTP transactions locally with a payload-free `200 OK`, runs the SDK's own
   result parser, and notifies its registered completion callback.
+- With both offline provisioning options active, the supported 新鬼吹灯
+  build also receives completion for the legacy SDK check it starts
+  after the first NPC dialogue. The game's callback records the outcome
+  and its regular timer resumes movement.
 - The per-frame app-resume pump (selector 3) is enabled for most packages.
   The supported 新鬼吹灯 build uses its boot resume and the SDK timer.
   Its key events are queued until the next timer poll, with one press per

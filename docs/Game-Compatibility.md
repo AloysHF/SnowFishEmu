@@ -34,7 +34,7 @@ documented play state; regenerate them with `scripts/batch-screenshots.ps1`.
 | 永恒魔塔 (yonghengmota) | <img src="images/永恒魔塔.png" width="120" alt="永恒魔塔"> | **playable** | The magic-tower floor renders with the story dialog fully readable (宙斯：好女儿，乖女儿，就让我一次嘛…), the characters and the floor counter |
 | 胭脂戏游龙 (yzxyl) | <img src="images/胭脂戏游龙.png" width="120" alt="胭脂戏游龙"> | **playable** | The 西门庆居 scene, the dialog box (与春梅对话) and the movement tutorial (使用8,2,4,6可以进行移动) |
 | 新星际撞球 (StarBall) | <img src="images/新星际撞球.png" width="120" alt="新星际撞球"> | **playable** | The brick board, ball and paddle run. Canvas clipping selects individual score digits. |
-| 新鬼吹灯 (Mengde pe) | <img src="images/新鬼吹灯.png" width="120" alt="新鬼吹灯"> | **playable** | The title, intro, and cave render. Continue closes the pause menu and restores movement |
+| 新鬼吹灯 (Mengde pe) | <img src="images/新鬼吹灯.png" width="120" alt="新鬼吹灯"> | **playable** | The title, intro, and cave render. Movement resumes after Continue and after the first NPC dialogue |
 | 黄金矿工 (hjkg) | <img src="images/黄金矿工.png" width="120" alt="黄金矿工"> | **playable** | Start on the title screen opens the first level directly. Options → Start Game opens the local New Game / Level Select menu |
 | 宇宙风暴 (yzfb) | <img src="images/宇宙风暴.png" width="120" alt="宇宙风暴"> | **playable** | The music prompt, title, and main menu render. New Game enters the scrolling first level, and directional keys move the ship |
 
@@ -139,7 +139,10 @@ sfa_headless <game.app> --frames 124 --press 50:25 --press 65:10 \
 
 Set `SF_GHOST_APP` to the package path and run
 `cargo test -p snowfishemu-core --test ghost_menu -- --ignored` to verify
-the menu layout, pause and resume, and player movement.
+the menu layout, pause and resume, and movement after the first NPC
+dialogue. Walk beside the NPC marked with a question mark and press
+**Enter** to talk and advance each page. With the default offline settings,
+the game completes its legacy service check when the final page closes.
 
 ## Known gaps
 

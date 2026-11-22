@@ -47,6 +47,28 @@ pub(crate) fn apply_gold_miner_offline_start(mem: &mut GuestMem) -> Result<(), M
     Ok(())
 }
 
+/// Finishes a pending check in the older SDK through the game's own callback.
+pub(crate) fn take_mengde_pe_offline_check(
+    mem: &mut GuestMem,
+) -> Result<Option<(u32, u32)>, MemError> {
+    const SDK_STATE_PTR: u32 = CODE_BASE + 0x24_fd8;
+    const COMPLETE_CHECK: u32 = CODE_BASE + 0x96_b4;
+    let sdk = mem.read_u32(SDK_STATE_PTR)?;
+    let pending = sdk.wrapping_add(0x13c);
+    if sdk == 0
+        || mem.read_u32(pending)? != 1
+        || mem.read_u32(sdk.wrapping_add(0x64))? != COMPLETE_CHECK
+    {
+        return Ok(None);
+    }
+    let context = mem.read_u32(sdk.wrapping_add(0x68))?;
+    // Clear the pending check and release event dispatch before its callback.
+    mem.write_u32(pending, 0)?;
+    mem.write_u32(sdk.wrapping_add(0x18), u32::MAX)?;
+    mem.write_u32(sdk.wrapping_add(0x10), 0)?;
+    Ok(Some((COMPLETE_CHECK, context)))
+}
+
 pub(crate) fn repair_universe_storm_bitmap_block(src: u32, data: &mut [u8]) {
     match src {
         // The menu background has 8-bit indices, an RGB565 palette and

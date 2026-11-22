@@ -2408,6 +2408,23 @@ impl SnowFishMachine {
         Some((cb, arg))
     }
 
+    fn run_guest_callback(
+        &mut self,
+        callback: u32,
+        context: u32,
+        budget: u64,
+    ) -> Result<(), MachineError> {
+        self.cpu.reg_set(armv4t_emu::reg::SP, STACK_TOP);
+        self.cpu.reg_set(armv4t_emu::reg::LR, STOP_ADDRESS);
+        self.cpu.reg_set(armv4t_emu::reg::CPSR, 0x10);
+        self.cpu.reg_set(0, context);
+        self.cpu.reg_set(1, 0);
+        self.cpu.reg_set(2, 0);
+        self.cpu.reg_set(armv4t_emu::reg::PC, callback);
+        self.run_until_return(budget)?;
+        Ok(())
+    }
+
     /// Advances one frame: pump queued events, deliver the frame tick
     /// (selector 10, the host paces at ~20 fps), then deliver the guest's
     /// registered timer callback (the platform's +0x500 service is a
@@ -2443,14 +2460,14 @@ impl SnowFishMachine {
         if let Some((cb, arg)) = self.deliver_http_completion() {
             debug!("[plat] HTTP result callback {cb:#010x} arg={arg:#x}");
             if cb > 0x1000 {
-                self.cpu.reg_set(armv4t_emu::reg::SP, STACK_TOP);
-                self.cpu.reg_set(armv4t_emu::reg::LR, STOP_ADDRESS);
-                self.cpu.reg_set(armv4t_emu::reg::CPSR, 0x10);
-                self.cpu.reg_set(0, arg);
-                self.cpu.reg_set(1, 0);
-                self.cpu.reg_set(2, 0);
-                self.cpu.reg_set(armv4t_emu::reg::PC, cb);
-                self.run_until_return(budget)?;
+                self.run_guest_callback(cb, arg, budget)?;
+            }
+        }
+        if self.compatibility == Compatibility::MengdePe && self.free_play && self.http.enabled {
+            if let Some((callback, context)) = compat::take_mengde_pe_offline_check(&mut self.mem)?
+            {
+                debug!("[plat] completing the local Mengde Pe check");
+                self.run_guest_callback(callback, context, budget)?;
             }
         }
         let poll_keys = self.compatibility == Compatibility::MengdePe

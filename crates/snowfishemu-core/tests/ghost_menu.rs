@@ -4,9 +4,13 @@ const BUDGET: u64 = 200_000_000;
 const SCENE: u32 = 0x60_5208;
 const PLAYING: u32 = 2;
 const PAUSED: u32 = 3;
+const DIALOGUE: u32 = 12;
 const PLAYER_X: u32 = 0x60_583a;
+const NPC_CHECK_COMPLETE: u32 = 0x60_6212;
+const LEFT: u8 = 4;
 const OK: u8 = 5;
 const RIGHT: u8 = 6;
+const DOWN: u8 = 8;
 const SOFT_LEFT: u8 = 10;
 const MENU: u8 = 11;
 const SOFT_RIGHT: u8 = 25;
@@ -15,7 +19,7 @@ fn start_cave() -> SnowFishMachine {
     let path = std::env::var_os("SF_GHOST_APP").expect("set SF_GHOST_APP");
     let mut machine = SnowFishMachine::load(std::fs::read(path).unwrap(), &[]).unwrap();
     machine.boot(BUDGET).unwrap();
-    run_to(&mut machine, 79, &[(50, SOFT_RIGHT), (65, SOFT_LEFT)]);
+    run_to(&mut machine, 75, &[(50, SOFT_RIGHT), (65, SOFT_LEFT)]);
     machine
 }
 
@@ -80,4 +84,29 @@ fn cave_menu_stays_closed_after_a_quick_confirm() {
     assert_eq!(scene(&machine), PAUSED, "the menu can be reopened");
     run_to(&mut machine, 147, &[(136, SOFT_LEFT)]);
     assert_eq!(scene(&machine), PLAYING, "the left soft key also resumes");
+}
+
+#[test]
+#[ignore = "requires the QVGA Ghost Blows Out the Light package (set SF_GHOST_APP)"]
+fn movement_resumes_after_the_first_npc_dialogue() {
+    let mut machine = start_cave();
+    let approach: Vec<_> = (75..=87)
+        .step_by(6)
+        .map(|frame| (frame, DOWN))
+        .chain((102..=138).step_by(6).map(|frame| (frame, RIGHT)))
+        .chain([(151, OK)])
+        .collect();
+    run_to(&mut machine, 157, &approach);
+    assert_eq!(machine.mem.read_u32(SCENE).unwrap(), DIALOGUE);
+
+    let confirm: Vec<_> = (160..=250).step_by(9).map(|frame| (frame, OK)).collect();
+    run_to(&mut machine, 263, &confirm);
+    assert_eq!(machine.mem.read_u32(SCENE).unwrap(), PLAYING);
+    let player_x = machine.mem.read_u16(PLAYER_X).unwrap();
+    run_to(&mut machine, 274, &[(265, LEFT)]);
+    assert!(
+        machine.mem.read_u16(PLAYER_X).unwrap() < player_x,
+        "the player can walk away"
+    );
+    assert_eq!(machine.mem.read_u8(NPC_CHECK_COMPLETE).unwrap(), 1);
 }

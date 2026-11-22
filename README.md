@@ -126,7 +126,9 @@ opt-outs.
 
 In the supported 新鬼吹灯 QVGA build, press **X** at the title and **Z**
 to skip the intro. In the cave, **M** opens the pause menu and **Enter**
-or **Z** confirms Continue.
+or **Z** confirms Continue. Press **Enter** next to the first NPC to
+talk, advance the dialogue with **Enter**, and use the arrows to walk
+away after the last page.
 
 In the supported Gold Miner (黄金矿工) QVGA build, press **X** or
 **Enter** on the title screen to start the first level offline. Use **Z**
