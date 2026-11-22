@@ -1,9 +1,19 @@
 # SnowFishEmu
 
 <p align="center">
+  <img src="res/logo-banner.png" alt="SnowFishEmu" width="600">
+</p>
+
+<p align="center">
   <a href="https://aloyshf.github.io/SnowFishEmu/"><img src="https://img.shields.io/badge/Website-SnowFishEmu-1F9FD0?logo=githubpages&logoColor=white" alt="Website"></a>
   <a href="https://github.com/AloysHF/SnowFishEmu/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/AloysHF/SnowFishEmu/ci.yml?branch=master&label=CI&logo=github" alt="CI"></a>
+  <a href="https://git.libretro.com/libretro/snowfishemu/-/pipelines"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fgit.libretro.com%2Fapi%2Fv4%2Fprojects%2Flibretro%252Fsnowfishemu%2Fpipelines%3Fref%3Dmaster%26per_page%3D1&query=%24%5B0%5D.status&label=Pipeline%20Status&logo=gitlab&cacheSeconds=300" alt="Gitlab Pipeline Status" ></a>
+  <a href="https://github.com/AloysHF/SnowFishEmu/releases/latest"><img src="https://img.shields.io/github/v/release/AloysHF/SnowFishEmu" alt="Release"></a>
+  <a href="https://github.com/AloysHF/SnowFishEmu/releases"><img src="https://img.shields.io/github/downloads/AloysHF/SnowFishEmu/total" alt="Downloads"></a>
+  <a href="https://sonarcloud.io/dashboard?id=AloysHF_SnowFishEmu"><img src="https://sonarcloud.io/api/project_badges/measure?project=AloysHF_SnowFishEmu&metric=alert_status" alt="Quality Gate Status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-BSD%203--Clause-blue.svg" alt="License: BSD 3-Clause"></a>
+  <a href="https://discord.gg/E4SQjXUkZy"><img src="https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://qm.qq.com/q/LAO7DKAWUC"><img src="https://img.shields.io/badge/QQ%E7%BE%A4-Join%20Us-12B7F5?logo=tencent-qq&logoColor=white" alt="QQ Group"></a>
 </p>
 
 SnowFishEmu is a Rust emulator for SnowFish (SFA) applications on feature
@@ -12,10 +22,6 @@ pure-Rust ARM core, and bridges the phone services the applications rely on.
 
 SnowFishEmu uses the `snowfishemu` command, crates and libretro core
 identifiers. Save states use the `SFEMSTAT` signature.
-
-> **Status: early development.** The package loader, guest execution, and
-> service bridges are under active construction. See
-> [docs/Game-Compatibility.md](docs/Game-Compatibility.md) for what runs.
 
 ## Features
 
@@ -66,7 +72,36 @@ The libretro core builds standalone (this is what the buildbot does):
 cargo build --release
 ```
 
+## Architecture
+
+```
+crates/
+├── snowfishemu-core/         # Platform-independent emulator engine (library)
+│   └── src/
+│       ├── lib.rs            # Crate root and public re-exports
+│       ├── sfa.rs            # .app container: header parse, image, relocations
+│       ├── mem.rs            # Checked sparse guest memory
+│       ├── cpu.rs            # ARMv4T interpreter + ARMv5TE completion
+│       ├── consts.rs         # Guest address constants
+│       ├── plat.rs           # Root API table layout and stubs
+│       ├── machine.rs        # SnowFishMachine: boot, frame loop, dispatch, files, timers
+│       ├── gdi.rs            # GDI display bridge state (pen, canvas, blits)
+│       ├── lz.rs             # Bit-exact LZ stream decompressor port
+│       ├── font.rs           # Embedded Unicode bitmap font rasterizer
+│       ├── save.rs           # SFEMSTAT save-state envelope and codec
+│       └── compat.rs         # Content-fingerprint-keyed offline fixes
+├── snowfishemu/              # Standalone binary (→ snowfishemu)
+├── snowfishemu-tools/        # sfa_info package inspector, sfa_headless harness
+└── snowfishemu-libretro/     # Libretro core (→ snowfishemu_libretro.{dll,so,dylib})
+```
+
+See [Architecture](docs/architecture.md) for implementation details.
+
 ## Running
+
+See the [Standalone Emulator](docs/Standalone-Emulator.md) guide for
+installation, keyboard controls, offline startup switches, resource files,
+the headless harness, and all command-line options.
 
 Standalone (240x320 window, keyboard controls):
 
@@ -143,6 +178,9 @@ and release. To embed the core in your own site, see
 
 ## RetroArch
 
+See the [RetroArch Core](docs/RetroArch-Core.md) guide for installation,
+supported platforms, keyboard and RetroPad mapping, and features.
+
 The core is produced at `target/release/snowfishemu.dll`
 (`libsnowfishemu.so` on Linux, `libsnowfishemu.dylib` on macOS). Rename it
 to `snowfishemu_libretro.<ext>` before placing it in the RetroArch `cores`
@@ -178,6 +216,24 @@ RetroPad controls (in addition to the keyboard controls above):
 | Select (hold) + A / B / X / Y | Number layer: digits 5-8 |
 | Select (hold) + Start | Number layer: digit 9 |
 | Select (hold) + L / R | Number layer: digit 0 |
+
+## Testing
+
+Run the unit tests:
+
+```bash
+cargo test --workspace
+```
+
+Game files are not included. Supply legally obtained `.app` applications
+separately; see [Game Compatibility](docs/Game-Compatibility.md) for what
+runs and how it is verified.
+
+## Contributing
+
+Contributions are welcome! Whether you're interested in fixing bugs, adding
+features, improving documentation, or testing game compatibility, we'd love your
+help. See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for details.
 
 ## License
 
