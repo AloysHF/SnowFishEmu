@@ -41,7 +41,13 @@ snowfishemu [OPTIONS] <PATH>
 | `--free-play` | flag | off | Answer the purchase service as a registered, billing-capable handset (the same switch as `sfa_headless --free-play` / `SF_FREE_PLAY=1`). |
 | `--offline-http` | flag | off | Answer the SDK's carrier-facing HTTP transactions locally (the same switch as `sfa_headless --offline-http` / `SF_OFFLINE_HTTP=1`). |
 | `--scale <SCALE>` | integer ≥ 1 | `2` | Integer window scale factor over the 240x320 surface. |
-| `--budget <COUNT>` | integer | `200000000` | Instruction budget per guest call. |
+| `--headless` | flag | off | Run without opening a window. |
+| `--frames <COUNT>` | integer | `60` | Frames to run in headless mode. |
+| `--instruction-limit <COUNT>` | integer | `200000000` | Maximum guest instructions per callback. |
+| `-S, --screenshot <PATH>` | path | — | Run headlessly, save a PNG screenshot, then exit. |
+| `--screenshot-frames <COUNT>` | integer | `30` | Frames to run before capturing. |
+| `--press <FRAME:KEY>` | `FRAME:KEY` (repeatable) | — | Scripted phone-key press at an exact frame, using the core's key indices (10 = left soft key, 5 = OK, 25 = right soft key). Headless and screenshot runs only. |
+| `-v, --verbose` | flag | off | Enable debug logging. |
 
 The flags only ever turn the switches on: the `SF_FREE_PLAY` /
 `SF_OFFLINE_HTTP` environment variables are honoured by the core at load, and
@@ -117,6 +123,27 @@ is `warn`. Raise it for diagnostics:
 RUST_LOG=debug snowfishemu path/to/game.app
 RUST_LOG=trace snowfishemu path/to/game.app   # includes per-slot traces
 ```
+
+## Headless Mode and Screenshots
+
+Run the emulator without a window — useful for automated testing and batch
+processing:
+
+```bash
+# Run 120 frames silently and exit
+snowfishemu path/to/game.app --headless --frames 120
+
+# Take a PNG screenshot after 120 frames, with scripted key presses
+snowfishemu path/to/game.app -S shot.png --screenshot-frames 120 \
+  --press 30:10 --press 60:5
+```
+
+`--press frame:key` schedules scripted phone-key presses at exact frames
+during headless and screenshot runs, so the offline bring-up recipes in
+[Game Compatibility](Game-Compatibility.md) drive the capture. A screenshot
+only writes a PNG when the guest actually rendered a frame within the
+allotted frames; blank runs are reported as failures. Screenshots always
+use the native 240x320 framebuffer resolution.
 
 ## Headless Harness
 
