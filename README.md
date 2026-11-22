@@ -19,7 +19,7 @@ identifiers. Save states use the `SFEMSTAT` signature.
 ## Features
 
 - **SFA package format support** — header parsing, code relocation,
-  package inspector (`sfainfo`), optional sibling resource file serving
+  package inspector (`sfa_info`), optional sibling resource file serving
 - **ARM/Thumb CPU emulation** — ARMv4T core with ARMv5TE completion
   (BLX interworking, DSP multiplies)
 - **Service bridge** — platform API table with wrapper-based dispatch:
@@ -73,7 +73,7 @@ Standalone (240x320 window, keyboard controls):
 snowfishemu <path/to/game.app> [--free-play] [--offline-http] [--res <res.app>] [--scale N]
 ```
 
-`--free-play` and `--offline-http` are the same switches as sfheadless's
+`--free-play` and `--offline-http` are the same switches as sfa_headless's
 (they turn on what `SF_FREE_PLAY=1` / `SF_OFFLINE_HTTP=1` turn on; those
 environment variables are honoured too).
 
@@ -101,7 +101,7 @@ Headless bring-up harness (used by the test tooling; per-frame
 framebuffer dumps for offline analysis):
 
 ```sh
-sfheadless <path/to/game.app> --frames 30 [--res <res.app>] [--dump-fb <dir>] [--keys 10 --keys 5] [--press frame:key] [--free-play] [--offline-http] [--no-app-pump] [--no-keys]
+sfa_headless <path/to/game.app> --frames 30 [--res <res.app>] [--dump-fb <dir>] [--keys 10 --keys 5] [--press frame:key] [--free-play] [--offline-http] [--no-app-pump] [--no-keys]
 ```
 
 `--free-play` is the same switch as `SF_FREE_PLAY=1`; `--offline-http` is
@@ -119,21 +119,22 @@ reach the gobang board; a directional key then moves the cursor and OK
 places a stone — see docs/Game-Compatibility.md for each title's recipe):
 
 ```sh
-sfheadless <game.app> --frames 200 --no-keys --free-play --offline-http   --press 30:10 --press 60:10 --press 90:10 --press 120:10 --press 150:10 --press 180:10
+sfa_headless <game.app> --frames 200 --no-keys --free-play --offline-http   --press 30:10 --press 60:10 --press 90:10 --press 120:10 --press 150:10 --press 180:10
 ```
 
 Package inspector:
 
 ```sh
-sfainfo <path/to/game.app>
+sfa_info <path/to/game.app>
 ```
 
 ## RetroArch
 
-Deploy the built core (`target/release/snowfishemu_libretro.dll`, or
-`libsnowfishemu_libretro.so` on Linux) to the RetroArch `cores` directory
-and the info file (`snowfishemu_libretro.info`) to the `info` directory,
-then load a `.app` as content.
+The core is produced at `target/release/snowfishemu.dll`
+(`libsnowfishemu.so` on Linux, `libsnowfishemu.dylib` on macOS). Rename it
+to `snowfishemu_libretro.<ext>` before placing it in the RetroArch `cores`
+directory, put the info file (`snowfishemu_libretro.info`) in the `info`
+directory, then load a `.app` as content.
 
 - Video: 240x320 XRGB8888. The core reports a 60 Hz pacing rate; each
   presented frame advances the guest's millisecond UI clock by 33 ms.

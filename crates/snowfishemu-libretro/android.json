@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "core": "snowfishemu",
-  "so_name": "libsnowfishemu_libretro.so",
+  "so_name": "libsnowfishemu.so",
   "system": "snowfish",
   "display_name": {
     "en": "SnowFish",

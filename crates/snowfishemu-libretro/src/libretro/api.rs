@@ -1370,7 +1370,7 @@ mod tests {
 
         // The cdylib is named after the [lib] target, and the profile must
         // install exactly that file so the frontend can dlopen it.
-        assert!(profile.contains("\"so_name\": \"libsnowfishemu_libretro.so\""));
+        assert!(profile.contains("\"so_name\": \"libsnowfishemu.so\""));
         // Keep the profile in step with retro_get_system_info() and the
         // state format; both are checked above and in the save-state tests.
         assert!(profile.contains("\"supported_extensions\": [\"app\"]"));
@@ -1384,7 +1384,7 @@ mod tests {
         let workspace_manifest = include_str!("../../../../Cargo.toml");
 
         assert!(libretro_manifest.contains("name = \"snowfishemu-libretro\""));
-        assert!(libretro_manifest.contains("name = \"snowfishemu_libretro\""));
+        assert!(libretro_manifest.contains("name = \"snowfishemu\""));
         assert!(libretro_manifest.contains("\"cdylib\", \"staticlib\""));
         assert!(workspace_manifest.contains("\"crates/snowfishemu-libretro\""));
         assert!(core_info.contains("corename = \"snowfishemu\""));

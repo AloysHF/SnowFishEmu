@@ -260,7 +260,7 @@ arrives, which is what historically parked titles on their wait screen.
 Two optional platform facilities close that loop:
 
 - The **offline HTTP responder** (`SF_OFFLINE_HTTP=1`,
-  `sfheadless --offline-http`, `set_offline_http(true)`) hooks only the
+  `sfa_headless --offline-http`, `set_offline_http(true)`) hooks only the
   socket/notifier slots that are otherwise answered by the generic
   return-0 stub. `+0xC8` reports a connected event record, `+0xE4`
   reports the byte count, `+0xE8`/`+0xEC` keep the attached socket object,

@@ -29,11 +29,11 @@ struct Args {
     #[arg(long)]
     res: Vec<PathBuf>,
     /// Answer the purchase service as a registered handset (the same
-    /// switch as sfheadless `--free-play` / `SF_FREE_PLAY=1`).
+    /// switch as sfa_headless `--free-play` / `SF_FREE_PLAY=1`).
     #[arg(long)]
     free_play: bool,
     /// Answer the SDK's HTTP transactions locally (the same switch as
-    /// sfheadless `--offline-http` / `SF_OFFLINE_HTTP=1`).
+    /// sfa_headless `--offline-http` / `SF_OFFLINE_HTTP=1`).
     #[arg(long)]
     offline_http: bool,
     /// Window scale factor (default: fit 240x320 into ~640x854).

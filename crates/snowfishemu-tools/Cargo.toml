@@ -1,13 +1,13 @@
 [package]
 name = "snowfishemu-tools"
+description = "Tools for analyzing SnowFish/SFA packages"
 version.workspace = true
 edition.workspace = true
-description.workspace = true
 license.workspace = true
 
 [dependencies]
-env_logger = { workspace = true }
-log = { workspace = true }
-snowfishemu-core = { workspace = true }
-anyhow = { workspace = true }
-clap = { workspace = true }
+env_logger.workspace = true
+log.workspace = true
+snowfishemu-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true

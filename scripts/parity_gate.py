@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 CORPUS = Path(r'D:\Code\Emulator\SnowFishEmu\tmp\snowfish_game')
-MINE = Path(r'D:\Code\Emulator\SnowFishEmu\target\debug\sfheadless.exe')
+MINE = Path(r'D:\Code\Emulator\SnowFishEmu\target\debug\sfa_headless.exe')
 REF = Path(r'D:\Code\Emulator\SnowFishEmu\tmp\ref-run\sfemu.exe')
 OUT = Path(r'D:\Code\Emulator\SnowFishEmu\tmp\parity')
 FRAMES = 30

@@ -1,8 +1,8 @@
 [package]
 name = "snowfishemu"
+description = "SnowFish/SFA application emulator - Desktop application"
 version.workspace = true
 edition.workspace = true
-description.workspace = true
 license.workspace = true
 
 [[bin]]
@@ -10,9 +10,9 @@ name = "snowfishemu"
 path = "src/main.rs"
 
 [dependencies]
-snowfishemu-core = { workspace = true }
-anyhow = { workspace = true }
-clap = { workspace = true }
-env_logger = { workspace = true }
-log = { workspace = true }
-minifb = { workspace = true }
+snowfishemu-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+env_logger.workspace = true
+log.workspace = true
+minifb.workspace = true

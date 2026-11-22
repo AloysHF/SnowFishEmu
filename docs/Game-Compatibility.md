@@ -46,7 +46,7 @@ presses OK every ten frames and can cycle a title back into the SDK
 session page.
 
 ```sh
-sfheadless <game.app> --frames 200 --free-play --offline-http --no-keys \
+sfa_headless <game.app> --frames 200 --free-play --offline-http --no-keys \
   --press 30:10 --press 60:10 --press 90:10 --press 120:10 --press 150:10 --press 180:10
 ```
 
@@ -68,7 +68,7 @@ local New Game / Level Select menu. The same behavior applies to the
 libretro core. Both paths work with the default launch settings.
 
 ```sh
-sfheadless <game.app> --frames 90 --press 30:25 --press 65:5
+sfa_headless <game.app> --frames 90 --press 30:25 --press 65:5
 ```
 
 The right soft key at frame 30 starts the first level. OK at frame 65
@@ -90,7 +90,7 @@ main menu from the title and confirms **New Game**. The following replay
 reaches the first level and steers the ship right.
 
 ```sh
-sfheadless <game.app> --frames 132 --press 30:10 --press 60:5 --press 98:5 --press 130:6
+sfa_headless <game.app> --frames 132 --press 30:10 --press 60:5 --press 98:5 --press 130:6
 ```
 
 The desktop replay also works with `--free-play --offline-http`. The
@@ -124,7 +124,7 @@ overlapping SDK state write.
 The headless harness drives the same machine without a window:
 
 ```sh
-sfheadless <game.app> --frames 30 [--res <res.app>] [--dump-fb <dir>] \
+sfa_headless <game.app> --frames 30 [--res <res.app>] [--dump-fb <dir>] \
   [--free-play] [--offline-http] [--no-keys] [--keys 10] [--press frame:key]
 ```
 
@@ -140,11 +140,11 @@ framebuffer at `540720:25800` (raw RGB565).
 - `SF_4C="lr:val;*:val"` — override the +0x4C billing-capability result
   per call site (hex LRs; `*` sets the base, default 1)
 - `SF_FREE_PLAY=1` — answer the purchase service as a registered handset
-  (`sfheadless --free-play` does the same)
+  (`sfa_headless --free-play` does the same)
 - `SF_OFFLINE_HTTP=1` — answer the SDK's HTTP transactions locally
-  (`sfheadless --offline-http` does the same)
+  (`sfa_headless --offline-http` does the same)
 - `SF_NO_APP_PUMP=1` — suppress the per-frame selector-3 event
-  (`sfheadless --no-app-pump` does the same)
+  (`sfa_headless --no-app-pump` does the same)
 - `SF_SEED="addr:val;..."` — write guest words once after boot
 - `SF_FORCE="addr:val;..."` — write guest words every frame
 - `SF_VARS="addr,..."` — log guest words per frame around the tick
