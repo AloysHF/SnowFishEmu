@@ -33,19 +33,19 @@ identifiers. Save states use the `SFEMSTAT` signature.
   logging, guest file I/O over the package container, and the LZ stream
   decompressor (bit-exact with the platform's decoder)
 - **GDI display bridge** — RGB565 framebuffer (240x320) with region
-  fills, destination clipping, palette/RGB bitmap blits with source cropping,
-  mirroring and color-key transparency, and CJK text rendering with
-  glyph-width queries for the supported Three Kingdoms QVGA package
+  fills, single-pixel lines, destination clipping, palette/RGB bitmap blits
+  with source cropping, mirroring and color-key transparency. CJK text
+  uses an embedded bitmap font with a 16-pixel height query. The supported
+  Three Kingdoms QVGA package can also query glyph widths.
 - **UI timer service** — the repeating arm/callback pair every title
   registers during create, pumped on a millisecond frame clock so the
   guest's own 60-120 ms screen pumps fire at their designed rates
 - **Offline startup** — network/pay service queries are answered
   locally so applications reach their menus without retired servers;
   see [docs/Game-Compatibility.md](docs/Game-Compatibility.md)
-- **App-activate frame pump** — selector 3 (`EVT_APP_RESUME`) is posted
-  every frame by default; without it several titles never leave their
-  loading screen. `set_app_pump(false)` / `--no-app-pump` /
-  `SF_NO_APP_PUMP=1` disables it for diagnostics
+- **App-activate frame pump** — repeated selector 3 (`EVT_APP_RESUME`)
+  drives repaints for SDK builds that rely on it. The supported 新鬼吹灯
+  build receives this event at boot and uses its own timer thereafter.
 - **Offline HTTP responder** — the platform answers the SDK's
   carrier-facing HTTP transaction locally with a payload-free `200 OK`,
   runs the SDK's own result parser and notifies its registered completion
@@ -122,6 +122,11 @@ opt-outs.
 | Enter | OK |
 | Z | Left soft key |
 | X | Right soft key |
+| M | Menu |
+
+In the supported 新鬼吹灯 QVGA build, press **X** at the title and **Z**
+to skip the intro. In the cave, **M** opens the pause menu and **Enter**
+or **Z** confirms Continue.
 
 In the supported Gold Miner (黄金矿工) QVGA build, press **X** or
 **Enter** on the title screen to start the first level offline. Use **Z**

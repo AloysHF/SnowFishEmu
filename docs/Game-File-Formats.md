@@ -94,6 +94,7 @@ executes through the root-table stubs unchanged.
 | Slot | Service |
 |---|---|
 | `+0x010` | GDI flush |
+| `+0x014` | Font height in pixels (16 for a font handle, zero for null) |
 | `+0x018` | Glyph width from the UTF-16 code unit in r0, returned in pixels for the supported Three Kingdoms QVGA package |
 | `+0x058` | File open (UTF-16 path) |
 | `+0x05C` | File read |
@@ -103,8 +104,9 @@ executes through the root-table stubs unchanged.
 | `+0x0AC` | UI timer arm(owner, period ms, callback) |
 | `+0x108` | LZ decompression |
 | `+0x12C` | GDI set_clip(obj, x, y, w, h) |
-| `+0x130` / `+0x140` | Long-form fill variants (dialog chrome rows) |
+| `+0x130` | GDI line(obj, x0, y0, x1, y1) with the canvas pen |
 | `+0x134` | GDI blit(obj, bmp, x, y, flags) — bitmap at its own size |
+| `+0x140` | Dialog chrome approximation |
 | `+0x14C` | GDI text run(obj, u16 string, first, count, x, y, flags) |
 | `+0x154` | GDI text(obj, u16 string, x, y, font), using the canvas RGB888 pen |
 | `+0x15C` | GDI fill(obj, x, y, w, h) with the canvas pen |
@@ -273,11 +275,10 @@ Two optional platform facilities close that loop:
   fresh registration starts a new transaction. The responder is disabled by
   default and never synthesises server-side tariff data.
 - The **app-activate pump** posts selector 3 (`EVT_APP_RESUME`) every
-  frame. That selector re-arms the guest's 120 ms UI timer, refreshes its
-  date/time record and drives the screen state machine; without it some
-  titles stay on their loading screen even after the purchase flow has
-  completed. It is on by default and can be turned off with
-  `SF_NO_APP_PUMP=1`, `--no-app-pump` or `set_app_pump(false)`.
+  frame for SDK builds that use it to drive repaints and refresh state.
+  The supported 新鬼吹灯 build uses selector 3 at boot, then advances
+  from its timer callbacks. `SF_NO_APP_PUMP=1`, `--no-app-pump` and
+  `set_app_pump(false)` disable repeated resume events for diagnostics.
 
 `+0x134` and `+0x198` consume the same bitmap descriptor. `+0x198` takes
 the source origin `(sx, sy)` in r2/r3 and the crop dimensions `(w, h)`

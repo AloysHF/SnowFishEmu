@@ -20,6 +20,7 @@ mod keys {
     pub const LEFT: u8 = 4;
     pub const RIGHT: u8 = 6;
     pub const SOFT_L: u8 = 10;
+    pub const MENU: u8 = 11;
     pub const SOFT_R: u8 = 25;
     pub const OK: u8 = 5;
 }
@@ -318,6 +319,7 @@ fn pump_keys(window: &mut minifb::Window, machine: &mut SnowFishMachine) -> Resu
         (minifb::Key::Enter, keys::OK),
         (minifb::Key::Z, keys::SOFT_L),
         (minifb::Key::X, keys::SOFT_R),
+        (minifb::Key::M, keys::MENU),
         (minifb::Key::Key1, 0),
         (minifb::Key::Key2, 1),
         (minifb::Key::Key3, 2),

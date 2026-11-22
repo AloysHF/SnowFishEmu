@@ -601,7 +601,9 @@ impl SnowFishMachine {
                 asset_match: std::env::var("SF_SERVE_MATCH").unwrap_or_else(|_| ".pak".into()),
                 ..HttpResponder::default()
             },
-            app_pump: std::env::var_os("SF_NO_APP_PUMP").is_none(),
+            // This guest opens its pause menu whenever it receives app resume during play.
+            app_pump: compatibility != Compatibility::MengdePe
+                && std::env::var_os("SF_NO_APP_PUMP").is_none(),
         };
         // The registered-handset callables back the default-on answers; a
         // later `set_free_play(false)` turns the answers off without
@@ -729,10 +731,8 @@ impl SnowFishMachine {
 
     /// Enables or disables the per-frame app-activate/resume pump.
     ///
-    /// The shared SDK only advances its screen state machine (and repaints)
-    /// on selector 3. A foregrounded handset keeps that event active on the
-    /// frame cadence; disabling the pump is useful when diagnosing guests
-    /// that should not receive repeated activations.
+    /// Repeated selector 3 events drive repaints on SDK builds that rely on
+    /// them. The boot resume event is always sent.
     pub fn set_app_pump(&mut self, on: bool) {
         self.app_pump = on;
     }
@@ -788,6 +788,7 @@ impl SnowFishMachine {
             return Some(self.cpu.reg_get(armv4t_emu::reg::LR));
         }
         match w.slot {
+            0x014 => Some(w.ret),
             // Other SDK builds can overrun their dialog line tables when wrapping is enabled.
             0x18 if self.compatibility == Compatibility::SanguoTd8 => Some(w.ret),
             0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 | 0x524 | 0xAC | 0xE4 => {
@@ -1344,7 +1345,13 @@ impl SnowFishMachine {
                 self.exec_gdi(slot, ret)?;
                 None
             }
-            0x18 => Some(Gdi::cell_width(r(0) as u16) as u32),
+            // Font metrics are available when the guest supplies a font handle.
+            0x014 => Some(if r(0) == 0 {
+                0
+            } else {
+                crate::gdi::FONT_HEIGHT as u32
+            }),
+            0x018 => Some(Gdi::cell_width(r(0) as u16) as u32),
             _ => {
                 warn!("unhandled hooked slot +0x{slot:X} at ret {ret:#010x}");
                 Some(0)
@@ -1628,9 +1635,18 @@ impl SnowFishMachine {
                 // dialog re-issues its first line at the block origin.
                 self.gdi.reset_text_cursor();
             }
-            // +0x130/+0x140: the long-form fill variants for the dialog
-            // chrome (r1 = x, r2 = y; the canvas color from the context).
-            0x130 | 0x140 => {
+            0x130 => {
+                let adj = self.sp_adjust(ret);
+                let start = (r(1) as i32, r(2) as i32);
+                let end = (r(3) as i32, self.stack_arg(sp, adj, 1)? as i32);
+                let color = self.pen_color(r(0));
+                if self.trace {
+                    debug!("[gdi]+0x{slot:X} line {start:?} to {end:?} c={color:#06x}");
+                }
+                self.gdi.line(&mut self.mem, start, end, color);
+            }
+            // +0x140: approximate the dialog chrome with a filled row.
+            0x140 => {
                 let x = r(1) as i32;
                 let y = r(2) as i32;
                 let color = self.gdi.fill_color();
@@ -2281,8 +2297,15 @@ impl SnowFishMachine {
 
     /// Pumps all queued events into the guest.
     pub fn pump(&mut self, budget: u64) -> Result<(), MachineError> {
+        self.pump_events(budget, false)
+    }
+
+    fn pump_events(&mut self, budget: u64, stop_after_keydown: bool) -> Result<(), MachineError> {
         while let Some(ev) = self.events.pop() {
             self.app_call(ev.selector, ev.param, budget)?;
+            if stop_after_keydown && ev.selector == 6 {
+                break;
+            }
         }
         Ok(())
     }
@@ -2406,14 +2429,12 @@ impl SnowFishMachine {
                 }
             }
         }
-        // The shared SDK gates its UI state machine (and every repaint) on
-        // the app-activate/resume event, selector 3. A foregrounded handset
-        // keeps that state active on the frame cadence. Without it the
-        // titles draw their boot splash once and then freeze.
+        // Some SDK builds rely on repeated app-resume events for repaints.
         // SF_NO_APP_PUMP=1 (or `set_app_pump(false)`) disables it for
         // experiments; SF_RESUME=1 is the historical spelling of the same
         // forced-on switch.
-        if self.app_pump || std::env::var_os("SF_RESUME").is_some() {
+        let resume_each_frame = self.app_pump || std::env::var_os("SF_RESUME").is_some();
+        if resume_each_frame {
             self.events.post(3, 0);
         }
         // A local HTTP transaction that finished during boot has to be
@@ -2432,7 +2453,19 @@ impl SnowFishMachine {
                 self.run_until_return(budget)?;
             }
         }
-        self.pump(budget)?;
+        let poll_keys = self.compatibility == Compatibility::MengdePe
+            && !resume_each_frame
+            && !self.ui_timers.is_empty();
+        // This SDK clears the key on release before its timer can sample it.
+        // Deliver one press per poll and leave its release queued until the next poll.
+        if !poll_keys
+            || self
+                .ui_timers
+                .iter()
+                .any(|timer| timer.due_ms <= self.ui_clock_ms + FRAME_MS)
+        {
+            self.pump_events(budget, poll_keys)?;
+        }
         // SF_FREE_SCREEN=1: suppress all guest writes to the screen
         // variable so it stays at the SF_FORCE value. The render dispatch
         // reads the variable and falls through to the game's own code when
@@ -2940,6 +2973,16 @@ mod tests {
             m.mem.read_u32(plat::STUB_HEIGHT + 8).unwrap(),
             plat::SCREEN_HEIGHT
         );
+    }
+
+    #[test]
+    fn font_height_slot_requires_a_font_handle() {
+        let mut machine = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        for (font, height) in [(0, 0), (plat::CANVAS_ADDR, 16)] {
+            machine.cpu.reg_set(0, font);
+            machine.exec_slot(0x014, CODE_BASE).unwrap();
+            assert_eq!(machine.cpu.reg_get(0), height);
+        }
     }
 
     /// Text takes its pen colour from the canvas object at +0x28, and zero

@@ -84,12 +84,13 @@ mod keys {
     pub const RIGHT: u8 = 6;
     pub const OK: u8 = 5;
     pub const SOFT_L: u8 = 10;
+    pub const MENU: u8 = 11;
     pub const SOFT_R: u8 = 25;
 }
 
 /// The guest key indices the libretro input mapping can press, in a fixed
 /// order so the pad and keyboard mappings can be merged per index.
-const MAPPED_KEYS: [u8; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 25];
+const MAPPED_KEYS: [u8; 13] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 25];
 
 /// Maps a digit (0-9) onto its guest key index: digits 1-9 are indices 0-8
 /// and digit 0 is index 9, matching the standalone frontend's keypad.
@@ -448,7 +449,7 @@ pub extern "C" fn retro_run() {
     })
 }
 
-fn input_descriptors() -> [retro_input_descriptor; 12] {
+fn input_descriptors() -> [retro_input_descriptor; 14] {
     [
         retro_input_descriptor {
             port: 0,
@@ -531,8 +532,22 @@ fn input_descriptors() -> [retro_input_descriptor; 12] {
             port: 0,
             device: RETRO_DEVICE_JOYPAD,
             index: 0,
+            id: RETRO_DEVICE_ID_JOYPAD_L2,
+            description: c"Menu".as_ptr(),
+        },
+        retro_input_descriptor {
+            port: 0,
+            device: RETRO_DEVICE_JOYPAD,
+            index: 0,
             id: RETRO_DEVICE_ID_JOYPAD_SELECT,
             description: c"Number Layer (hold)".as_ptr(),
+        },
+        retro_input_descriptor {
+            port: 0,
+            device: 0,
+            index: 0,
+            id: 0,
+            description: ptr::null(),
         },
     ]
 }
@@ -681,6 +696,7 @@ fn retro_pad_key_states(
                 keys::OK => confirm,
                 keys::SOFT_L => soft_left,
                 keys::SOFT_R => soft_right,
+                keys::MENU => is_pressed(RETRO_DEVICE_ID_JOYPAD_L2),
                 _ => false,
             };
             (index, pressed)
@@ -692,9 +708,8 @@ fn retro_pad_key_states(
 ///
 /// The layout mirrors the standalone frontend's key map one-to-one so the
 /// same physical keys drive the same guest keys in both frontends: digits
-/// 1-9/0, the arrow keys, Enter, and Z/X for the soft keys. On this phone
-/// the arrow directions share keys with digits 3/5/7/9 and OK with digit 6,
-/// so keyboard digits drive the same guest indices as the arrows.
+/// 1-9/0, the arrow keys, Enter, Z/X for the soft keys and M for the menu.
+/// The arrows share guest indices with digits 3/5/7/9, and OK with digit 6.
 fn keyboard_key_states(is_pressed: impl Fn(u32) -> bool) -> Vec<(u8, bool)> {
     let digit = |d: u32| is_pressed(RETROK_0 + d);
     MAPPED_KEYS
@@ -713,6 +728,7 @@ fn keyboard_key_states(is_pressed: impl Fn(u32) -> bool) -> Vec<(u8, bool)> {
                 9 => digit(0),
                 keys::SOFT_L => is_pressed(RETROK_z),
                 keys::SOFT_R => is_pressed(RETROK_x),
+                keys::MENU => is_pressed(RETROK_m),
                 _ => false,
             };
             (index, pressed)
@@ -1000,7 +1016,7 @@ mod tests {
     #[test]
     fn input_descriptors_cover_retropad_mapping() {
         let descriptors = input_descriptors();
-        let ids: Vec<u32> = descriptors[..11]
+        let ids: Vec<u32> = descriptors[..12]
             .iter()
             .map(|descriptor| descriptor.id)
             .collect();
@@ -1018,14 +1034,16 @@ mod tests {
                 RETRO_DEVICE_ID_JOYPAD_Y,
                 RETRO_DEVICE_ID_JOYPAD_L,
                 RETRO_DEVICE_ID_JOYPAD_R,
+                RETRO_DEVICE_ID_JOYPAD_L2,
             ]
         );
-        assert_eq!(descriptors[11].id, RETRO_DEVICE_ID_JOYPAD_SELECT);
-        assert!(!descriptors[11].description.is_null());
+        assert_eq!(descriptors[12].id, RETRO_DEVICE_ID_JOYPAD_SELECT);
+        assert!(!descriptors[12].description.is_null());
+        assert!(descriptors[13].description.is_null());
     }
 
     /// The shared RetroPad layout must reach every non-digit guest key:
-    /// soft keys 10/25, confirm 5, and the D-pad directions 2/8/4/6.
+    /// soft keys 10/25, confirm 5, menu 11, and the D-pad directions 2/8/4/6.
     #[test]
     fn retro_pad_mapping_reaches_every_non_digit_guest_key() {
         let zero = |_index: u32, _id: u32| 0;
@@ -1042,6 +1060,7 @@ mod tests {
             RETRO_DEVICE_ID_JOYPAD_START,
             RETRO_DEVICE_ID_JOYPAD_L,
             RETRO_DEVICE_ID_JOYPAD_R,
+            RETRO_DEVICE_ID_JOYPAD_L2,
         ] {
             let states = retro_pad_key_states(|id| id == button, zero);
             for (key, pressed) in states {
@@ -1050,7 +1069,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(reached, [2u8, 4, 5, 6, 8, 10, 25].into_iter().collect());
+        assert_eq!(reached, [2u8, 4, 5, 6, 8, 10, 11, 25].into_iter().collect());
     }
 
     #[test]
@@ -1077,6 +1096,7 @@ mod tests {
             (RETRO_DEVICE_ID_JOYPAD_L, keys::SOFT_L),
             (RETRO_DEVICE_ID_JOYPAD_Y, keys::SOFT_R),
             (RETRO_DEVICE_ID_JOYPAD_R, keys::SOFT_R),
+            (RETRO_DEVICE_ID_JOYPAD_L2, keys::MENU),
         ] {
             let states = retro_pad_key_states(|id| id == button, |_index, _id| 0);
             assert_eq!(
@@ -1159,6 +1179,7 @@ mod tests {
             RETROK_RETURN,
             RETROK_z,
             RETROK_x,
+            RETROK_m,
             RETROK_UP,
             RETROK_DOWN,
             RETROK_LEFT,
@@ -1200,6 +1221,7 @@ mod tests {
             (RETROK_RETURN, keys::OK),
             (RETROK_z, keys::SOFT_L),
             (RETROK_x, keys::SOFT_R),
+            (RETROK_m, keys::MENU),
             (RETROK_UP, keys::UP),
             (RETROK_DOWN, keys::DOWN),
             (RETROK_LEFT, keys::LEFT),

@@ -95,6 +95,7 @@ notes.
 | Confirm (OK) | Enter |
 | Left soft key | `Z` |
 | Right soft key | `X` |
+| Menu | `M` |
 | Numeric keypad | `1`–`9`, `0` |
 | Exit | Escape |
 

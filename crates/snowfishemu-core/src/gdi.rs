@@ -7,6 +7,8 @@ use crate::font::FONT_ASCII8X8;
 use crate::mem::{GuestMem, MemError};
 use crate::plat::{FB_HEIGHT, FB_WIDTH, GDI_CLIP_ADDR};
 
+pub(crate) const FONT_HEIGHT: usize = 16;
+
 /// Display bridge state. All drawing lands in the guest framebuffer window
 /// (plat region 0x540720) — the same surface the canvas descriptor points
 /// at, so GDI ops and direct guest writes compose on one surface.
@@ -173,6 +175,40 @@ impl Gdi {
     fn point(&mut self, mem: &mut crate::mem::GuestMem, x: i32, y: i32, c: u16) {
         self.set_px(mem, x, y, c);
         self.dirty = true;
+    }
+
+    /// Draws a one-pixel-wide line between inclusive endpoints.
+    pub(crate) fn line(
+        &mut self,
+        mem: &mut GuestMem,
+        (x0, y0): (i32, i32),
+        (x1, y1): (i32, i32),
+        color: u16,
+    ) {
+        let steep = y0.abs_diff(y1) > x0.abs_diff(x1);
+        let axes = |x, y| if steep { (y, x) } else { (x, y) };
+        let start = axes(x0, y0);
+        let end = axes(x1, y1);
+        let ((x0, y0), (x1, y1)) = if start.0 <= end.0 {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        let [left, top, right, bottom] = Self::clip_bounds(mem);
+        let (clip_start, clip_top) = axes(left, top);
+        let (clip_end, clip_bottom) = axes(right, bottom);
+        // Clip the iteration on the major axis without shifting the line.
+        let width = i128::from(x0.abs_diff(x1).max(1));
+        let height = i128::from(y0.abs_diff(y1));
+        let direction = if y1 >= y0 { 1 } else { -1 };
+        for x in x0.max(clip_start)..=x1.min(clip_end - 1) {
+            let step = i128::from(x) - i128::from(x0);
+            let y = i128::from(y0) + direction * (step * height + width / 2) / width;
+            if (i128::from(clip_top)..i128::from(clip_bottom)).contains(&y) {
+                let (x, y) = axes(x, y as i32);
+                self.point(mem, x, y, color);
+            }
+        }
     }
 
     /// Fill a rectangle with an explicit RGB565 color.
@@ -401,7 +437,7 @@ impl Gdi {
                 _ => {
                     if let Some(c) = char::from_u32(ch as u32) {
                         if let Some(glyph) = unifont::get_glyph(c) {
-                            for row in 0..16usize {
+                            for row in 0..FONT_HEIGHT {
                                 for col in 0..glyph.get_width() {
                                     let x = cx + col as i32;
                                     let y = row0 + row as i32;
@@ -445,6 +481,33 @@ mod tests {
         g.take_dirty();
         g.fill(&mut mem, 500, 500, 10, 10, 0);
         assert!(!g.take_dirty());
+    }
+
+    #[test]
+    fn line_clips_to_canvas_and_keeps_one_pixel_per_step() {
+        let mut g = Gdi::new();
+        let mut mem = GuestMem::new(0x1000);
+        Gdi::set_clip(&mut mem, 0, 0, 4, 5).unwrap();
+        g.take_dirty();
+        g.line(&mut mem, (5, 8), (-1, -4), 0xffff);
+        assert!(g.take_dirty());
+        let pixels = g.frame_pixels(&mem);
+        let positions: Vec<_> = pixels
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &pixel)| (pixel == 0xfff8_fcf8).then_some(i))
+            .collect();
+        let stride = FB_WIDTH as usize;
+        assert_eq!(
+            positions,
+            [
+                1,
+                stride + 2,
+                2 * stride + 2,
+                3 * stride + 3,
+                4 * stride + 3
+            ]
+        );
     }
 
     #[test]

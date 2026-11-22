@@ -34,7 +34,7 @@ documented play state; regenerate them with `scripts/batch-screenshots.ps1`.
 | 永恒魔塔 (yonghengmota) | <img src="images/永恒魔塔.png" width="120" alt="永恒魔塔"> | **playable** | The magic-tower floor renders with the story dialog fully readable (宙斯：好女儿，乖女儿，就让我一次嘛…), the characters and the floor counter |
 | 胭脂戏游龙 (yzxyl) | <img src="images/胭脂戏游龙.png" width="120" alt="胭脂戏游龙"> | **playable** | The 西门庆居 scene, the dialog box (与春梅对话) and the movement tutorial (使用8,2,4,6可以进行移动) |
 | 新星际撞球 (StarBall) | <img src="images/新星际撞球.png" width="120" alt="新星际撞球"> | **playable** | The brick board, ball and paddle run. Canvas clipping selects individual score digits. |
-| 新鬼吹灯 (Mengde pe) | <img src="images/新鬼吹灯.png" width="120" alt="新鬼吹灯"> | **playable** | The full title screen; OK opens the story intro (scrolling, wrapped) and then the menu (新的游戏/继续游戏/帮助/退出) and the battle |
+| 新鬼吹灯 (Mengde pe) | <img src="images/新鬼吹灯.png" width="120" alt="新鬼吹灯"> | **playable** | The title, intro, and cave render. Continue closes the pause menu and restores movement |
 | 黄金矿工 (hjkg) | <img src="images/黄金矿工.png" width="120" alt="黄金矿工"> | **playable** | Start on the title screen opens the first level directly. Options → Start Game opens the local New Game / Level Select menu |
 | 宇宙风暴 (yzfb) | <img src="images/宇宙风暴.png" width="120" alt="宇宙风暴"> | **playable** | The music prompt, title, and main menu render. New Game enters the scrolling first level, and directional keys move the ship |
 
@@ -58,9 +58,7 @@ sfa_headless <game.app> --frames 200 --no-keys \
 
 That recipe (six left-soft-key presses over 200 frames) lands 五子棋 on
 its board, 三国危城无双 on its splash/tutorial, both 曹操冢 builds and
-永恒魔塔 in gameplay, and 胭脂戏游龙 on its first scene. For 新鬼吹灯 the
-advancing key is OK (`--press 40:5 ...`): the title opens the story
-intro, and further OK presses finish it into the menu. For 新星际撞球
+永恒魔塔 in gameplay, and 胭脂戏游龙 on its first scene. For 新星际撞球
 three presses over 500 frames suffice — its tariff wait dismisses
 itself and the game starts.
 
@@ -127,13 +125,24 @@ Set `SF_UNIVERSE_STORM_APP` to the package path and run
 verify the menu, ship controls, and first-level loading after an
 overlapping SDK state write.
 
+### 新鬼吹灯 (Mengde pe)
+
+Press **X** at the title and **Z** to skip the intro. **M** opens the
+pause menu. Choose Continue with **Enter** or **Z**.
+
+Replay a pause, a quick confirmation, and a step to the right.
+
+```sh
+sfa_headless <game.app> --frames 124 --press 50:25 --press 65:10 \
+  --press 96:11 --press 105:5 --press 114:6
+```
+
+Set `SF_GHOST_APP` to the package path and run
+`cargo test -p snowfishemu-core --test ghost_menu -- --ignored` to verify
+the menu layout, pause and resume, and player movement.
+
 ## Known gaps
 
-- **Ghosting behind sliding menus** (新鬼吹灯): menu items and softkey
-  labels drawn while a widget animates leave earlier positions on the
-  surface, because the bridge renders directly into the display instead
-  of compositing an off-screen canvas at the commit rect. The reference
-  bridge shows the same artifact.
 - **`__sfnetinfo__` is still refused**: the SDK reads that retry counter
   before posting; re-deriving its record layout would let the pay
   service skip the network round-trip entirely.

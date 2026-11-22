@@ -9,6 +9,7 @@ use crate::sfa::HEADER_LEN_SFA;
 pub(crate) enum Compatibility {
     Unmodified,
     GoldMiner,
+    MengdePe,
     SanguoTd8,
     UniverseStorm,
 }
@@ -16,6 +17,7 @@ pub(crate) enum Compatibility {
 impl Compatibility {
     pub(crate) fn detect(container: &[u8]) -> Self {
         match container.len() {
+            156_976 if content_fingerprint([container]) == 0xe09d_72f8_2a77_3eb4 => Self::MengdePe,
             194_174 if content_fingerprint([container]) == 0x9ee3_83e6_808c_a8df => Self::GoldMiner,
             216_610 if content_fingerprint([container]) == 0x6960_1884_6a4d_15f6 => Self::SanguoTd8,
             269_688 if content_fingerprint([container]) == 0x06ba_3789_c896_1ea6 => {
