@@ -94,9 +94,9 @@ executes through the root-table stubs unchanged.
 | Slot | Service |
 |---|---|
 | `+0x010` | GDI flush |
-| `+0x014` | Font height in pixels (16 for a font handle or the default font in 胭脂戏游龙, zero for other null handles) |
-| `+0x018` | Glyph width from the UTF-16 code unit in r0, returned in pixels for the supported Three Kingdoms and 胭脂戏游龙 QVGA packages |
-| `+0x01C` | String width in pixels for the supported 永恒魔塔 QVGA package, measured from the UTF-16 buffer in r0 up to the count in r1 |
+| `+0x014` | Embedded font height in pixels, including the default font |
+| `+0x018` | Glyph width in pixels for the UTF-16 code unit in r0 |
+| `+0x01C` | String width in pixels from the UTF-16 buffer in r0 up to the count in r1 |
 | `+0x058` | File open (UTF-16 path) |
 | `+0x05C` | File read |
 | `+0x064` | File seek |
@@ -155,10 +155,11 @@ over the carrier channel?* The SDK asks once at boot and every title
 gates its own state machine on the answer. A zero makes
 `SFPaySvc_CheckSms` return before it looks anything up and leaves most of
 the corpus parked on its pay page, so the platform answers 1 — it is a
-phone with a SIM. With offline provisioning enabled, the supported
-StarBall build receives 0 for the query to continue a spent round. The
-emulator completes that SDK request as declined, allowing the guest to
-show its normal Game Over screen.
+phone with a SIM. With both offline services enabled, a recognized SDK
+tariff registration uses its channel-unavailable branch to avoid a carrier
+request. The frame loop closes the SDK dialog and calls the registered
+callback with result `0` (success). The game then runs its original
+success handler.
 
 `+0x524` is the generic service lookup and takes two shapes:
 
@@ -266,7 +267,7 @@ arrives, which is what historically parked titles on their wait screen.
 
 ### Offline HTTP responder and the app-activate pump
 
-Two optional platform facilities close that loop:
+Two platform facilities close that loop:
 
 - The **offline HTTP responder** (`SF_OFFLINE_HTTP=1`,
   `sfa_headless --offline-http`, `set_offline_http(true)`) hooks only the
@@ -278,8 +279,8 @@ Two optional platform facilities close that loop:
   descriptor done and re-enters the SDK's completion callback, which runs
   its own result parser (`SFPaySvc_OnHttpReault`). An SDK session issues
   more than one request and reuses the same descriptor address, so each
-  fresh registration starts a new transaction. The responder is disabled by
-  default and never synthesises server-side tariff data.
+  fresh registration starts a new transaction. The responder is enabled by
+  default. The request release slot (`+0x56C`) leaves the package image intact.
 - The **app-activate pump** posts selector 3 (`EVT_APP_RESUME`) every
   frame for SDK builds that use it to drive repaints and refresh state.
   The supported 新鬼吹灯 build uses selector 3 at boot, then advances

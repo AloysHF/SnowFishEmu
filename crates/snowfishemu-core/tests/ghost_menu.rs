@@ -99,11 +99,16 @@ fn movement_resumes_after_the_first_npc_dialogue() {
     run_to(&mut machine, 157, &approach);
     assert_eq!(machine.mem.read_u32(SCENE).unwrap(), DIALOGUE);
 
-    let confirm: Vec<_> = (160..=250).step_by(9).map(|frame| (frame, OK)).collect();
-    run_to(&mut machine, 263, &confirm);
+    for frame in (160..=322).step_by(9) {
+        run_to(&mut machine, frame + 9, &[(frame, OK)]);
+        if machine.mem.read_u8(NPC_CHECK_COMPLETE).unwrap() == 1 {
+            break;
+        }
+    }
     assert_eq!(machine.mem.read_u32(SCENE).unwrap(), PLAYING);
     let player_x = machine.mem.read_u16(PLAYER_X).unwrap();
-    run_to(&mut machine, 274, &[(265, LEFT)]);
+    let frame = machine.frame_count();
+    run_to(&mut machine, frame + 11, &[(frame + 2, LEFT)]);
     assert!(
         machine.mem.read_u16(PLAYER_X).unwrap() < player_x,
         "the player can walk away"

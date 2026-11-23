@@ -35,8 +35,8 @@ identifiers. Save states use the `SFEMSTAT` signature.
 - **GDI display bridge** — RGB565 framebuffer (240x320) with region
   fills, single-pixel lines, destination clipping, palette/RGB bitmap blits
   with source cropping, mirroring and color-key transparency. CJK text
-  uses an embedded bitmap font with a 16-pixel height query. The supported
-  Three Kingdoms QVGA package can also query glyph widths.
+  uses an embedded 16-pixel bitmap font. The height, glyph-width, and
+  string-width queries use the same metrics as drawing.
 - **UI timer service** — the repeating arm/callback pair every title
   registers during create, pumped on a millisecond frame clock so the
   guest's own 60-120 ms screen pumps fire at their designed rates
@@ -44,19 +44,19 @@ identifiers. Save states use the `SFEMSTAT` signature.
   locally so applications reach their menus without retired servers;
   see [docs/Game-Compatibility.md](docs/Game-Compatibility.md)
 - **App-activate frame pump** — repeated selector 3 (`EVT_APP_RESUME`)
-  drives repaints for SDK builds that rely on it. The supported 新鬼吹灯
-  build receives this event at boot and uses its own timer thereafter.
+  drives repaints for SDK builds that rely on it. The legacy SDK uses its
+  boot resume and polls queued input on its UI timer thereafter.
 - **Offline HTTP responder** — the platform answers the SDK's
   carrier-facing HTTP transaction locally with a payload-free `200 OK`,
   runs the SDK's own result parser and notifies its registered completion
-  callback for every transaction. On by default and inert for titles that
-  never reach the network; `set_offline_http(bool)` is the library
+  callback when the response has been read. Recognized SDK tariff requests
+  complete with local success through their registered callbacks.
+  `set_offline_http(bool)` is the library
   equivalent, `SF_OFFLINE_HTTP=0` / `--no-offline-http` the opt-outs
 - **Free play** — the platform answers the purchase service as a
   registered, billing-capable handset by default: carrier billing present,
   subscriber identity found, and the `__sfssuid`/`ssu<id>` account record
-  backed by the service store. The guest still runs its own flow; nothing
-  is forced into its state. `set_free_play(bool)` is the library
+  backed by the service store. `set_free_play(bool)` is the library
   equivalent, `SF_FREE_PLAY=0` / `--no-free-play` the opt-outs
 - **RetroArch core** — the `snowfishemu_libretro` core runs the same
   machine under RetroArch and other libretro frontends
@@ -90,7 +90,7 @@ crates/
 │       ├── lz.rs             # Bit-exact LZ stream decompressor port
 │       ├── font.rs           # Embedded Unicode bitmap font rasterizer
 │       ├── save.rs           # SFEMSTAT save-state envelope and codec
-│       └── compat.rs         # Content-fingerprint-keyed offline fixes
+│       └── sdk.rs            # Guest SDK service adapters
 ├── snowfishemu/              # Standalone binary (→ snowfishemu)
 ├── snowfishemu-tools/        # sfa_info package inspector, sfa_headless harness
 └── snowfishemu-libretro/     # Libretro core (→ snowfishemu_libretro.{dll,so,dylib})
@@ -119,6 +119,7 @@ opt-outs.
 | Key | Phone control |
 |---|---|
 | Arrow keys | D-pad |
+| Number keys | Phone keypad |
 | Enter | OK |
 | Z | Left soft key |
 | X | Right soft key |
@@ -126,8 +127,8 @@ opt-outs.
 
 In the supported 永恒魔塔 QVGA build, press **Z** at the centered music
 prompt to reach the title screen. The title logo and selected menu
-option are centered. The default offline configuration keeps the tower
-playable after the original trial deadline.
+option are centered. When the trial expires, the game's original
+registration callback unlocks continued play in the tower.
 
 For 胭脂戏游龙, keep the companion resource container beside the game.
 The startup screen asks whether to enable music. Press **Z** for Yes
@@ -146,19 +147,19 @@ confirm and serve. Use **Up** and **Down** to highlight a menu item,
 the arrows to move the red outline to a level, and **Left** and **Right**
 to move the paddle during play.
 After a miss, use **Enter** to serve the next ball.
-When the last ball is lost offline, the game returns to the main menu
-after showing Game Over. Use **Enter** on **New Game** to play again.
+When the last ball is lost offline, the game replenishes the three
+paddles. Use **Enter** to serve again in the same round.
 
-In the supported Gold Miner (黄金矿工) QVGA build, press **X** or
-**Enter** on the title screen to start the first level offline. Use **Z**
-to open Options and choose Start Game to reach the level selection menu.
+In the supported Gold Miner (黄金矿工) QVGA build, press **M** on the
+title screen, or use **Z** to open Options and choose Start Game.
+Press **Enter** on New Game to enter the first level.
 
 In the supported Universe Storm (宇宙风暴) QVGA build, press **Z** at the
 music prompt, then **Enter** at the title and again on **New Game**.
 Use the arrow keys to steer. The standalone window continues processing
 input and close requests while a loading screen is static. The emulator
-loads embedded music and bitmaps directly from the package during play.
-Press **Z** at the revive prompt in the default offline configuration
+loads embedded music and bitmaps through the shared LZ service.
+Press **Z** at the revive prompt and again on the game's result screen
 to respawn and continue the current level.
 
 Optional resource file: a companion container is discovered next to the
@@ -245,8 +246,6 @@ directory, then load a `.app` as content.
   fingerprint (`SFEMSTAT` envelope), so states from other packages or
   older builds are rejected instead of restored.
 - Core options: CPU/HLE debug logging.
-- Gold Miner (黄金矿工): press the right soft key or OK to start the first
-  level from the title screen.
 - Resource file: the core serves the same optional sibling resource file
   as the standalone frontend (see above), resolved from the content path.
 - Note: on Windows, RetroArch's d3d11 driver has a first-present race

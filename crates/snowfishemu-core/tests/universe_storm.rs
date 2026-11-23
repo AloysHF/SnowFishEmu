@@ -136,8 +136,15 @@ fn revive_dialog_fits_and_confirm_respawns_the_ship_offline() {
     assert_eq!(
         machine.mem.read_u32(SDK_SCREEN).unwrap(),
         0,
-        "confirming an offline revive leaves the SDK dialog closed"
+        "the offline callback closes the SDK dialog"
     );
+    assert_eq!(
+        machine.mem.read_u32(game + 0x1b4).unwrap(),
+        5,
+        "native result"
+    );
+    press(&mut machine, LEFT_SOFT_KEY);
+    advance(&mut machine, 8);
     assert_eq!(machine.mem.read_u32(menu).unwrap(), 4, "game scene");
     assert_eq!(machine.mem.read_u32(game + 0x1b4).unwrap(), 1, "in flight");
     assert_eq!(machine.mem.read_u8(game + 0x39c).unwrap(), 0);

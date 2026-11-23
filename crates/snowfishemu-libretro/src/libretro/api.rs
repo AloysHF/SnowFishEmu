@@ -78,10 +78,10 @@ impl GuestTickPacer {
 /// Guest key indices driven by the frontends, mirroring the standalone
 /// frontend's key map (see the core's `KEY_MAP` for index to device code).
 mod keys {
-    pub const UP: u8 = 2;
-    pub const DOWN: u8 = 8;
-    pub const LEFT: u8 = 4;
-    pub const RIGHT: u8 = 6;
+    pub const UP: u8 = 13;
+    pub const DOWN: u8 = 14;
+    pub const LEFT: u8 = 15;
+    pub const RIGHT: u8 = 16;
     pub const OK: u8 = 5;
     pub const SOFT_L: u8 = 10;
     pub const MENU: u8 = 11;
@@ -90,7 +90,7 @@ mod keys {
 
 /// The guest key indices the libretro input mapping can press, in a fixed
 /// order so the pad and keyboard mappings can be merged per index.
-const MAPPED_KEYS: [u8; 13] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 25];
+const MAPPED_KEYS: [u8; 17] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 25];
 
 /// Maps a digit (0-9) onto its guest key index: digits 1-9 are indices 0-8
 /// and digit 0 is index 9, matching the standalone frontend's keypad.
@@ -709,7 +709,7 @@ fn retro_pad_key_states(
 /// The layout mirrors the standalone frontend's key map one-to-one so the
 /// same physical keys drive the same guest keys in both frontends: digits
 /// 1-9/0, the arrow keys, Enter, Z/X for the soft keys and M for the menu.
-/// The arrows share guest indices with digits 3/5/7/9, and OK with digit 6.
+/// Direction keys have their own indices. OK shares its index with digit 6.
 fn keyboard_key_states(is_pressed: impl Fn(u32) -> bool) -> Vec<(u8, bool)> {
     let digit = |d: u32| is_pressed(RETROK_0 + d);
     MAPPED_KEYS
@@ -718,17 +718,21 @@ fn keyboard_key_states(is_pressed: impl Fn(u32) -> bool) -> Vec<(u8, bool)> {
             let pressed = match index {
                 0 => digit(1),
                 1 => digit(2),
-                keys::UP => is_pressed(RETROK_UP) || digit(3),
+                2 => digit(3),
                 3 => digit(4),
-                keys::LEFT => is_pressed(RETROK_LEFT) || digit(5),
+                4 => digit(5),
                 keys::OK => is_pressed(RETROK_RETURN) || digit(6),
-                keys::RIGHT => is_pressed(RETROK_RIGHT) || digit(7),
+                6 => digit(7),
                 7 => digit(8),
-                keys::DOWN => is_pressed(RETROK_DOWN) || digit(9),
+                8 => digit(9),
                 9 => digit(0),
                 keys::SOFT_L => is_pressed(RETROK_z),
                 keys::SOFT_R => is_pressed(RETROK_x),
                 keys::MENU => is_pressed(RETROK_m),
+                keys::UP => is_pressed(RETROK_UP),
+                keys::DOWN => is_pressed(RETROK_DOWN),
+                keys::LEFT => is_pressed(RETROK_LEFT),
+                keys::RIGHT => is_pressed(RETROK_RIGHT),
                 _ => false,
             };
             (index, pressed)
@@ -762,7 +766,7 @@ fn update_phone_keys(emulator: &mut Emulator) {
             continue;
         }
         let key = index as u8;
-        if let Err(error) = emulator.machine.set_key(key, pressed_now[index]) {
+        if let Err(error) = emulator.machine.set_phone_key(key, pressed_now[index]) {
             log::warn!("key {key} rejected: {error}");
         }
         emulator.key_state[index] = pressed_now[index];
@@ -1043,7 +1047,7 @@ mod tests {
     }
 
     /// The shared RetroPad layout must reach every non-digit guest key:
-    /// soft keys 10/25, confirm 5, menu 11, and the D-pad directions 2/8/4/6.
+    /// soft keys, confirm, menu, and the D-pad.
     #[test]
     fn retro_pad_mapping_reaches_every_non_digit_guest_key() {
         let zero = |_index: u32, _id: u32| 0;
@@ -1069,7 +1073,21 @@ mod tests {
                 }
             }
         }
-        assert_eq!(reached, [2u8, 4, 5, 6, 8, 10, 11, 25].into_iter().collect());
+        assert_eq!(
+            reached,
+            [
+                keys::UP,
+                keys::DOWN,
+                keys::LEFT,
+                keys::RIGHT,
+                keys::OK,
+                keys::SOFT_L,
+                keys::SOFT_R,
+                keys::MENU,
+            ]
+            .into_iter()
+            .collect()
+        );
     }
 
     #[test]
@@ -1242,8 +1260,7 @@ mod tests {
     /// merge the standalone frontend applies.
     #[test]
     fn keyboard_and_pad_combine_per_key() {
-        // Digit 3 (guest 2) held on the keyboard while the pad holds up:
-        // both sources drive the same guest key, which stays a single press.
+        // Digit 3 and the D-pad Up have independent states.
         let keyboard = keyboard_key_states(|key| key == RETROK_0 + 3);
         let pad = retro_pad_key_states(|id| id == RETRO_DEVICE_ID_JOYPAD_UP, |_, _| 0);
         let mut merged = std::collections::HashMap::new();
@@ -1251,6 +1268,7 @@ mod tests {
             *merged.entry(key).or_insert(false) |= pressed;
         }
         assert!(merged[&keys::UP]);
+        assert!(merged[&digit_index(3)]);
 
         // Digit 6 and Enter both drive the confirm key.
         let keyboard = keyboard_key_states(|key| key == RETROK_RETURN);

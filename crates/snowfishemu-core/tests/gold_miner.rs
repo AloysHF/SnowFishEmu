@@ -8,7 +8,7 @@ const PLAY_PHASE: u32 = 0x12_E610;
 const CLAW_STATE: u32 = 0x12_F244;
 const OPTIONS_VISIBLE: u32 = 0x12_F53C;
 const LEFT_SOFT_KEY: u8 = 10;
-const RIGHT_SOFT_KEY: u8 = 25;
+const MENU_KEY: u8 = 11;
 const OK: u8 = 5;
 
 fn title_machine() -> SnowFishMachine {
@@ -36,22 +36,34 @@ fn assert_first_level(machine: &SnowFishMachine) {
     assert_eq!(machine.mem.read_u32(LEVEL).unwrap(), 1, "first level");
 }
 
+fn assert_level_menu(machine: &SnowFishMachine) {
+    assert_eq!(machine.mem.read_u32(SDK_SCREEN).unwrap(), 0, "SDK overlay");
+    assert_eq!(machine.mem.read_u32(SCENE).unwrap(), 2, "mine scene");
+    assert_eq!(
+        machine.mem.read_u32(PLAY_PHASE).unwrap(),
+        0x32d,
+        "level menu"
+    );
+}
+
 #[test]
 #[ignore = "requires the QVGA SnowFish V2 Gold Miner package (set SF_GOLD_MINER_APP)"]
-fn title_start_enters_first_level_with_one_press() {
-    for key in [RIGHT_SOFT_KEY, OK] {
-        let mut machine = title_machine();
-        let title = machine.frame_pixels();
-        press(&mut machine, key);
-        assert_first_level(&machine);
-        for _ in 0..4 {
-            machine.run_frame(BUDGET).unwrap();
-        }
-        assert_ne!(machine.frame_pixels(), title);
-        assert_eq!(machine.mem.read_u32(CLAW_STATE).unwrap(), 4, "claw ready");
-        press(&mut machine, OK);
-        assert_eq!(machine.mem.read_u32(CLAW_STATE).unwrap(), 1, "claw sent");
+fn title_opens_the_level_menu_and_can_start_play() {
+    let mut machine = title_machine();
+    let title = machine.frame_pixels();
+    press(&mut machine, MENU_KEY);
+    machine.run_frame(BUDGET).unwrap();
+    assert_level_menu(&machine);
+    press(&mut machine, OK);
+    assert_first_level(&machine);
+    for _ in 0..4 {
+        machine.run_frame(BUDGET).unwrap();
     }
+    assert_ne!(machine.frame_pixels(), title);
+    assert_eq!(machine.mem.read_u32(CLAW_STATE).unwrap(), 4, "claw ready");
+    machine.set_key(OK, true).unwrap();
+    machine.run_frame(BUDGET).unwrap();
+    assert_eq!(machine.mem.read_u32(CLAW_STATE).unwrap(), 1, "claw sent");
 }
 
 #[test]
@@ -61,15 +73,14 @@ fn options_start_keeps_the_local_level_menu() {
     press(&mut machine, LEFT_SOFT_KEY);
     assert_eq!(machine.mem.read_u8(OPTIONS_VISIBLE).unwrap(), 1);
     assert_eq!(machine.mem.read_u32(SCENE).unwrap(), 1, "title scene");
+    while machine.frame_count() < 60 {
+        machine.run_frame(BUDGET).unwrap();
+    }
     press(&mut machine, OK);
-    machine.run_frame(BUDGET).unwrap();
-    assert_eq!(machine.mem.read_u32(SDK_SCREEN).unwrap(), 0, "SDK overlay");
-    assert_eq!(machine.mem.read_u32(SCENE).unwrap(), 2, "mine scene");
-    assert_eq!(
-        machine.mem.read_u32(PLAY_PHASE).unwrap(),
-        0x32d,
-        "level menu"
-    );
+    for _ in 0..4 {
+        machine.run_frame(BUDGET).unwrap();
+    }
+    assert_level_menu(&machine);
     press(&mut machine, OK);
     assert_first_level(&machine);
 }

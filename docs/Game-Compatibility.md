@@ -10,15 +10,16 @@ service runs its whole SMS pass instead of exiting at the first check.
 
 Free play additionally answers the subscriber-identity lookup and
 backs the account record files with the service store — i.e. the
-platform claims to be a *registered* handset. It does not patch the
-guest: the title still has to accept the answers and open its own play
-state. The offline HTTP responder answers the SDK's carrier-facing HTTP
-transactions locally and runs the SDK's own result parser. Both are on
+platform claims to be a *registered* handset. The offline HTTP responder
+answers the SDK's HTTP transactions locally. Recognized local checks
+and tariff requests complete successfully through their SDK callbacks.
+The original game controls any result screen and gameplay changes. Both are on
 by default so every title launches the same way;
 `SF_FREE_PLAY=0` / `--no-free-play` and `SF_OFFLINE_HTTP=0` /
 `--no-offline-http` turn one off for diagnostics. The app-activate pump
-(selector 3) is on by default; `--no-app-pump` turns it off for
-diagnostics.
+(selector 3) is on for SDKs that use it to repaint. The older SDK polls
+input on its UI timer after the boot resume. `--no-app-pump` disables
+the repeated event for diagnostics.
 
 ## Corpus status
 
@@ -33,10 +34,10 @@ documented play state; regenerate them with `scripts/batch-screenshots.ps1`.
 | 曹操冢超豪华版 (Mengde i) | <img src="images/曹操冢超豪华版.png" width="120" alt="曹操冢超豪华版"> | **playable** | Gameplay; the help bar renders (按数字键3可以查看大地图显示) and the sprite pages load |
 | 永恒魔塔 (yonghengmota) | <img src="images/永恒魔塔.png" width="120" alt="永恒魔塔"> | **playable** | The music prompt and title artwork are centered. Dialogue and movement continue past the original trial deadline in the default offline configuration. |
 | 胭脂戏游龙 (yzxyl) | <img src="images/胭脂戏游龙.png" width="120" alt="胭脂戏游龙"> | **playable** | The opening story wraps across three lines. 西门庆居 shows the dialogue cue and movement tutorial inside their center panel. |
-| 新星际撞球 (StarBall) | <img src="images/新星际撞球.png" width="120" alt="新星际撞球"> | **playable** | Arrow keys navigate the main menu and level selection. Losing the last ball offline shows Game Over and returns to the main menu. |
+| 新星际撞球 (StarBall) | <img src="images/新星际撞球.png" width="120" alt="新星际撞球"> | **playable** | Arrow keys navigate the main menu and level selection. Losing the last ball offline replenishes the three paddles and resumes the round. |
 | 新鬼吹灯 (Mengde pe) | <img src="images/新鬼吹灯.png" width="120" alt="新鬼吹灯"> | **playable** | The title, intro, and cave render. Movement resumes after Continue and after the first NPC dialogue |
-| 黄金矿工 (hjkg) | <img src="images/黄金矿工.png" width="120" alt="黄金矿工"> | **playable** | Start on the title screen opens the first level directly. Options → Start Game opens the local New Game / Level Select menu |
-| 宇宙风暴 (yzfb) | <img src="images/宇宙风暴.png" width="120" alt="宇宙风暴"> | **playable** | New Game opens the scrolling first level. The revive prompt fits its panel, and confirming it in default offline mode resumes the level. |
+| 黄金矿工 (hjkg) | <img src="images/黄金矿工.png" width="120" alt="黄金矿工"> | **playable** | M on the title screen or Options → Start Game opens the original New Game / Level Select menu. |
+| 宇宙风暴 (yzfb) | <img src="images/宇宙风暴.png" width="120" alt="宇宙风暴"> | **playable** | New Game opens the scrolling first level. Confirming the revive and acknowledging its result resumes the level. |
 
 Every title now paints through the platform's UI timer: all ten arm
 `+0xAC` during create and drive their screens from the callback's
@@ -71,12 +72,11 @@ sfa_headless <game.app> --frames 26 --no-keys
 sfa_headless <game.app> --frames 55 --no-keys --press 30:10
 ```
 
-The default offline configuration keeps the tower playable past the
-original timed trial. The `offline_play_survives_the_trial_deadline`
-integration test replays four left-soft-key presses and repeated OK
-presses, waits past the deadline, then closes the dialogue and moves
-left. Disabling either free-play provisioning or the offline HTTP
-responder preserves the timed trial for diagnostics.
+When the original timed trial expires, the local SDK completion runs
+the game's own registration callback and play continues. The
+`offline_play_survives_the_trial_deadline` integration test verifies
+registration and movement after expiry. Disabling either free-play
+provisioning or the offline HTTP responder disables this local result.
 
 ### 胭脂戏游龙
 
@@ -102,13 +102,13 @@ level selection screen, Left and Right step by one level and Up and
 Down step by four. The red outline marks the selected level.
 
 OK serves each ball. After a miss, the next ball waits on the paddle.
-This replay misses all three serves, returns to the main menu, starts
-a new round and moves the paddle before serving again.
+This replay loses all three paddles, replenishes them through the
+game's continue callback, and moves the paddle before serving again.
 
 ```sh
 sfa_headless <game.app> --frames 247 --no-keys \
   --press 30:5 --press 60:5 --press 90:5 --press 120:5 --press 150:5 \
-  --press 190:5 --press 213:6 --press 240:5
+  --press 213:6 --press 240:5
 ```
 
 ### Three Kingdoms (三国危城无双)
@@ -131,30 +131,24 @@ the softkeys, map markers, portrait transparency and upgrade-mode label.
 
 ### Gold Miner (黄金矿工)
 
-SnowFishEmu identifies the supported SnowFish V2 QVGA package by its
-content fingerprint and applies the offline start fix in guest memory.
-The right soft key (**X**) or **Enter** on the title screen opens the
-first level directly. **Z** opens Options, where Start Game opens the
-local New Game / Level Select menu. The same behavior applies to the
-libretro core. Both paths work with the default launch settings.
+Press **M** on the title screen to open the original New Game / Level
+Select menu. **Z** opens Options, where Start Game reaches the same menu.
+Press **Enter** on New Game to begin. RetroPad **L2** sends the Menu key.
 
 ```sh
-sfa_headless <game.app> --frames 90 --press 30:25 --press 65:5
+sfa_headless <game.app> --frames 90 --press 30:11 --press 65:5 --press 82:5
 ```
 
-The right soft key at frame 30 starts the first level. OK at frame 65
+Menu opens level selection. OK starts the first level and then
 releases the claw. Set `SF_GOLD_MINER_APP` to the package path and run
 `cargo test -p snowfishemu-core --test gold_miner -- --ignored` to verify
 both start paths.
 
 ### Universe Storm (宇宙风暴)
 
-The supported SnowFish V2 QVGA package has two malformed bitmap headers.
-SnowFishEmu identifies the package by its content fingerprint and repairs
-those headers as their blocks are decompressed. It reads embedded music
-and bitmap blocks from the original package bytes. SDK state writes to
-overlapping guest addresses previously corrupted those blocks and could
-cause repeated LZ errors during the first-level load.
+Embedded music and bitmap blocks use the shared LZ decoder. If an
+embedded stream is unreadable in guest memory, the decoder can retry
+with a relocation-free range from the original package.
 
 The left soft key (**Z**) accepts the music prompt. **Enter** opens the
 main menu from the title and confirms **New Game**. The following replay
@@ -169,13 +163,12 @@ are on by default and this title tolerates them). The standalone frontend
 keeps servicing window messages during static frames, including the
 first-level loading screen.
 
-After the last life, the revive question and both choices fit inside the
-panel. The left soft key (**Z**) respawns the ship in the current level
-with the default offline settings.
+After the last life, press **Z** on the revive question. The game shows
+its own result notice. Press **Z** again to respawn in the current level.
 
 ```sh
-sfa_headless <game.app> --frames 306 --no-keys \
-  --press 30:10 --press 65:10 --press 98:5 --press 280:10 --press 298:6
+sfa_headless <game.app> --frames 316 --no-keys \
+  --press 30:10 --press 65:10 --press 98:5 --press 280:10 --press 296:10 --press 308:6
 ```
 
 Set `SF_UNIVERSE_STORM_APP` to the package path and run

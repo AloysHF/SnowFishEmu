@@ -269,7 +269,7 @@ fn pack_blobs(code: &[u8]) -> Vec<(usize, Vec<u8>, u16)> {
 
 // Mirrors the reference loader's validation order: length, magic, version,
 // reserved pair, header length, then total-size coverage.
-fn parse_header(data: &[u8]) -> Result<SfaHeader, SfaError> {
+pub(crate) fn parse_header(data: &[u8]) -> Result<SfaHeader, SfaError> {
     if data.len() <= 0x23 {
         return Err(SfaError::TooSmall(data.len()));
     }

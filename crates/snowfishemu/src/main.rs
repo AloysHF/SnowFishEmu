@@ -15,10 +15,10 @@ use std::path::{Path, PathBuf};
 /// logical indices (see core::machine::KEY_MAP for index → code).
 mod keys {
     /// Logical key indices into the core's KEY_MAP.
-    pub const UP: u8 = 2;
-    pub const DOWN: u8 = 8;
-    pub const LEFT: u8 = 4;
-    pub const RIGHT: u8 = 6;
+    pub const UP: u8 = 13;
+    pub const DOWN: u8 = 14;
+    pub const LEFT: u8 = 15;
+    pub const RIGHT: u8 = 16;
     pub const SOFT_L: u8 = 10;
     pub const MENU: u8 = 11;
     pub const SOFT_R: u8 = 25;
@@ -335,7 +335,7 @@ fn pump_keys(window: &mut minifb::Window, machine: &mut SnowFishMachine) -> Resu
         let down = window.is_key_down(*key);
         let was = KEY_STATE.with(|s| s.borrow().get(key).copied().unwrap_or(false));
         if down != was {
-            machine.set_key(*index, down)?;
+            machine.set_phone_key(*index, down)?;
             KEY_STATE.with(|s| s.borrow_mut().insert(*key, down));
         }
     }

@@ -12,7 +12,6 @@ const LEVEL_SELECTION: u32 = 0x60_6160;
 const MENU: u32 = 3;
 const LEVEL_SELECT: u32 = 4;
 const PLAYING: u32 = 5;
-const GAME_OVER: u32 = 14;
 const UP: u8 = 2;
 const LEFT: u8 = 4;
 const OK: u8 = 5;
@@ -41,7 +40,7 @@ fn run_to(machine: &mut SnowFishMachine, end: u64, presses: &[(u64, u8)]) {
 
 #[test]
 #[ignore = "requires the QVGA StarBall package (set SF_STAR_BALL_APP)"]
-fn last_ball_returns_to_a_playable_new_game_offline() {
+fn last_ball_replenishes_the_paddles_and_play_continues_offline() {
     let mut machine = start_game();
     let read = |m: &SnowFishMachine, addr| m.mem.read_u32(addr).unwrap();
 
@@ -65,21 +64,13 @@ fn last_ball_returns_to_a_playable_new_game_offline() {
         );
     }
     run_to(&mut machine, 175, &[(150, OK)]);
+    assert_eq!(read(&machine, SCENE), PLAYING, "the current round resumes");
     assert_eq!(
-        read(&machine, SCENE),
-        GAME_OVER,
-        "the round ends without a tariff wait"
+        read(&machine, LIVES),
+        3,
+        "the native callback replenishes the paddles"
     );
-    run_to(&mut machine, 190, &[]);
-    assert_eq!(
-        read(&machine, SCENE),
-        MENU,
-        "the menu reopens automatically"
-    );
-
-    run_to(&mut machine, 205, &[(190, OK)]);
-    assert_eq!(read(&machine, SCENE), PLAYING);
-    assert_eq!(read(&machine, LIVES), 3);
+    assert_eq!(read(&machine, BALL_VERTICAL_SPEED), 0);
     let paddle_x = read(&machine, PADDLE_X);
     let ball_x = read(&machine, BALL_X);
     run_to(&mut machine, 228, &[(213, RIGHT)]);

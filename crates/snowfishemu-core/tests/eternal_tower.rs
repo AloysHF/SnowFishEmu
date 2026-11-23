@@ -80,6 +80,7 @@ fn music_prompt_and_title_art_use_their_anchors() {
 fn offline_play_survives_the_trial_deadline() {
     const SDK_SCREEN: u32 = 0x14_6314;
     const TRIAL_ELAPSED: u32 = 0x14_a03c;
+    const REGISTERED: u32 = 0x14_a01c;
     const TOWER_SCENE: u32 = 0x14_9ec4;
     const SCENE_MODE: u32 = 0x14_9ef8;
     const PLAYER_X: u32 = 0x14_343c;
@@ -100,14 +101,12 @@ fn offline_play_survives_the_trial_deadline() {
         0,
         "the tower stays active past the old tariff wait"
     );
+    assert!(machine.mem.read_u32(TRIAL_ELAPSED).unwrap() >= 60);
     assert_eq!(
-        machine.mem.read_u32(TRIAL_ELAPSED).unwrap(),
-        0,
-        "the offline trial countdown stays inactive"
+        machine.mem.read_u8(REGISTERED).unwrap(),
+        1,
+        "the game's offline callback removes the time limit"
     );
-
-    // A snapshot made in timed mode can already have an expired counter.
-    machine.mem.write_u32(TRIAL_ELAPSED, 60).unwrap();
     let confirm = (720..=819)
         .step_by(11)
         .map(|frame| (frame, OK))
@@ -116,7 +115,7 @@ fn offline_play_survives_the_trial_deadline() {
     assert_eq!(
         machine.mem.read_u32(SDK_SCREEN).unwrap(),
         0,
-        "an expired trial counter does not open a tariff dialog"
+        "the tower remains active after offline registration"
     );
     assert_eq!(
         machine.mem.read_u8(SCENE_MODE).unwrap(),
