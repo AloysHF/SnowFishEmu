@@ -124,6 +124,11 @@ opt-outs.
 | X | Right soft key |
 | M | Menu |
 
+In the supported 永恒魔塔 QVGA build, press **Z** at the centered music
+prompt to reach the title screen. The title logo and selected menu
+option are centered. The default offline configuration keeps the tower
+playable after the original trial deadline.
+
 For 胭脂戏游龙, keep the companion resource container beside the game.
 The startup screen asks whether to enable music. Press **Z** for Yes
 or **X** for No. Press **Enter** at the title to read the opening story,

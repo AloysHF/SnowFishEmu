@@ -8,6 +8,7 @@ use crate::sfa::HEADER_LEN_SFA;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Compatibility {
     Unmodified,
+    EternalTower,
     GoldMiner,
     MengdePe,
     SanguoTd8,
@@ -27,6 +28,9 @@ impl Compatibility {
             269_688 if content_fingerprint([container]) == 0x06ba_3789_c896_1ea6 => {
                 Self::UniverseStorm
             }
+            281_912 if content_fingerprint([container]) == 0x83d2_cad4_cd80_36aa => {
+                Self::EternalTower
+            }
             _ => Self::Unmodified,
         }
     }
@@ -41,6 +45,20 @@ impl Compatibility {
             (Self::StarBall, 6) => 16, // Right
             _ => index,
         }
+    }
+}
+
+pub(crate) fn eternal_tower_offline_next_pc(pc: u32) -> Option<u32> {
+    const TRIAL_EXPIRED_CALL: u32 = CODE_BASE + 0x153c;
+    const AFTER_GAME_TICK: u32 = CODE_BASE + 0x9ad8;
+    const FLUSH: u32 = CODE_BASE + 0x9b9c;
+
+    match pc {
+        // Skip the trial deadline callback, including when restoring a timed trial.
+        TRIAL_EXPIRED_CALL => Some(TRIAL_EXPIRED_CALL + 4),
+        // Present the game frame without advancing or drawing the trial countdown.
+        AFTER_GAME_TICK => Some(FLUSH),
+        _ => None,
     }
 }
 

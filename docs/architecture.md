@@ -136,20 +136,28 @@ height query (`+0x014`) returns the 16-pixel height of the embedded wide font
 for a non-null font handle. The supported 胭脂戏游龙 build also gets
 16 pixels for its default font, identified by a null handle.
 The glyph-width query (`+0x018`) uses the renderer's cell widths for the
-supported Three Kingdoms and 胭脂戏游龙 QVGA packages. The renderer
-allocates full-width cells for CJK punctuation and the horizontal ellipsis.
+supported Three Kingdoms and 胭脂戏游龙 QVGA packages. The string-width
+query (`+0x01C`) sums those cell widths for the supported 永恒魔塔 build.
+The renderer allocates full-width cells for CJK punctuation and the
+horizontal ellipsis.
 胭脂戏游龙 uses the metrics to split the opening story into lines and
 size its in-game notice panels.
 
 Bitmap descriptors carry width, height, color key, palette pointer/mode and
 a data pointer with a fallback read; palette mode is detected from whether
-the palette word is a pointer. Colors reach the framebuffer in RGB565; the
-canvas keeps the guest's RGB888 pen.
+the palette word is a pointer. The draw slot (`+0x198`) anchors the
+requested source rectangle at the destination using its size and the
+anchor flags. Colors reach the framebuffer in RGB565, and the canvas
+keeps the guest's RGB888 pen.
 
 The clip bounds subsequent fills, lines, text and bitmap draws. Guests can
 position an entire sprite atlas behind a small clip to render one tile. The
 emulator stores the clip in platform scratch memory so it persists across
 save states.
+
+With both offline services enabled, the supported 永恒魔塔 build skips its
+legacy trial deadline and countdown. The game processes input and
+presents the frame through its normal timer callback.
 
 ## LZ decompressor
 

@@ -96,6 +96,7 @@ executes through the root-table stubs unchanged.
 | `+0x010` | GDI flush |
 | `+0x014` | Font height in pixels (16 for a font handle or the default font in 胭脂戏游龙, zero for other null handles) |
 | `+0x018` | Glyph width from the UTF-16 code unit in r0, returned in pixels for the supported Three Kingdoms and 胭脂戏游龙 QVGA packages |
+| `+0x01C` | String width in pixels for the supported 永恒魔塔 QVGA package, measured from the UTF-16 buffer in r0 up to the count in r1 |
 | `+0x058` | File open (UTF-16 path) |
 | `+0x05C` | File read |
 | `+0x064` | File seek |
@@ -113,7 +114,7 @@ executes through the root-table stubs unchanged.
 | `+0x180` | GDI set-color(obj, rgb888) |
 | `+0x184` | GDI clear / pen color |
 | `+0x194` | GDI bitmap register |
-| `+0x198` | GDI draw(obj, bmp, sx, sy, w, h, transform, dx, dy, _) |
+| `+0x198` | GDI draw(obj, bmp, sx, sy, w, h, transform, dx, dy, anchor). Anchor bits 1 and 2 center horizontally and vertically, and bits 8 and 32 align to the right and bottom edges. |
 | `+0x4C` | Carrier-billing capability query (1 = phone can bill) |
 | `+0x4E8` | Advance the platform PRNG and return a 15-bit nonnegative integer |
 | `+0x4EC` | Seed the platform PRNG with a 32-bit value in r0 |

@@ -794,6 +794,7 @@ impl SnowFishMachine {
                 Compatibility::SanguoTd8 | Compatibility::Yzxyl
             )
             .then_some(w.ret),
+            0x01C if self.compatibility == Compatibility::EternalTower => Some(w.ret),
             0x014 | 0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 | 0x4E8
             | 0x4EC | 0x524 | 0xAC | 0xE4 => Some(w.ret),
             0x12C | 0x130 | 0x134 | 0x140 | 0x14C | 0x154 | 0x158 | 0x180 | 0x198 | 0x194
@@ -806,6 +807,9 @@ impl SnowFishMachine {
     /// instruction budget, or a fault. Handles wrapper interception.
     fn run_until_return(&mut self, budget: u64) -> Result<u64, MachineError> {
         let mut executed = 0u64;
+        let eternal_tower_offline = self.compatibility == Compatibility::EternalTower
+            && self.free_play
+            && self.http.enabled;
         // SF_PCTRACE="lo-hi" (hex): log every fetch inside the range with
         // the link register — bounded per call to keep logs readable.
         let pc_range: Option<(u32, u32)> = std::env::var("SF_PCTRACE").ok().and_then(|s| {
@@ -824,6 +828,13 @@ impl SnowFishMachine {
             } else {
                 pc & !3
             };
+            if eternal_tower_offline {
+                if let Some(next_pc) = compat::eternal_tower_offline_next_pc(aligned) {
+                    self.cpu.reg_set(armv4t_emu::reg::PC, next_pc);
+                    executed += 1;
+                    continue;
+                }
+            }
             if let Some((lo, hi)) = pc_range {
                 if aligned >= lo && aligned <= hi && traced < 300 {
                     traced += 1;
@@ -1372,6 +1383,19 @@ impl SnowFishMachine {
                 crate::gdi::FONT_HEIGHT as u32
             }),
             0x018 => Some(Gdi::cell_width(r(0) as u16) as u32),
+            0x01C => {
+                // Measure up to the requested number of UTF-16 code units.
+                let (text, count) = (r(0), r(1));
+                let mut width = 0;
+                for i in 0..count {
+                    let ch = self.mem.read_u16(text.wrapping_add(i.wrapping_mul(2)))?;
+                    if ch == 0 {
+                        break;
+                    }
+                    width += Gdi::cell_width(ch) as u32;
+                }
+                Some(width)
+            }
             _ => {
                 warn!("unhandled hooked slot +0x{slot:X} at ret {ret:#010x}");
                 Some(0)
@@ -1573,7 +1597,7 @@ impl SnowFishMachine {
                     .op_text_block(&mut self.mem, &chars, x, y, color, Some(right));
             }
             0x198 => {
-                // draw(obj, bmp, sx, sy, w, h, transform, dx, dy, _)
+                // draw(obj, bmp, sx, sy, w, h, transform, dx, dy, anchor)
                 let adj = self.sp_adjust(ret);
                 let bmp_ptr = r(1);
                 let sx = r(2) as i32;
@@ -1583,9 +1607,10 @@ impl SnowFishMachine {
                 let transform = self.stack_arg(sp, adj, 3)?;
                 let dx = self.stack_arg(sp, adj, 4)? as i32;
                 let dy = self.stack_arg(sp, adj, 5)? as i32;
+                let anchor = self.stack_arg(sp, adj, 6)?;
                 // A zero source size uses the descriptor's bitmap size.
                 let size = if w > 0 && h > 0 { Some((w, h)) } else { None };
-                self.draw_bitmap(slot, bmp_ptr, (sx, sy), size, (dx, dy), transform)?;
+                self.draw_bitmap(bmp_ptr, (sx, sy), size, (dx, dy), transform, anchor)?;
             }
             0x134 => {
                 // blit(obj, bmp, x, y, flags) — the five-argument form of
@@ -1594,7 +1619,7 @@ impl SnowFishMachine {
                 let bmp_ptr = r(1);
                 let dx = r(2) as i32;
                 let dy = r(3) as i32;
-                self.draw_bitmap(slot, bmp_ptr, (0, 0), None, (dx, dy), 0)?;
+                self.draw_bitmap(bmp_ptr, (0, 0), None, (dx, dy), 0, 0)?;
             }
             0x194 => {
                 self.gdi.op_bmp();
@@ -1693,12 +1718,12 @@ impl SnowFishMachine {
     /// `+0x134` form uses the bitmap's full dimensions.
     fn draw_bitmap(
         &mut self,
-        slot: u32,
         bmp_ptr: u32,
         source: (i32, i32),
         size: Option<(i32, i32)>,
         target: (i32, i32),
         transform: u32,
+        anchor: u32,
     ) -> Result<(), MachineError> {
         if bmp_ptr <= 0x1000 {
             return Ok(());
@@ -1715,12 +1740,27 @@ impl SnowFishMachine {
         let (w, h) = size.unwrap_or((sw, sh));
         if self.trace {
             debug!(
-                "[gdi]+0x{slot:X} blit obj={:#010x} bmp@{bmp_ptr:#x} sw={sw} sh={sh} key={key:#x} pal={pal:#x} data={data:#x} clip={w}x{h} from {source:?} to {target:?} transform={transform}",
+                "[gdi] blit obj={:#010x} bmp@{bmp_ptr:#x} sw={sw} sh={sh} key={key:#x} pal={pal:#x} data={data:#x} clip={w}x{h} from {source:?} to {target:?} transform={transform} anchor={anchor:#x}",
                 self.cpu.reg_get(0)
             );
         }
         if sw <= 0 || sh <= 0 || w <= 0 || h <= 0 || w > 0x400 || h > 0x400 {
             return Ok(());
+        }
+        const HCENTER: u32 = 1;
+        const VCENTER: u32 = 2;
+        const RIGHT: u32 = 8;
+        const BOTTOM: u32 = 32;
+        let (mut x, mut y) = target;
+        if anchor & HCENTER != 0 {
+            x = x.saturating_sub(w / 2);
+        } else if anchor & RIGHT != 0 {
+            x = x.saturating_sub(w);
+        }
+        if anchor & VCENTER != 0 {
+            y = y.saturating_sub(h / 2);
+        } else if anchor & BOTTOM != 0 {
+            y = y.saturating_sub(h);
         }
         let data = if data > 0x1000 && data <= 0x7F_FFFF {
             data
@@ -1761,7 +1801,7 @@ impl SnowFishMachine {
             palette,
             source,
             (w, h),
-            target,
+            (x, y),
             transform,
         );
         Ok(())
