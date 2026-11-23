@@ -13,6 +13,7 @@ pub(crate) enum Compatibility {
     SanguoTd8,
     StarBall,
     UniverseStorm,
+    Yzxyl,
 }
 
 impl Compatibility {
@@ -22,6 +23,7 @@ impl Compatibility {
             172_920 if content_fingerprint([container]) == 0xf0be_68ce_e8f1_d536 => Self::StarBall,
             194_174 if content_fingerprint([container]) == 0x9ee3_83e6_808c_a8df => Self::GoldMiner,
             216_610 if content_fingerprint([container]) == 0x6960_1884_6a4d_15f6 => Self::SanguoTd8,
+            253_318 if content_fingerprint([container]) == 0xc158_1de0_06dd_e12f => Self::Yzxyl,
             269_688 if content_fingerprint([container]) == 0x06ba_3789_c896_1ea6 => {
                 Self::UniverseStorm
             }

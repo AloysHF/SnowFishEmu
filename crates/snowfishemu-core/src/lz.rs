@@ -26,7 +26,7 @@
 //! * MidA: `ob=src[ip]`, `p=ip+1`; fixed 2-byte copy at distance
 //!   `(F>>2) + (ob<<2) + 1`; trailing `F & 3`
 //! * MidB: `ob=src[ip]`, `p=ip+1`; fixed 3-byte copy at distance
-//!   `(F>>2) + (ob<<2) + 1 + 0x801`; trailing `F & 3`
+//!   `(F>>2) + (ob<<2) + 0x801`; trailing `F & 3`
 //!
 //! After every match the `F&3`-style trailing literal count is read from
 //! `src[p-2]` (the token's first offset byte, or the token byte itself for
@@ -289,7 +289,7 @@ pub fn decompress(src: &[u8], dst_cap: usize) -> Result<Vec<u8>, LzError> {
                 let ip_at = ip;
                 let ob = *src.get(ip).ok_or(LzError::SourceOverrun)? as u32;
                 let p = ip + 1;
-                let start = out.len() as i64 - ((f >> 2) as i64) - ((ob << 2) as i64) - 1 - 0x801;
+                let start = out.len() as i64 - ((f >> 2) as i64) - ((ob << 2) as i64) - 0x801;
                 copy!(start, 3, ip_at);
                 let cnt = (f & 3) as usize;
                 emit_trailing!(p, cnt);
@@ -377,7 +377,9 @@ mod tests {
         // Grow output past 0x801 with A2 copies, then a literal run whose
         // following F<=0xF token is a MidB 3-byte copy at distance >=0x801.
         let mut s: Vec<u8> = vec![0x11 + 238]; // init run of 238 literals
-        s.extend(std::iter::repeat_n(0x41u8, 238));
+        let mut literals = [b'A'; 238];
+        literals[45..49].copy_from_slice(b"abcd");
+        s.extend_from_slice(&literals);
         // A2 groups: F=0x3F (len 33), b0=0x10 (dist 5, no trailing).
         while s.len() < 238 + 62 * 3 {
             s.extend_from_slice(&[0x3F, 0x10, 0x00]);
@@ -385,13 +387,13 @@ mod tests {
         // After the last copy (no trailing) we are in litcheck: literal run
         // of 4, then F<=0xF is a MidB copy.
         s.extend_from_slice(&[0x01, b'w', b'x', b'y', b'z']);
-        s.extend_from_slice(&[0x04, 0x30]); // MidB: dist = 1 + 192 + 1 + 0x801
+        s.extend_from_slice(&[0x04, 0x30]); // MidB: dist = 1 + 192 + 0x801
         s.extend_from_slice(&[0x11, 0x00, 0x00]); // terminator
         let out = decompress(&s, CAP).unwrap();
         // The MidB token starts when out = 238 + 62*33 + 4 = 2288; distance
-        // = 1 + (0x30<<2=192) + 1 + 0x801 = 2243 -> start = 2288 - 2243 = 45.
+        // = 1 + (0x30<<2=192) + 0x801 = 2242 -> start = 2288 - 2242 = 46.
         assert_eq!(out.len(), 2288 + 3);
-        assert_eq!(&out[2288..2291], &out[45..48]);
+        assert_eq!(&out[2288..2291], b"bcd");
         assert_eq!(&out[2284..2288], b"wxyz");
         assert_eq!(&out[0..3], b"AAA");
     }

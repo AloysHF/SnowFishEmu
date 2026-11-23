@@ -353,12 +353,12 @@ impl Gdi {
     }
 
     /// Advance width of one text cell: 8 for ASCII and control cells, 16
-    /// for wide (CJK) code points.
+    /// for wide CJK code points, CJK punctuation, and the horizontal ellipsis.
     pub(crate) fn cell_width(ch: u16) -> i32 {
         match ch {
             0 => 0,
-            1..=0x4DFF => 8,
-            _ => 16,
+            0x2026 | 0x3000..=0x303F | 0x4E00..=u16::MAX => 16,
+            _ => 8,
         }
     }
 
@@ -396,10 +396,9 @@ impl Gdi {
 
     /// Draw a UTF-16 run, optionally wrapped at `right` (the x coordinate
     /// the next cell must not cross). This is the renderer behind both
-    /// `+0x154` labels (`right = None`) and `+0x14C` paragraph bodies
-    /// (`right = Some(surface edge)`): the body slot hands the platform a
-    /// whole paragraph — the intro screens scroll it by moving y — and the
-    /// firmware breaks the lines itself. A line's height is the tallest
+    /// `+0x154` labels and `+0x14C` paragraph bodies. The guest may hand
+    /// the platform a whole paragraph, so the renderer breaks lines at
+    /// the requested edge. A line's height is the tallest
     /// cell in it (8 for ASCII, 16 for wide cells), matching the advance
     /// metrics the guest lays its origins out with. Returns the total
     /// advance and the y coordinate below the last finished line.
@@ -452,7 +451,7 @@ impl Gdi {
                     }
                     cx += 8;
                 }
-                0x7F..=0x4DFF => cx += 8,
+                _ if cell == 8 => cx += 8,
                 _ => {
                     if let Some(c) = char::from_u32(ch as u32) {
                         if let Some(glyph) = unifont::get_glyph(c) {

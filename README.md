@@ -124,6 +124,12 @@ opt-outs.
 | X | Right soft key |
 | M | Menu |
 
+For 胭脂戏游龙, keep the companion resource container beside the game.
+The startup screen asks whether to enable music. Press **Z** for Yes
+or **X** for No. Press **Enter** at the title to read the opening story,
+then press **Enter** again to enter 西门庆居. The room displays the
+dialogue cue and movement tutorial in a centered panel.
+
 In the supported 新鬼吹灯 QVGA build, press **X** at the title and **Z**
 to skip the intro. In the cave, **M** opens the pause menu and **Enter**
 or **Z** confirms Continue. Press **Enter** next to the first NPC to

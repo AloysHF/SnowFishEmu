@@ -788,11 +788,14 @@ impl SnowFishMachine {
             return Some(self.cpu.reg_get(armv4t_emu::reg::LR));
         }
         match w.slot {
-            0x014 => Some(w.ret),
             // Other SDK builds can overrun their dialog line tables when wrapping is enabled.
-            0x18 if self.compatibility == Compatibility::SanguoTd8 => Some(w.ret),
-            0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 | 0x4E8 | 0x4EC
-            | 0x524 | 0xAC | 0xE4 => Some(w.ret),
+            0x018 => matches!(
+                self.compatibility,
+                Compatibility::SanguoTd8 | Compatibility::Yzxyl
+            )
+            .then_some(w.ret),
+            0x014 | 0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 | 0x4E8
+            | 0x4EC | 0x524 | 0xAC | 0xE4 => Some(w.ret),
             0x12C | 0x130 | 0x134 | 0x140 | 0x14C | 0x154 | 0x158 | 0x180 | 0x198 | 0x194
             | 0x184 | 0x15C | 0x010 => Some(w.ret),
             _ => None,
@@ -1362,8 +1365,8 @@ impl SnowFishMachine {
                 self.exec_gdi(slot, ret)?;
                 None
             }
-            // Font metrics are available when the guest supplies a font handle.
-            0x014 => Some(if r(0) == 0 {
+            // Yzxyl uses a null handle to measure its default font.
+            0x014 => Some(if r(0) == 0 && self.compatibility != Compatibility::Yzxyl {
                 0
             } else {
                 crate::gdi::FONT_HEIGHT as u32
@@ -1484,10 +1487,7 @@ impl SnowFishMachine {
                 // row sits at `height + n` and the right-hand label at
                 // `width - 5`. The platform slides such a label back inside
                 // instead of clipping it away, which is what makes the last
-                // row and the right-hand label readable. A label wider than
-                // the surface keeps its origin (the run clips at the edge
-                // like the reference) unless the origin itself is past the
-                // edge.
+                // row and the right-hand label readable.
                 let (tw, th) = crate::gdi::Gdi::text_extent(&chars);
                 let x = if x + tw > plat::FB_WIDTH as i32 {
                     (plat::FB_WIDTH as i32 - tw).max(0)
@@ -1505,11 +1505,9 @@ impl SnowFishMachine {
                     Some((ox, oy, next_y)) if ox == x && oy == y => (x, next_y),
                     _ => (x, y),
                 };
-                // One call advances the cursor by one row; the row height is
-                // the tallest cell in the label (8 ASCII / 16 wide).
                 self.gdi
                     .op_text_block(&mut self.mem, &chars, dx, dy, color, None);
-                self.gdi.text_cursor = Some((x, y, dy + th.max(8)));
+                self.gdi.text_cursor = Some((x, y, dy + th));
                 if self.trace {
                     let text: String = chars
                         .iter()

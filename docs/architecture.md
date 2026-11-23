@@ -133,9 +133,13 @@ color-key semantics (`+0x194`/`+0x198`/`+0x134`), canvas clipping
 (`+0x12C`), and flush (`+0x010`). Text rasterizes from an embedded Unicode
 bitmap font (`unifont`), so the core does not depend on host fonts. The font
 height query (`+0x014`) returns the 16-pixel height of the embedded wide font
-for a non-null font handle.
-The glyph-width query (`+0x018`) uses the same advances as text rendering
-for the supported Three Kingdoms QVGA package.
+for a non-null font handle. The supported 胭脂戏游龙 build also gets
+16 pixels for its default font, identified by a null handle.
+The glyph-width query (`+0x018`) uses the renderer's cell widths for the
+supported Three Kingdoms and 胭脂戏游龙 QVGA packages. The renderer
+allocates full-width cells for CJK punctuation and the horizontal ellipsis.
+胭脂戏游龙 uses the metrics to split the opening story into lines and
+size its in-game notice panels.
 
 Bitmap descriptors carry width, height, color key, palette pointer/mode and
 a data pointer with a fallback read; palette mode is detected from whether

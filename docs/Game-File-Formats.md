@@ -94,8 +94,8 @@ executes through the root-table stubs unchanged.
 | Slot | Service |
 |---|---|
 | `+0x010` | GDI flush |
-| `+0x014` | Font height in pixels (16 for a font handle, zero for null) |
-| `+0x018` | Glyph width from the UTF-16 code unit in r0, returned in pixels for the supported Three Kingdoms QVGA package |
+| `+0x014` | Font height in pixels (16 for a font handle or the default font in 胭脂戏游龙, zero for other null handles) |
+| `+0x018` | Glyph width from the UTF-16 code unit in r0, returned in pixels for the supported Three Kingdoms and 胭脂戏游龙 QVGA packages |
 | `+0x058` | File open (UTF-16 path) |
 | `+0x05C` | File read |
 | `+0x064` | File seek |
@@ -343,7 +343,7 @@ advancing `ip`):
 | A2 | `F b0 b1` | `(F&0x1F)` (0 → chain, then `b+0x1F`) + 2 | `(b0>>2) + (b1<<6) + 1` | `b0 & 3` |
 | X | `F ob` | `((F>>5)-1) + 2` | `((F&0x1C)>>2) + (ob<<3) + 1` | `F & 3` |
 | MidA | `F ob` | 2 | `(F>>2) + (ob<<2) + 1` | `F & 3` |
-| MidB | `F ob` | 3 | `(F>>2) + (ob<<2) + 1 + 0x801` | `F & 3` |
+| MidB | `F ob` | 3 | `(F>>2) + (ob<<2) + 0x801` | `F & 3` |
 
 After each match the trailing literal count is re-read from `src[p-2]`
 (the class's first offset byte, or the token byte itself for the

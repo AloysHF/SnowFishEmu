@@ -32,7 +32,7 @@ documented play state; regenerate them with `scripts/batch-screenshots.ps1`.
 | 巨作RPG曹操冢 (Mengde) | <img src="images/巨作RPG曹操冢.png" width="120" alt="巨作RPG曹操冢"> | **playable** | Gameplay with the help dialog text readable (如当前武器为铲子时，可长按确定/5号键挖地) |
 | 曹操冢超豪华版 (Mengde i) | <img src="images/曹操冢超豪华版.png" width="120" alt="曹操冢超豪华版"> | **playable** | Gameplay; the help bar renders (按数字键3可以查看大地图显示) and the sprite pages load |
 | 永恒魔塔 (yonghengmota) | <img src="images/永恒魔塔.png" width="120" alt="永恒魔塔"> | **playable** | The magic-tower floor renders with the story dialog fully readable (宙斯：好女儿，乖女儿，就让我一次嘛…), the characters and the floor counter |
-| 胭脂戏游龙 (yzxyl) | <img src="images/胭脂戏游龙.png" width="120" alt="胭脂戏游龙"> | **playable** | The 西门庆居 scene, the dialog box (与春梅对话) and the movement tutorial (使用8,2,4,6可以进行移动) |
+| 胭脂戏游龙 (yzxyl) | <img src="images/胭脂戏游龙.png" width="120" alt="胭脂戏游龙"> | **playable** | The opening story wraps across three lines. 西门庆居 shows the dialogue cue and movement tutorial inside their center panel. |
 | 新星际撞球 (StarBall) | <img src="images/新星际撞球.png" width="120" alt="新星际撞球"> | **playable** | Arrow keys navigate the main menu and level selection. Losing the last ball offline shows Game Over and returns to the main menu. |
 | 新鬼吹灯 (Mengde pe) | <img src="images/新鬼吹灯.png" width="120" alt="新鬼吹灯"> | **playable** | The title, intro, and cave render. Movement resumes after Continue and after the first NPC dialogue |
 | 黄金矿工 (hjkg) | <img src="images/黄金矿工.png" width="120" alt="黄金矿工"> | **playable** | Start on the title screen opens the first level directly. Options → Start Game opens the local New Game / Level Select menu |
@@ -58,7 +58,24 @@ sfa_headless <game.app> --frames 200 --no-keys \
 
 That recipe (six left-soft-key presses over 200 frames) lands 五子棋 on
 its board, 三国危城无双 on its splash/tutorial, both 曹操冢 builds and
-永恒魔塔 in gameplay, and 胭脂戏游龙 on its first scene.
+永恒魔塔 in gameplay, and 胭脂戏游龙 in 西门庆居.
+
+### 胭脂戏游龙
+
+Keep the companion resource container beside the application. With no
+input, the game displays the 是否打开音乐？ prompt. The left and right
+soft keys select Yes and No. Press OK at the title to read the opening
+story, which wraps across three lines. Press OK again to enter 西门庆居
+and see 与春梅对话。 Press OK once more for the movement tutorial.
+The panel expands to fit all three tutorial lines.
+
+```sh
+sfa_headless <game.app> --frames 110 --no-keys \
+  --press 30:10 --press 60:5 --press 90:5
+
+sfa_headless <game.app> --frames 145 --no-keys \
+  --press 30:10 --press 60:5 --press 90:5 --press 120:5
+```
 
 ### StarBall (新星际撞球)
 
