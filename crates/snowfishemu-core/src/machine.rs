@@ -807,9 +807,9 @@ impl SnowFishMachine {
     /// instruction budget, or a fault. Handles wrapper interception.
     fn run_until_return(&mut self, budget: u64) -> Result<u64, MachineError> {
         let mut executed = 0u64;
-        let eternal_tower_offline = self.compatibility == Compatibility::EternalTower
-            && self.free_play
-            && self.http.enabled;
+        let offline = self.free_play && self.http.enabled;
+        let eternal_tower_offline = offline && self.compatibility == Compatibility::EternalTower;
+        let universe_storm_offline = offline && self.compatibility == Compatibility::UniverseStorm;
         // SF_PCTRACE="lo-hi" (hex): log every fetch inside the range with
         // the link register — bounded per call to keep logs readable.
         let pc_range: Option<(u32, u32)> = std::env::var("SF_PCTRACE").ok().and_then(|s| {
@@ -834,6 +834,21 @@ impl SnowFishMachine {
                     executed += 1;
                     continue;
                 }
+            }
+            if universe_storm_offline
+                && aligned == compat::UNIVERSE_STORM_PURCHASE_CALL
+                && self.cpu.reg_get(1) == compat::UNIVERSE_STORM_REVIVE_PROMPT
+                && self.cpu.reg_get(3) == compat::UNIVERSE_STORM_REVIVE_CALLBACK
+            {
+                // Apply the game's respawn action directly in offline play.
+                let sp = self.cpu.reg_get(armv4t_emu::reg::SP);
+                let game = compat::prepare_universe_storm_respawn(&mut self.mem, sp)?;
+                self.cpu.reg_set(0, game);
+                self.cpu.reg_set(armv4t_emu::reg::LR, aligned + 4);
+                self.cpu
+                    .reg_set(armv4t_emu::reg::PC, compat::UNIVERSE_STORM_RESPAWN);
+                executed += 1;
+                continue;
             }
             if let Some((lo, hi)) = pc_range {
                 if aligned >= lo && aligned <= hi && traced < 300 {
@@ -1513,6 +1528,16 @@ impl SnowFishMachine {
                 // instead of clipping it away, which is what makes the last
                 // row and the right-hand label readable.
                 let (tw, th) = crate::gdi::Gdi::text_extent(&chars);
+                let (x, y) = if self.compatibility == Compatibility::UniverseStorm {
+                    let anchor = compat::universe_storm_revive_anchor(
+                        &self.mem,
+                        sp,
+                        self.cpu.reg_get(armv4t_emu::reg::LR),
+                    );
+                    Gdi::anchored_origin((x, y), (tw, th), anchor)
+                } else {
+                    (x, y)
+                };
                 let x = if x + tw > plat::FB_WIDTH as i32 {
                     (plat::FB_WIDTH as i32 - tw).max(0)
                 } else {
@@ -1747,21 +1772,7 @@ impl SnowFishMachine {
         if sw <= 0 || sh <= 0 || w <= 0 || h <= 0 || w > 0x400 || h > 0x400 {
             return Ok(());
         }
-        const HCENTER: u32 = 1;
-        const VCENTER: u32 = 2;
-        const RIGHT: u32 = 8;
-        const BOTTOM: u32 = 32;
-        let (mut x, mut y) = target;
-        if anchor & HCENTER != 0 {
-            x = x.saturating_sub(w / 2);
-        } else if anchor & RIGHT != 0 {
-            x = x.saturating_sub(w);
-        }
-        if anchor & VCENTER != 0 {
-            y = y.saturating_sub(h / 2);
-        } else if anchor & BOTTOM != 0 {
-            y = y.saturating_sub(h);
-        }
+        let target = Gdi::anchored_origin(target, (w, h), anchor);
         let data = if data > 0x1000 && data <= 0x7F_FFFF {
             data
         } else {
@@ -1801,7 +1812,7 @@ impl SnowFishMachine {
             palette,
             source,
             (w, h),
-            (x, y),
+            target,
             transform,
         );
         Ok(())

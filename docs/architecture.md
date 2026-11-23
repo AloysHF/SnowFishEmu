@@ -169,8 +169,8 @@ guest decompresses produces the reference output length.
 
 ## Compatibility fixes
 
-A small set of offline fixes is keyed by the package's content fingerprint
-(FNV-1a over the container bytes), applied to guest memory after load:
+Compatibility fixes match the package's content fingerprint (FNV-1a over
+the container bytes).
 
 - **Gold Miner** (黄金矿工): the title screen's right-soft-key/OK press and
   the options-menu Start Game action both reach the native level
@@ -179,6 +179,9 @@ A small set of offline fixes is keyed by the package's content fingerprint
   their blocks decompress, and the embedded music/bitmap archives are
   decoded from the original package bytes (their image carries no relocation
   entries and SDK state writes can overlap their guest addresses).
+  The revive dialog uses the rendered text extents to place its heading
+  and choices at their anchors. With both offline services enabled,
+  confirming the revive invokes the game's ship respawn action directly.
 
 The patches are reapplied when a snapshot is restored, so a pre-fix state
 keeps the new behavior. The on-disk package and snapshot formats are

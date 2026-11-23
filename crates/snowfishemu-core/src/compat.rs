@@ -62,6 +62,42 @@ pub(crate) fn eternal_tower_offline_next_pc(pc: u32) -> Option<u32> {
     }
 }
 
+pub(crate) fn universe_storm_revive_anchor(mem: &GuestMem, sp: u32, lr: u32) -> u32 {
+    const LABEL_RETURN: u32 = CODE_BASE + 0x1b2c;
+    const TITLE_RETURN: u32 = CODE_BASE + 0xa4e0;
+    const CONFIRM_RETURN: u32 = CODE_BASE + 0xa4fc;
+    const CANCEL_RETURN: u32 = CODE_BASE + 0xa518;
+
+    if lr != LABEL_RETURN {
+        return 0;
+    }
+    // The saved caller is above the text wrapper and the guest label frame.
+    match mem.read_u32(sp.wrapping_add(0x24)).ok() {
+        Some(TITLE_RETURN) => 0x03,
+        Some(CONFIRM_RETURN) => 0x24,
+        Some(CANCEL_RETURN) => 0x28,
+        _ => 0,
+    }
+}
+
+pub(crate) const UNIVERSE_STORM_PURCHASE_CALL: u32 = CODE_BASE + 0xb6ec;
+pub(crate) const UNIVERSE_STORM_REVIVE_PROMPT: u32 = CODE_BASE + 0x3_c568;
+pub(crate) const UNIVERSE_STORM_REVIVE_CALLBACK: u32 = CODE_BASE + 0xb5a0;
+pub(crate) const UNIVERSE_STORM_RESPAWN: u32 = CODE_BASE + 0xa9e0;
+
+pub(crate) fn prepare_universe_storm_respawn(mem: &mut GuestMem, sp: u32) -> Result<u32, MemError> {
+    let app = mem.read_u32(sp)?;
+    let menu = mem.read_u32(app + 0x74)?;
+    let game = mem.read_u32(menu + 0xf24)?;
+    let scene = mem.read_u32(menu + 4)?;
+
+    // Restore the playfield and consume the confirm key before respawning.
+    mem.write_u32(menu, scene)?;
+    mem.write_u32(app + 0x70, 0)?;
+    mem.write_u32(app + 0x40, u32::MAX)?;
+    Ok(game)
+}
+
 pub(crate) fn apply_gold_miner_offline_start(mem: &mut GuestMem) -> Result<(), MemError> {
     // The options menu's Start Game action opens the native level menu.
     // Reuse the skipped carrier-check block for the title's quick start.

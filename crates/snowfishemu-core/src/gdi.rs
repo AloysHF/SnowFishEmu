@@ -352,6 +352,28 @@ impl Gdi {
         }
     }
 
+    pub(crate) fn anchored_origin(
+        (mut x, mut y): (i32, i32),
+        (w, h): (i32, i32),
+        anchor: u32,
+    ) -> (i32, i32) {
+        const HCENTER: u32 = 1;
+        const VCENTER: u32 = 2;
+        const RIGHT: u32 = 8;
+        const BOTTOM: u32 = 32;
+        if anchor & HCENTER != 0 {
+            x = x.saturating_sub(w / 2);
+        } else if anchor & RIGHT != 0 {
+            x = x.saturating_sub(w);
+        }
+        if anchor & VCENTER != 0 {
+            y = y.saturating_sub(h / 2);
+        } else if anchor & BOTTOM != 0 {
+            y = y.saturating_sub(h);
+        }
+        (x, y)
+    }
+
     /// Advance width of one text cell: 8 for ASCII and control cells, 16
     /// for wide CJK code points, CJK punctuation, and the horizontal ellipsis.
     pub(crate) fn cell_width(ch: u16) -> i32 {

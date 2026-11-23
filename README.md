@@ -158,6 +158,8 @@ music prompt, then **Enter** at the title and again on **New Game**.
 Use the arrow keys to steer. The standalone window continues processing
 input and close requests while a loading screen is static. The emulator
 loads embedded music and bitmaps directly from the package during play.
+Press **Z** at the revive prompt in the default offline configuration
+to respawn and continue the current level.
 
 Optional resource file: a companion container is discovered next to the
 `.app` automatically — an exact `<stem>.pak`/`<stem>.res` sibling wins,

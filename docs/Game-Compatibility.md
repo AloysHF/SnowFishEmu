@@ -36,7 +36,7 @@ documented play state; regenerate them with `scripts/batch-screenshots.ps1`.
 | 新星际撞球 (StarBall) | <img src="images/新星际撞球.png" width="120" alt="新星际撞球"> | **playable** | Arrow keys navigate the main menu and level selection. Losing the last ball offline shows Game Over and returns to the main menu. |
 | 新鬼吹灯 (Mengde pe) | <img src="images/新鬼吹灯.png" width="120" alt="新鬼吹灯"> | **playable** | The title, intro, and cave render. Movement resumes after Continue and after the first NPC dialogue |
 | 黄金矿工 (hjkg) | <img src="images/黄金矿工.png" width="120" alt="黄金矿工"> | **playable** | Start on the title screen opens the first level directly. Options → Start Game opens the local New Game / Level Select menu |
-| 宇宙风暴 (yzfb) | <img src="images/宇宙风暴.png" width="120" alt="宇宙风暴"> | **playable** | The music prompt, title, and main menu render. New Game enters the scrolling first level, and directional keys move the ship |
+| 宇宙风暴 (yzfb) | <img src="images/宇宙风暴.png" width="120" alt="宇宙风暴"> | **playable** | New Game opens the scrolling first level. The revive prompt fits its panel, and confirming it in default offline mode resumes the level. |
 
 Every title now paints through the platform's UI timer: all ten arm
 `+0xAC` during create and drive their screens from the callback's
@@ -168,6 +168,15 @@ The recipe runs on the default launch settings (the provisioning answers
 are on by default and this title tolerates them). The standalone frontend
 keeps servicing window messages during static frames, including the
 first-level loading screen.
+
+After the last life, the revive question and both choices fit inside the
+panel. The left soft key (**Z**) respawns the ship in the current level
+with the default offline settings.
+
+```sh
+sfa_headless <game.app> --frames 306 --no-keys \
+  --press 30:10 --press 65:10 --press 98:5 --press 280:10 --press 298:6
+```
 
 Set `SF_UNIVERSE_STORM_APP` to the package path and run
 `cargo test -p snowfishemu-core --test universe_storm -- --ignored` to

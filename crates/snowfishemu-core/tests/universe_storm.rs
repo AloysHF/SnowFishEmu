@@ -1,4 +1,4 @@
-use snowfishemu_core::{lz, LzError, SnowFishMachine};
+use snowfishemu_core::{lz, plat::FB_WIDTH, LzError, SnowFishMachine};
 
 const BUDGET: u64 = 200_000_000;
 const APP_CONTEXT: u32 = 0x14_6d94;
@@ -96,4 +96,54 @@ fn first_level_loads_when_sdk_writes_overlap_the_bitmap_archive() {
     assert_eq!(machine.mem.read_u32(menu).unwrap(), 4, "game scene");
     let game = machine.mem.read_u32(menu + 0xf24).unwrap();
     assert_eq!(machine.mem.read_u32(game + 0x1b4).unwrap(), 1, "in flight");
+}
+
+#[test]
+#[ignore = "requires the QVGA SnowFish V2 Universe Storm package (set SF_UNIVERSE_STORM_APP)"]
+fn revive_dialog_fits_and_confirm_respawns_the_ship_offline() {
+    const SDK_SCREEN: u32 = 0x14_3210;
+    let mut machine = boot();
+    advance(&mut machine, 30);
+    press(&mut machine, LEFT_SOFT_KEY);
+    advance(&mut machine, 33);
+    press(&mut machine, LEFT_SOFT_KEY);
+    advance(&mut machine, 31);
+    press(&mut machine, OK);
+    advance(&mut machine, 180);
+
+    let app = machine.mem.read_u32(APP_CONTEXT).unwrap();
+    let menu = machine.mem.read_u32(app + 0x74).unwrap();
+    let game = machine.mem.read_u32(menu + 0xf24).unwrap();
+    assert_eq!(machine.mem.read_u32(game + 0x2c).unwrap(), 0);
+    assert_eq!(machine.mem.read_u8(game + 0x39c).unwrap(), 1);
+
+    let frame = machine.frame_pixels();
+    let width = FB_WIDTH as usize;
+    for (xs, ys, minimum, label) in [
+        (88..152, 132..148, 240, "revive title"),
+        (60..92, 184..200, 100, "confirm"),
+        (148..180, 184..200, 100, "cancel"),
+    ] {
+        let ink = ys
+            .flat_map(|y| &frame[y * width + xs.start..y * width + xs.end])
+            .filter(|&&pixel| pixel == 0xfff8_fcf8)
+            .count();
+        assert!(ink >= minimum, "{label} fits inside the revive panel");
+    }
+
+    press(&mut machine, LEFT_SOFT_KEY);
+    advance(&mut machine, 8);
+    assert_eq!(
+        machine.mem.read_u32(SDK_SCREEN).unwrap(),
+        0,
+        "confirming an offline revive leaves the SDK dialog closed"
+    );
+    assert_eq!(machine.mem.read_u32(menu).unwrap(), 4, "game scene");
+    assert_eq!(machine.mem.read_u32(game + 0x1b4).unwrap(), 1, "in flight");
+    assert_eq!(machine.mem.read_u8(game + 0x39c).unwrap(), 0);
+    assert!(machine.mem.read_u32(game + 0x2c).unwrap() > 0);
+
+    let ship_x = machine.mem.read_u32(game + 0xc).unwrap();
+    press(&mut machine, RIGHT);
+    assert!(machine.mem.read_u32(game + 0xc).unwrap() > ship_x);
 }
