@@ -791,9 +791,8 @@ impl SnowFishMachine {
             0x014 => Some(w.ret),
             // Other SDK builds can overrun their dialog line tables when wrapping is enabled.
             0x18 if self.compatibility == Compatibility::SanguoTd8 => Some(w.ret),
-            0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 | 0x524 | 0xAC | 0xE4 => {
-                Some(w.ret)
-            }
+            0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 | 0x4E8 | 0x4EC
+            | 0x524 | 0xAC | 0xE4 => Some(w.ret),
             0x12C | 0x130 | 0x134 | 0x140 | 0x14C | 0x154 | 0x158 | 0x180 | 0x198 | 0x194
             | 0x184 | 0x15C | 0x010 => Some(w.ret),
             _ => None,
@@ -1264,6 +1263,17 @@ impl SnowFishMachine {
                 }
                 debug!("[plat] +0x4C result={:?} base={base:#x}", result);
                 Some(result.unwrap_or(base))
+            }
+            0x4E8 => {
+                let state = self.mem.read_u32(crate::plat::RANDOM_STATE_ADDR)?;
+                // Produce a 15-bit value from the high bits of the LCG.
+                let next = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                self.mem.write_u32(crate::plat::RANDOM_STATE_ADDR, next)?;
+                Some((next >> 16) & 0x7fff)
+            }
+            0x4EC => {
+                self.mem.write_u32(crate::plat::RANDOM_STATE_ADDR, r(0))?;
+                None
             }
             0x5C => Some(self.hook_fread(r(0), r(1), r(2))?),
             0x60 => Some(self.hook_fwrite(r(0), r(1), r(2))?),
@@ -3748,6 +3758,32 @@ mod tests {
         // The restored machine keeps executing guest calls.
         machine.app_call(6, 0x08, 1000).unwrap();
         assert_eq!(machine.state().unwrap(), 3);
+    }
+
+    #[test]
+    fn seeded_random_stream_resumes_after_state_restore() {
+        let mut machine = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        let seed = |m: &mut SnowFishMachine| {
+            m.cpu.reg_set(0, 42);
+            m.exec_slot(0x4EC, CODE_BASE).unwrap();
+        };
+        let draw = |m: &mut SnowFishMachine| {
+            m.exec_slot(0x4E8, CODE_BASE).unwrap();
+            m.cpu.reg_get(0)
+        };
+        seed(&mut machine);
+        let first = draw(&mut machine);
+        let state = machine.serialize();
+        let second = draw(&mut machine);
+        assert_ne!(first, second);
+        assert!(first <= 0x7fff && second <= 0x7fff);
+
+        seed(&mut machine);
+        assert_eq!(draw(&mut machine), first);
+        draw(&mut machine);
+        draw(&mut machine);
+        machine.deserialize(&state).unwrap();
+        assert_eq!(draw(&mut machine), second);
     }
 
     /// A state from other content (different fingerprint) must be rejected

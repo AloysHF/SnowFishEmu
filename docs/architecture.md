@@ -113,6 +113,10 @@ The offline services are opt-in per run:
 The supported StarBall build receives dedicated navigation key codes
 for all four D-pad directions. Its menus rely on these codes.
 
+The platform implements the guest's random and seed calls. The stream is
+deterministic for the same seed and call sequence, and its state is part
+of the platform memory captured in save states.
+
 Unknown slots are not silently ignored: unimplemented slots the corpus
 exercises are recorded, and `SF_TRACE` logs every platform slot and GDI
 operation for compatibility work.

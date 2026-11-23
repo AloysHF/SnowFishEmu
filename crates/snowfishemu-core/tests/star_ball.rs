@@ -5,6 +5,7 @@ const SCENE: u32 = 0x60_5e8c;
 const LIVES: u32 = 0x60_5e9c;
 const BALL_X: u32 = 0x60_5688;
 const BALL_Y: u32 = 0x60_56a4;
+const BALL_VERTICAL_SPEED: u32 = 0x60_56d4;
 const PADDLE_X: u32 = 0x60_582c;
 const MENU_SELECTION: u32 = 0x60_614c;
 const LEVEL_SELECTION: u32 = 0x60_6160;
@@ -53,20 +54,30 @@ fn last_ball_returns_to_a_playable_new_game_offline() {
         "the third Enter launches the ball"
     );
 
-    run_to(&mut machine, 116, &[]);
+    for (end, presses, lives) in [(115, &[][..], 2), (145, &[(120, OK)][..], 1)] {
+        run_to(&mut machine, end, presses);
+        assert_eq!(read(&machine, SCENE), PLAYING);
+        assert_eq!(read(&machine, LIVES), lives, "one miss costs one life");
+        assert_eq!(
+            read(&machine, BALL_VERTICAL_SPEED),
+            0,
+            "the next ball waits for a serve"
+        );
+    }
+    run_to(&mut machine, 175, &[(150, OK)]);
     assert_eq!(
         read(&machine, SCENE),
         GAME_OVER,
         "the round ends without a tariff wait"
     );
-    run_to(&mut machine, 175, &[]);
+    run_to(&mut machine, 190, &[]);
     assert_eq!(
         read(&machine, SCENE),
         MENU,
         "the menu reopens automatically"
     );
 
-    run_to(&mut machine, 205, &[(180, OK)]);
+    run_to(&mut machine, 205, &[(190, OK)]);
     assert_eq!(read(&machine, SCENE), PLAYING);
     assert_eq!(read(&machine, LIVES), 3);
     let paddle_x = read(&machine, PADDLE_X);
@@ -87,6 +98,44 @@ fn last_ball_returns_to_a_playable_new_game_offline() {
     assert!(
         read(&machine, BALL_Y) < ball_y,
         "Enter launches the new ball"
+    );
+}
+
+#[test]
+#[ignore = "requires the QVGA StarBall package (set SF_STAR_BALL_APP)"]
+fn first_paddle_return_keeps_the_round_in_play() {
+    let mut machine = start_game();
+    let read = |m: &SnowFishMachine, addr| m.mem.read_u32(addr).unwrap();
+    run_to(&mut machine, 90, &[(30, OK), (60, OK)]);
+    let serve_x = read(&machine, BALL_X);
+    run_to(&mut machine, 92, &[(90, OK)]);
+
+    let steer = if read(&machine, BALL_X) < serve_x {
+        LEFT
+    } else {
+        RIGHT
+    };
+    run_to(
+        &mut machine,
+        99,
+        &[(92, steer), (94, steer), (96, steer), (98, steer)],
+    );
+    assert!((read(&machine, BALL_VERTICAL_SPEED) as i32) > 0);
+    run_to(&mut machine, 102, &[(100, steer)]);
+    assert!(
+        (read(&machine, BALL_VERTICAL_SPEED) as i32) < 0,
+        "the paddle returns the ball"
+    );
+    run_to(&mut machine, 110, &[]);
+    assert_eq!(
+        read(&machine, SCENE),
+        PLAYING,
+        "the rally continues after the return"
+    );
+    assert_eq!(
+        read(&machine, LIVES),
+        3,
+        "the first return keeps all three lives"
     );
 }
 

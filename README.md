@@ -134,6 +134,7 @@ In the supported StarBall (新星际撞球) QVGA build, use **Enter** to
 confirm and serve. Use **Up** and **Down** to highlight a menu item,
 the arrows to move the red outline to a level, and **Left** and **Right**
 to move the paddle during play.
+After a miss, use **Enter** to serve the next ball.
 When the last ball is lost offline, the game returns to the main menu
 after showing Game Over. Use **Enter** on **New Game** to play again.
 

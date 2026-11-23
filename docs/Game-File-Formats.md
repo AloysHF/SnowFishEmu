@@ -115,6 +115,8 @@ executes through the root-table stubs unchanged.
 | `+0x194` | GDI bitmap register |
 | `+0x198` | GDI draw(obj, bmp, sx, sy, w, h, transform, dx, dy, _) |
 | `+0x4C` | Carrier-billing capability query (1 = phone can bill) |
+| `+0x4E8` | Advance the platform PRNG and return a 15-bit nonnegative integer |
+| `+0x4EC` | Seed the platform PRNG with a 32-bit value in r0 |
 | `+0x500` | Timer start (id, callback, context) |
 | `+0x524` | Service lookup (see below) |
 | `+0x0C8` | Socket select(host, event record, handler, object) |

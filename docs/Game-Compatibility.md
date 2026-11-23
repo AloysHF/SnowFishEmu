@@ -66,13 +66,14 @@ Use Up and Down to highlight a menu item and OK to open it. On the
 level selection screen, Left and Right step by one level and Up and
 Down step by four. The red outline marks the selected level.
 
-The first three OK presses enter the game and serve. In this replay the
-last ball is lost, so the game shows Game Over and reopens the menu. The
-next OK starts a new round, then Right moves the paddle and OK serves again.
+OK serves each ball. After a miss, the next ball waits on the paddle.
+This replay misses all three serves, returns to the main menu, starts
+a new round and moves the paddle before serving again.
 
 ```sh
 sfa_headless <game.app> --frames 247 --no-keys \
-  --press 30:5 --press 60:5 --press 90:5 --press 180:5 --press 213:6 --press 240:5
+  --press 30:5 --press 60:5 --press 90:5 --press 120:5 --press 150:5 \
+  --press 190:5 --press 213:6 --press 240:5
 ```
 
 ### Three Kingdoms (三国危城无双)
