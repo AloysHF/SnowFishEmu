@@ -37,3 +37,9 @@ fn assert_indexed_resource_title(package_env: &str) {
 fn juedai_shuangjiao_loads_its_indexed_resources() {
     assert_indexed_resource_title("SF_JDSJ_APP");
 }
+
+#[test]
+#[ignore = "requires the QVGA Nandi Beigai Shuanglonghui package and its sibling resources (set SF_NDBGSLH_APP)"]
+fn nandi_beigai_loads_its_indexed_resources() {
+    assert_indexed_resource_title("SF_NDBGSLH_APP");
+}
