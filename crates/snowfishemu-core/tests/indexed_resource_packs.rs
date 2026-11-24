@@ -43,3 +43,9 @@ fn juedai_shuangjiao_loads_its_indexed_resources() {
 fn nandi_beigai_loads_its_indexed_resources() {
     assert_indexed_resource_title("SF_NDBGSLH_APP");
 }
+
+#[test]
+#[ignore = "requires the QVGA Shediao Chuanqi package and its sibling resources (set SF_SDCQ_APP)"]
+fn shediao_chuanqi_loads_its_indexed_resources() {
+    assert_indexed_resource_title("SF_SDCQ_APP");
+}

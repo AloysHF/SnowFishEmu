@@ -99,7 +99,7 @@ frames 30, 60, 90, 120, 150 and 180, with keys 10, 10, 5, 5, 10 and 5.
 | 热舞旋风 | `dance` | <img src="images/热舞旋风.png" width="120" alt="热舞旋风"> | **Menu.** The title and main menu render on startup. The left soft key opens difficulty selection. |
 | 忍者传说 | `huoying` | <img src="images/忍者传说.png" width="120" alt="忍者传说"> | Audio prompt |
 | 三国赵云传 | `JLXJ` | <img src="images/三国赵云传.png" width="120" alt="三国赵云传"> | Audio prompt |
-| 射雕传奇 | `sdcq` | <img src="images/射雕传奇.png" width="120" alt="射雕传奇"> | Resource prompt |
+| 射雕传奇 | `sdcq` | <img src="images/射雕传奇.png" width="120" alt="射雕传奇"> | Title. The Part One title and Start Game button load from the sibling indexed pack. |
 | 生化突袭 | `shtx` | <img src="images/生化突袭.png" width="120" alt="生化突袭"> | Menu |
 | 是男人就上100层 | `men` | <img src="images/是男人就上100层.png" width="120" alt="是男人就上100层"> | Audio prompt |
 | 暑期巨作完美情人 | `sexycity2` | <img src="images/暑期巨作完美情人.png" width="120" alt="暑期巨作完美情人"> | Menu |
