@@ -243,33 +243,38 @@ fn decode_midi(data: &[u8]) -> Result<Vec<i16>, AudioError> {
     if events.is_empty() {
         return Err(AudioError::NoNotes);
     }
-    if tempo_events.is_empty() {
-        tempo_events.push((0, 500_000));
-    }
     tempo_events.sort_by_key(|event| event.0);
-    let max_tick = events.iter().map(|event| event.tick).max().unwrap_or(0);
+    let max_tick = events.last().unwrap().tick;
     let end_tick = max_tick.saturating_add(ticks_per_quarter);
 
-    let seconds_per_tick = |tempo: u64| tempo as f64 / ticks_per_quarter as f64 / 1_000_000.0;
-    let tick_time = |tick: u64| -> f64 {
-        let mut time = 0.0;
-        let mut previous_tick = 0u64;
-        for &(tempo_tick, tempo) in &tempo_events {
-            if tempo_tick >= tick {
+    // Walk the tempo map alongside the sorted notes. Each interval uses
+    // the last tempo effective at its start, or 120 BPM before any change.
+    let mut changes = tempo_events.into_iter().peekable();
+    let mut clock_tick = 0;
+    let mut clock_time = 0.0;
+    let mut tempo = 500_000;
+    let seconds_per_tick = |tempo: u64| tempo as f64 / (ticks_per_quarter as f64 * 1_000_000.0);
+    let mut time_at = |tick: u64| {
+        while let Some(&(change_tick, new_tempo)) = changes.peek() {
+            if change_tick > tick {
                 break;
             }
-            time += (tempo_tick - previous_tick) as f64 * seconds_per_tick(tempo);
-            previous_tick = tempo_tick;
+            clock_time += (change_tick - clock_tick) as f64 * seconds_per_tick(tempo);
+            clock_tick = change_tick;
+            tempo = new_tempo;
+            changes.next();
         }
-        time += (tick - previous_tick) as f64
-            * seconds_per_tick(tempo_events.last().map_or(500_000, |event| event.1));
-        time
+        clock_time + (tick - clock_tick) as f64 * seconds_per_tick(tempo)
     };
+    let events: Vec<_> = events
+        .into_iter()
+        .map(|event| (time_at(event.tick), event))
+        .collect();
 
     // Feature-phone melodies are low-fi, so render at 8 kHz and resample to
     // the shared 44.1 kHz stereo output; this keeps headless tests fast.
     const MIDI_RENDER_RATE: f64 = 8_000.0;
-    let total_seconds = tick_time(end_tick).clamp(0.05, 120.0);
+    let total_seconds = time_at(end_tick).clamp(0.05, 120.0);
     let total_samples = (total_seconds * MIDI_RENDER_RATE) as usize;
     let mut samples = vec![0.0f32; total_samples];
     let mut active: Vec<(f64, f64, f64, f32)> = Vec::new(); // (frequency, start, end, amplitude)
@@ -278,8 +283,7 @@ fn decode_midi(data: &[u8]) -> Result<Vec<i16>, AudioError> {
     for (sample_index, output) in samples.iter_mut().enumerate() {
         let time = sample_index as f64 / MIDI_RENDER_RATE;
         while event_index < events.len() {
-            let event = events[event_index];
-            let event_time = tick_time(event.tick);
+            let (event_time, event) = events[event_index];
             if event_time > time {
                 break;
             }
@@ -428,6 +432,25 @@ mod tests {
         assert!(pcm.len() > 22 * rate);
         assert!(pcm[..rate].iter().any(|&sample| sample != 0));
         assert!(pcm[21 * rate..].iter().any(|&sample| sample != 0));
+    }
+
+    #[test]
+    fn tempo_changes_apply_only_to_their_own_intervals() {
+        let tune = midi(&[
+            96, 0x90, 60, 100, 48, 0x80, 60, 0, 48, 0xFF, 0x51, 3, 0x0F, 0x42, 0x40, 96, 0xFF,
+            0x51, 3, 0x03, 0xD0, 0x90, 96, 0x90, 69, 100, 96, 0x80, 69, 0, 0, 0xFF, 0x2F, 0,
+        ]);
+        let pcm = decode_midi(&tune).unwrap();
+        let rate = AUDIO_SAMPLE_RATE as usize;
+        let (frames, _) = pcm.as_chunks::<2>();
+        let first_note = frames.iter().position(|[left, _]| *left != 0).unwrap();
+        let late_note = frames[2 * rate..]
+            .iter()
+            .position(|[left, _]| *left != 0)
+            .unwrap()
+            + 2 * rate;
+        assert!((rate / 2..rate / 2 + 32).contains(&first_note));
+        assert!((9 * rate / 4..9 * rate / 4 + 32).contains(&late_note));
     }
 
     #[test]
