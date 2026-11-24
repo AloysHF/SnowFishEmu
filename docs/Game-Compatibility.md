@@ -33,6 +33,7 @@ Keep each companion resource container beside its executable package.
 The script uses the title-specific input and frame count where available.
 For other packages it captures after 200 frames without input by default.
 Each PNG is named after the directory containing the executable package.
+The website gallery uses the screenshot links and captions in these tables.
 
 ### Verified gameplay
 

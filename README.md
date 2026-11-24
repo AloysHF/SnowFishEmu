@@ -225,6 +225,10 @@ and the title of 明星模仿秀-超级斗地主 after the first-launch audio pr
 
 ## Browser Mode (EmulatorJS)
 
+The [application gallery](https://AloysHF.github.io/SnowFishEmu/#gallery)
+shows the screenshots from the compatibility guide in a horizontal strip.
+Swipe or use the arrows to browse them.
+
 The project site hosts a browser player at
 <https://AloysHF.github.io/SnowFishEmu/play.html>: pick a local `.app`
 application (or drop it onto the page) and the WebAssembly core runs it via
