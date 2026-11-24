@@ -137,13 +137,23 @@ fn decode_midi(data: &[u8]) -> Result<Vec<i16>, AudioError> {
     #[derive(Debug, Clone, Copy)]
     struct NoteEvent {
         tick: u64,
+        channel: u8,
         note: u8,
         velocity: u8,
-        on: bool,
+    }
+
+    struct Voice {
+        channel: u8,
+        note: u8,
+        frequency: f64,
+        start: f64,
+        release: Option<f64>,
+        amplitude: f32,
     }
 
     let mut events = Vec::new();
     let mut tempo_events = Vec::new();
+    let mut end_tick = 0;
     let mut cursor = 14usize;
     for _ in 0..track_count {
         if cursor + 8 > data.len() {
@@ -185,27 +195,13 @@ fn decode_midi(data: &[u8]) -> Result<Vec<i16>, AudioError> {
                     let data1 = data[pos];
                     let data2 = data[pos + 1];
                     pos += 2;
-                    match status & 0xF0 {
-                        0x80 => events.push(NoteEvent {
+                    if matches!(status & 0xF0, 0x80 | 0x90) {
+                        events.push(NoteEvent {
                             tick,
+                            channel: status & 0x0F,
                             note: data1,
-                            velocity: 0,
-                            on: false,
-                        }),
-                        // A note-on with velocity zero is the note-off idiom.
-                        0x90 if data2 == 0 => events.push(NoteEvent {
-                            tick,
-                            note: data1,
-                            velocity: 0,
-                            on: false,
-                        }),
-                        0x90 => events.push(NoteEvent {
-                            tick,
-                            note: data1,
-                            velocity: data2,
-                            on: true,
-                        }),
-                        _ => {}
+                            velocity: if status & 0xF0 == 0x80 { 0 } else { data2 },
+                        });
                     }
                 }
                 0xF0 if status == 0xFF => {
@@ -222,6 +218,9 @@ fn decode_midi(data: &[u8]) -> Result<Vec<i16>, AudioError> {
                     if body.saturating_add(length) > end {
                         break;
                     }
+                    if meta == 0x2F {
+                        break;
+                    }
                     if meta == 0x51 && length >= 3 {
                         let tempo = ((data[body] as u32) << 16)
                             | ((data[body + 1] as u32) << 8)
@@ -236,6 +235,7 @@ fn decode_midi(data: &[u8]) -> Result<Vec<i16>, AudioError> {
                 _ => break,
             }
         }
+        end_tick = end_tick.max(tick);
         cursor = end;
     }
 
@@ -244,8 +244,6 @@ fn decode_midi(data: &[u8]) -> Result<Vec<i16>, AudioError> {
         return Err(AudioError::NoNotes);
     }
     tempo_events.sort_by_key(|event| event.0);
-    let max_tick = events.last().unwrap().tick;
-    let end_tick = max_tick.saturating_add(ticks_per_quarter);
 
     // Walk the tempo map alongside the sorted notes. Each interval uses
     // the last tempo effective at its start, or 120 BPM before any change.
@@ -277,7 +275,8 @@ fn decode_midi(data: &[u8]) -> Result<Vec<i16>, AudioError> {
     let total_seconds = time_at(end_tick).clamp(0.05, 120.0);
     let total_samples = (total_seconds * MIDI_RENDER_RATE) as usize;
     let mut samples = vec![0.0f32; total_samples];
-    let mut active: Vec<(f64, f64, f64, f32)> = Vec::new(); // (frequency, start, end, amplitude)
+    const RELEASE_SECONDS: f64 = 0.05;
+    let mut active: Vec<Voice> = Vec::new();
     let mut event_index = 0usize;
 
     for (sample_index, output) in samples.iter_mut().enumerate() {
@@ -288,29 +287,43 @@ fn decode_midi(data: &[u8]) -> Result<Vec<i16>, AudioError> {
                 break;
             }
             event_index += 1;
-            let frequency = 440.0 * 2.0f64.powf((event.note as f64 - 69.0) / 12.0);
-            if event.on {
-                let amplitude = event.velocity as f32 / 127.0;
-                active.push((frequency, time, time + 1.0, amplitude));
-            } else {
-                for voice in active.iter_mut() {
-                    if (voice.0 - frequency).abs() < 0.5 && voice.2 == time + 1.0 {
-                        voice.2 = time;
-                    }
-                }
+            // MIDI uses a zero-velocity note-on as another form of note-off.
+            if event.velocity > 0 {
+                active.push(Voice {
+                    channel: event.channel,
+                    note: event.note,
+                    frequency: 440.0 * 2.0f64.powf((event.note as f64 - 69.0) / 12.0),
+                    start: time,
+                    release: None,
+                    amplitude: event.velocity as f32 / 127.0,
+                });
+            } else if let Some(voice) = active.iter_mut().find(|voice| {
+                voice.channel == event.channel
+                    && voice.note == event.note
+                    && voice.release.is_none()
+            }) {
+                voice.release = Some(time);
             }
         }
-        active.retain(|voice| voice.2 > time);
+        active.retain(|voice| {
+            voice
+                .release
+                .is_none_or(|start| time < start + RELEASE_SECONDS)
+        });
         let mut value = 0.0f32;
-        for &(frequency, start, end, amplitude) in &active {
-            let age = (time - start) as f32;
+        for voice in &active {
+            let elapsed = time - voice.start;
+            let age = elapsed as f32;
             let attack = (age / 0.005).min(1.0);
-            let decay = (-age * 3.0).exp();
-            let release = (((end - time) as f32) * 20.0).clamp(0.0, 1.0);
-            let phase = 2.0 * std::f64::consts::PI * frequency * time;
+            let decay = 0.35 + 0.65 * (-age * 3.0).exp();
+            let release = voice
+                .release
+                .map_or(1.0, |start| (1.0 - (time - start) / RELEASE_SECONDS) as f32);
+            let phase = 2.0 * std::f64::consts::PI * voice.frequency * elapsed;
             let fundamental = phase.sin() as f32;
             let harmonic = (2.0 * phase).sin() as f32 * 0.35;
-            value += (fundamental + harmonic) * attack * decay * release * amplitude * 0.18f32;
+            value +=
+                (fundamental + harmonic) * attack * decay * release * voice.amplitude * 0.18f32;
         }
         *output = value.clamp(-1.0, 1.0);
     }
@@ -339,8 +352,7 @@ fn read_varint(data: &[u8]) -> Result<(u64, usize), AudioError> {
     }
 }
 
-/// Nearest-neighbour resampler from interleaved f32 to interleaved stereo
-/// i16 at the output rate.
+/// Linearly resamples interleaved f32 audio to stereo i16.
 fn resample_to_stereo(
     samples: &[f32],
     channels: usize,
@@ -429,7 +441,7 @@ mod tests {
         engine.play_midi(&track, false).unwrap();
         let rate = AUDIO_SAMPLE_RATE as usize;
         let pcm = engine.pull_samples(12 * rate);
-        assert!(pcm.len() > 22 * rate);
+        assert!(pcm.len() >= 22 * rate);
         assert!(pcm[..rate].iter().any(|&sample| sample != 0));
         assert!(pcm[21 * rate..].iter().any(|&sample| sample != 0));
     }
@@ -451,6 +463,28 @@ mod tests {
             + 2 * rate;
         assert!((rate / 2..rate / 2 + 32).contains(&first_note));
         assert!((9 * rate / 4..9 * rate / 4 + 32).contains(&late_note));
+    }
+
+    #[test]
+    fn notes_sustain_until_note_off_then_release() {
+        let tune = midi(&[0, 0x90, 60, 100, 0x82, 0x20, 0x80, 60, 0, 72, 0xFF, 0x2F, 0]);
+        let pcm = decode_midi(&tune).unwrap();
+        let rate = AUDIO_SAMPLE_RATE as usize;
+        assert!(pcm[22 * rate / 10..24 * rate / 10].iter().any(|&s| s != 0));
+        assert_eq!(pcm.len() / 2, (15 * rate).div_ceil(8));
+        assert!(pcm[32 * rate / 10..].iter().all(|&s| s == 0));
+    }
+
+    #[test]
+    fn note_off_only_releases_the_matching_channel() {
+        let both = midi(&[
+            0, 0x90, 60, 100, 0, 0x91, 60, 100, 96, 0x80, 60, 0, 96, 0x91, 60, 0, 0, 0xFF, 0x2F, 0,
+        ]);
+        let channel_two = midi(&[0, 0x91, 60, 100, 0x81, 0x40, 0x91, 60, 0, 0, 0xFF, 0x2F, 0]);
+        let mixed = decode_midi(&both).unwrap();
+        let solo = decode_midi(&channel_two).unwrap();
+        let rate = AUDIO_SAMPLE_RATE as usize;
+        assert!(mixed[6 * rate / 5..8 * rate / 5] == solo[6 * rate / 5..8 * rate / 5]);
     }
 
     #[test]
