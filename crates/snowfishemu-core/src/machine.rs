@@ -1843,11 +1843,14 @@ impl SnowFishMachine {
         // records, __dcsmsinfo_ the response inbox, __sfgpsav saves): back
         // them all with in-memory data so the guest reads back what it
         // wrote instead of the container bytes.
-        let base_lower = basename(&path).to_ascii_lowercase();
-        let writable = basename(&path).starts_with("__")
-            || account
-            || base_lower.ends_with(".sav")
-            || (base_lower.ends_with(".dat") && base_lower != "game.dat");
+        let base_lower = base.to_ascii_lowercase();
+        let numbered_save = base_lower.rsplit_once("_sav").is_some_and(|(_, slot)| {
+            !slot.is_empty() && slot.bytes().all(|byte| byte.is_ascii_digit())
+        });
+        let is_save_record = base_lower.ends_with(".sav")
+            || (base_lower.ends_with(".dat") && base_lower != "game.dat")
+            || numbered_save;
+        let writable = base.starts_with("__") || account || is_save_record;
         // A write-intent open (flags 5 = read/write) must land in memory,
         // whatever the path looks like. The guest downloads a resource
         // package, writes it out and then re-opens it to check the size;
@@ -1897,20 +1900,9 @@ impl SnowFishMachine {
         // SDK's boot creates the default record through an empty-handle
         // read (the probe reads 0 bytes → "load fail" → the SDK writes
         // the default), so refusing them breaks account creation.
-        let is_save_record = base_lower.ends_with(".sav")
-            || (base_lower.ends_with(".dat") && base_lower != "game.dat");
-        if writable
-            && !write_intent
-            && !written
-            && !dcsms_present
-            && !netinfo_present
-            && is_save_record
-        {
-            let known = self.named_files.get(&path).is_some_and(|d| !d.is_empty());
-            if !known {
-                debug!("[plat] +0x58 fopen \"{path}\" flags={flags} -> 0 (no record yet)");
-                return Ok(0);
-            }
+        if is_save_record && !write_intent && !written && !dcsms_present && !netinfo_present {
+            debug!("[plat] +0x58 fopen \"{path}\" flags={flags} -> 0 (no record yet)");
+            return Ok(0);
         }
         if writable || write_intent || written {
             let stored = self.named_files.get(&path).cloned().unwrap_or_default();
@@ -3655,6 +3647,35 @@ mod tests {
         let mut back = [0u8; 5];
         m.mem.read(read_at, &mut back).unwrap();
         assert_eq!(back, payload, "the guest reloads what it saved");
+    }
+
+    #[test]
+    fn numbered_save_reads_as_missing_until_the_guest_writes_it() {
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        let path_at = plat::ROOT_ADDR + 0x3000;
+        let path: Vec<_> = "E:\\Application\\Cards_SAV12"
+            .encode_utf16()
+            .chain([0])
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        m.mem.write(path_at, &path).unwrap();
+        assert_eq!(m.hook_fopen(path_at, 2).unwrap(), 0);
+
+        let handle = m.hook_fopen(path_at, 5).unwrap();
+        assert_ne!(handle, 0);
+        let payload_at = path_at + 0x80;
+        m.mem.write(payload_at, b"save").unwrap();
+        assert_eq!(m.hook_fwrite(handle, payload_at, 4).unwrap(), 4);
+        m.cpu.reg_set(0, handle);
+        m.exec_slot(0x68, CODE_BASE).unwrap();
+
+        let handle = m.hook_fopen(path_at, 2).unwrap();
+        assert_ne!(handle, 0);
+        let read_at = payload_at + 4;
+        assert_eq!(m.hook_fread(handle, read_at, 4).unwrap(), 4);
+        let mut bytes = [0; 4];
+        m.mem.read(read_at, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"save");
     }
 
     /// Save states round-trip the observable runtime state: frame count,

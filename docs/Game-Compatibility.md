@@ -93,7 +93,7 @@ frames 30, 60, 90, 120, 150 and 180, with keys 10, 10, 5, 5, 10 and 5.
 | 灵翼战机II外传 | `MagicWings2L` | <img src="images/灵翼战机II外传.png" width="120" alt="灵翼战机II外传"> | Title |
 | 乱世群英-三国麻将 | `SanguoMJ` | <img src="images/乱世群英-三国麻将.png" width="120" alt="乱世群英-三国麻将"> | Splash |
 | 麻将天后 | `Majiang` | <img src="images/麻将天后.png" width="120" alt="麻将天后"> | Menu |
-| 明星模仿秀-超级斗地主 | `ddz` | <img src="images/明星模仿秀-超级斗地主.png" width="120" alt="明星模仿秀-超级斗地主"> | Save notice |
+| 明星模仿秀-超级斗地主 | `ddz` | <img src="images/明星模仿秀-超级斗地主.png" width="120" alt="明星模仿秀-超级斗地主"> | Title. A fresh boot opens the audio prompt. Either soft key advances to the title screen. |
 | 魔塔2(宝莲灯) | `mota2` | <img src="images/魔塔2(宝莲灯).png" width="120" alt="魔塔2(宝莲灯)"> | Audio prompt |
 | 南帝北丐双龙会 | `ndbgslh` | <img src="images/南帝北丐双龙会.png" width="120" alt="南帝北丐双龙会"> | Title. Title art and Start Game load from the sibling indexed pack. |
 | 热舞旋风 | `dance` | <img src="images/热舞旋风.png" width="120" alt="热舞旋风"> | **Menu.** The title and main menu render on startup. The left soft key opens difficulty selection. |

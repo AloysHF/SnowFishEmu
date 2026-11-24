@@ -195,6 +195,12 @@ platform therefore plants a dedicated stublet whose first two words are a
 return-0 trampoline and whose remaining words all point back at that
 trampoline, so both shapes land on real code.
 
+### Guest save files
+
+A read-only open of an unwritten numbered `_SAV<n>` record returns
+file-not-found. Opening it for writing lets the guest create its record.
+Later opens read the bytes the guest wrote during the session.
+
 ### Account record files
 
 The registration state lives in two plain files the SDK probes on every

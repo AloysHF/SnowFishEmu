@@ -220,7 +220,8 @@ corpus in `docs/images`, naming each PNG after its game's directory.
 The script uses title-specific recipes where available and runs the other
 titles for 200 frames without input by default.
 See [Game Compatibility](docs/Game-Compatibility.md) for the observed results,
-including the Super Monopoly (超级大富翁) board and the Dance (热舞旋风) menu.
+including the Super Monopoly (超级大富翁) board, the Dance (热舞旋风) menu,
+and the title of 明星模仿秀-超级斗地主 after the first-launch audio prompt.
 
 ## Browser Mode (EmulatorJS)
 

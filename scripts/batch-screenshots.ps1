@@ -87,6 +87,10 @@ $recipes = @{
         Frames = 200
         Press  = @("30:10", "60:10", "90:5", "120:5", "150:10", "180:5")
     }
+    "ddz_QVGA_SNOWFISHV2" = @{
+        Frames = 200
+        Press  = @("30:10")
+    }
     "trunk_QVGA_SNOWFISHV2" = @{
         Frames = 200
         Flags  = @()
