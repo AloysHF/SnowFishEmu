@@ -11,9 +11,12 @@
 //! the shared stereo output rate; this keeps headless tests fast and the
 //! whole engine deterministic.
 
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use thiserror::Error;
 
 pub const AUDIO_SAMPLE_RATE: u32 = 44_100;
+pub(crate) const MAX_MIDI_BYTES: usize = 1024 * 1024;
 
 /// MIDI playback engine: parse SMF once, render to PCM, and serve stereo
 /// frames to the frontends.
@@ -24,10 +27,39 @@ pub struct AudioEngine {
 }
 
 struct Playback {
+    state: AudioSnapshot,
+    samples: Arc<Vec<i16>>,
+}
+
+/// The SMF and interleaved sample offset suffice to rebuild deterministic PCM.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct AudioSnapshot {
     midi: Vec<u8>,
     looping: bool,
-    samples: Vec<i16>,
     position: usize,
+}
+
+impl Playback {
+    fn render(state: AudioSnapshot) -> Result<Self, AudioError> {
+        if state.midi.len() > MAX_MIDI_BYTES {
+            return Err(AudioError::TooLarge);
+        }
+        let samples = Arc::new(decode_midi(&state.midi)?);
+        Self::with_samples(state, samples)
+    }
+
+    fn with_samples(state: AudioSnapshot, samples: Arc<Vec<i16>>) -> Result<Self, AudioError> {
+        if samples.is_empty() {
+            return Err(AudioError::Empty);
+        }
+        if !state.position.is_multiple_of(2)
+            || state.position > samples.len()
+            || (state.position == samples.len() && !state.looping)
+        {
+            return Err(AudioError::InvalidPosition);
+        }
+        Ok(Self { state, samples })
+    }
 }
 
 impl AudioEngine {
@@ -36,20 +68,15 @@ impl AudioEngine {
         if self
             .playback
             .as_ref()
-            .is_some_and(|tune| tune.looping == looping && tune.midi == data)
+            .is_some_and(|tune| tune.state.looping == looping && tune.state.midi == data)
         {
             return Ok(false);
         }
-        let decoded = decode_midi(data)?;
-        if decoded.is_empty() {
-            return Err(AudioError::Empty);
-        }
-        self.playback = Some(Playback {
+        self.playback = Some(Playback::render(AudioSnapshot {
             midi: data.to_vec(),
             looping,
-            samples: decoded,
             position: 0,
-        });
+        })?);
         self.revision = self.revision.wrapping_add(1);
         Ok(true)
     }
@@ -64,6 +91,28 @@ impl AudioEngine {
         self.revision
     }
 
+    pub(crate) fn snapshot(&self) -> Option<&AudioSnapshot> {
+        self.playback.as_ref().map(|tune| &tune.state)
+    }
+
+    pub(crate) fn restored(&self, snapshot: Option<AudioSnapshot>) -> Result<Self, AudioError> {
+        let playback = snapshot
+            .map(|state| {
+                // Rewinds and runahead typically revisit the current tune.
+                match self.playback.as_ref() {
+                    Some(current) if current.state.midi == state.midi => {
+                        Playback::with_samples(state, Arc::clone(&current.samples))
+                    }
+                    _ => Playback::render(state),
+                }
+            })
+            .transpose()?;
+        Ok(Self {
+            playback,
+            revision: self.revision.wrapping_add(1),
+        })
+    }
+
     pub fn playing(&self) -> bool {
         self.playback.is_some()
     }
@@ -73,23 +122,24 @@ impl AudioEngine {
         let Some(tune) = self.playback.as_mut() else {
             return Vec::new();
         };
-        let available = (tune.samples.len() - tune.position) / 2;
-        let frames = if tune.looping {
+        let position = &mut tune.state.position;
+        let available = (tune.samples.len() - *position) / 2;
+        let frames = if tune.state.looping {
             max_frames
         } else {
             max_frames.min(available)
         };
         let mut output = Vec::with_capacity(frames * 2);
         while output.len() / 2 < frames {
-            if tune.position == tune.samples.len() {
-                tune.position = 0;
+            if *position == tune.samples.len() {
+                *position = 0;
             }
-            let take = (frames - output.len() / 2).min((tune.samples.len() - tune.position) / 2);
-            let end = tune.position + take * 2;
-            output.extend_from_slice(&tune.samples[tune.position..end]);
-            tune.position = end;
+            let take = (frames - output.len() / 2).min((tune.samples.len() - *position) / 2);
+            let end = *position + take * 2;
+            output.extend_from_slice(&tune.samples[*position..end]);
+            *position = end;
         }
-        if tune.position == tune.samples.len() && !tune.looping {
+        if *position == tune.samples.len() && !tune.state.looping {
             self.playback = None;
         }
         output
@@ -99,13 +149,17 @@ impl AudioEngine {
     pub fn buffered_frames(&self) -> usize {
         self.playback
             .as_ref()
-            .map_or(0, |tune| (tune.samples.len() - tune.position) / 2)
+            .map_or(0, |tune| (tune.samples.len() - tune.state.position) / 2)
     }
 }
 
 /// SMF decode/render errors.
 #[derive(Debug, Error)]
 pub enum AudioError {
+    #[error("MIDI data exceeds the size limit")]
+    TooLarge,
+    #[error("invalid saved MIDI playback position")]
+    InvalidPosition,
     #[error("not a MIDI file")]
     NotMidi,
     #[error("unsupported MIDI division {0}")]

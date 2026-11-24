@@ -1380,10 +1380,10 @@ mod tests {
     fn save_state_max_size_bounds_the_snapshot() {
         // Sum of the loader's worst-case region sizes (2 MiB code page,
         // 1 MiB stack, 1 MiB app data, 256 KiB platform table, 1 MiB heap),
-        // with generous room for the codec envelope and bookkeeping.
+        // with room for up to 1 MiB of MIDI and the codec bookkeeping.
         let region_max: usize = (2 + 1 + 1 + 1) * 1024 * 1024 + 256 * 1024;
         assert!(
-            SAVE_STATE_MAX_SIZE >= region_max + 1024 * 1024,
+            SAVE_STATE_MAX_SIZE >= region_max + 2 * 1024 * 1024,
             "SAVE_STATE_MAX_SIZE must exceed the largest possible guest memory map"
         );
     }

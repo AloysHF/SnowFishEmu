@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::audio::AudioSnapshot;
 use crate::cpu::ArmCpu;
 use crate::gdi::Gdi;
 use crate::machine::FileSlot;
@@ -17,7 +18,8 @@ use crate::mem::GuestMem;
 /// Envelope signature (`"SFEMSTAT"`).
 pub const SAVE_STATE_MAGIC: &[u8; 8] = b"SFEMSTAT";
 /// Envelope format version; bump when the state layout changes.
-pub const SAVE_STATE_FORMAT: u32 = 1;
+pub const SAVE_STATE_FORMAT: u32 = 2;
+const SAVE_STATE_FORMAT_WITHOUT_AUDIO: u32 = 1;
 /// Envelope: signature + format version + content fingerprint.
 pub const SAVE_STATE_HEADER_LEN: usize = SAVE_STATE_MAGIC.len() + 4 + 8;
 
@@ -69,8 +71,13 @@ pub(crate) fn content_fingerprint<'a>(parts: impl IntoIterator<Item = &'a [u8]>)
 }
 
 /// Encodes a state snapshot into the versioned envelope.
-pub(crate) fn encode(state: &MachineState, fingerprint: u64) -> Result<Vec<u8>, SaveStateError> {
-    let payload = bincode::serialize(state).map_err(|e| SaveStateError::Payload(e.to_string()))?;
+pub(crate) fn encode(
+    state: &MachineState,
+    audio: Option<&AudioSnapshot>,
+    fingerprint: u64,
+) -> Result<Vec<u8>, SaveStateError> {
+    let payload =
+        bincode::serialize(&(state, audio)).map_err(|e| SaveStateError::Payload(e.to_string()))?;
     let mut blob = Vec::with_capacity(SAVE_STATE_HEADER_LEN + payload.len());
     blob.extend_from_slice(SAVE_STATE_MAGIC);
     blob.extend_from_slice(&SAVE_STATE_FORMAT.to_le_bytes());
@@ -83,7 +90,7 @@ pub(crate) fn encode(state: &MachineState, fingerprint: u64) -> Result<Vec<u8>, 
 pub(crate) fn decode(
     data: &[u8],
     expected_fingerprint: u64,
-) -> Result<MachineState, SaveStateError> {
+) -> Result<(MachineState, Option<AudioSnapshot>), SaveStateError> {
     if data.len() < SAVE_STATE_HEADER_LEN || &data[..SAVE_STATE_MAGIC.len()] != SAVE_STATE_MAGIC {
         return Err(SaveStateError::BadSignature);
     }
@@ -92,7 +99,7 @@ pub(crate) fn decode(
             .try_into()
             .unwrap(),
     );
-    if version != SAVE_STATE_FORMAT {
+    if version != SAVE_STATE_FORMAT && version != SAVE_STATE_FORMAT_WITHOUT_AUDIO {
         return Err(SaveStateError::UnsupportedVersion(version));
     }
     let fingerprint = u64::from_le_bytes(
@@ -103,7 +110,13 @@ pub(crate) fn decode(
     if fingerprint != expected_fingerprint {
         return Err(SaveStateError::ContentMismatch);
     }
-    bincode::deserialize(&data[SAVE_STATE_HEADER_LEN..]).map_err(|e| match e.as_ref() {
+    let payload = &data[SAVE_STATE_HEADER_LEN..];
+    let decoded = if version == SAVE_STATE_FORMAT_WITHOUT_AUDIO {
+        bincode::deserialize(payload).map(|state| (state, None))
+    } else {
+        bincode::deserialize(payload)
+    };
+    decoded.map_err(|e| match e.as_ref() {
         bincode::ErrorKind::Io(io) if io.kind() == std::io::ErrorKind::UnexpectedEof => {
             SaveStateError::Truncated
         }
@@ -124,9 +137,8 @@ mod tests {
         assert_ne!(a, c);
     }
 
-    #[test]
-    fn decode_rejects_bad_signature_version_and_content() {
-        let state = MachineState {
+    fn empty_state() -> MachineState {
+        MachineState {
             mem: GuestMem::new(0x1000),
             cpu: ArmCpu::new(),
             handler: 0,
@@ -138,8 +150,25 @@ mod tests {
             branch_log: Vec::new(),
             gdi: Gdi::new(),
             timers: Vec::new(),
-        };
-        let blob = encode(&state, 42).unwrap();
+        }
+    }
+
+    #[test]
+    fn decodes_legacy_state_without_music() {
+        let mut state = empty_state();
+        state.frame_count = 123;
+        let mut blob = encode(&state, None, 42).unwrap();
+        blob[8..12].copy_from_slice(&SAVE_STATE_FORMAT_WITHOUT_AUDIO.to_le_bytes());
+        blob.truncate(SAVE_STATE_HEADER_LEN);
+        blob.extend(bincode::serialize(&state).unwrap());
+        let (legacy, audio) = decode(&blob, 42).unwrap();
+        assert_eq!(legacy.frame_count, 123);
+        assert!(audio.is_none());
+    }
+
+    #[test]
+    fn decode_rejects_bad_signature_version_and_content() {
+        let blob = encode(&empty_state(), None, 42).unwrap();
 
         let mut wrong_version = blob.clone();
         wrong_version[8..12].copy_from_slice(&999u32.to_le_bytes());

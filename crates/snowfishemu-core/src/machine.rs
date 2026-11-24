@@ -1283,7 +1283,7 @@ impl SnowFishMachine {
                 );
                 if mode == 0 {
                     self.audio.stop();
-                } else if len > 0 && len <= 0x10_0000 && ptr > 0x1000 {
+                } else if len > 0 && len as usize <= crate::audio::MAX_MIDI_BYTES && ptr > 0x1000 {
                     let mut data = vec![0u8; len as usize];
                     if self.mem.read(ptr, &mut data).is_ok() {
                         match self.audio.play_midi(&data, arg == 1) {
@@ -2764,8 +2764,8 @@ impl SnowFishMachine {
     ///
     /// The blob covers everything the guest can observe across frames
     /// (memory, CPU, handler, file slots, event queue, counters, display
-    /// bridge). Load artifacts (container, resource bytes, wrapper table)
-    /// stay with the loaded machine and are not duplicated in the snapshot.
+    /// bridge, and music). The container, resource bytes, and wrapper table
+    /// stay with the loaded machine.
     pub fn serialize(&self) -> Vec<u8> {
         let state = crate::save::MachineState {
             mem: self.mem.clone(),
@@ -2782,17 +2782,20 @@ impl SnowFishMachine {
         };
         // Encoding a well-formed snapshot cannot fail; surface any codec
         // fault loudly rather than returning a corrupt state.
-        crate::save::encode(&state, self.content_fingerprint())
+        crate::save::encode(&state, self.audio.snapshot(), self.content_fingerprint())
             .expect("save-state encode of a live machine")
     }
 
     /// Restores a snapshot in place, keeping the loaded container, resource
-    /// bytes, and wrapper table. States from other packages or unknown
-    /// formats are rejected; guest memory is copied into the existing
+    /// bytes, and wrapper table. Guest memory is copied into the existing
     /// region allocations so pointers handed out before the restore stay
     /// valid.
     pub fn deserialize(&mut self, data: &[u8]) -> Result<(), crate::save::SaveStateError> {
-        let state = crate::save::decode(data, self.content_fingerprint())?;
+        let (state, audio) = crate::save::decode(data, self.content_fingerprint())?;
+        let audio = self
+            .audio
+            .restored(audio)
+            .map_err(|e| crate::save::SaveStateError::Payload(format!("music: {e}")))?;
         self.mem
             .copy_regions_from(&state.mem)
             .map_err(|_| crate::save::SaveStateError::ContentMismatch)?;
@@ -2806,6 +2809,7 @@ impl SnowFishMachine {
         self.branch_log = state.branch_log;
         self.gdi = state.gdi;
         self.timers = state.timers;
+        self.audio = audio;
         Ok(())
     }
 }
@@ -3970,12 +3974,7 @@ mod tests {
             .unwrap();
         assert_eq!(ptr, ptr_after);
     }
-    /// The +0x38 music slot queues the tune and the frame loop drains
-    /// audible samples: the full audio path end to end.
-    #[test]
-    fn music_slot_plays_and_the_frontend_drains_samples() {
-        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
-        // A one-note format-0 SMF, written to the guest heap.
+    fn music_fixture() -> Vec<u8> {
         let mut midi = Vec::new();
         midi.extend_from_slice(b"MThd");
         midi.extend_from_slice(&[0, 0, 0, 6, 0, 0, 0, 1, 0, 96]);
@@ -3984,6 +3983,15 @@ mod tests {
         midi.extend_from_slice(&[
             0x00, 0x90, 0x3C, 0x64, 0x60, 0x80, 0x3C, 0x00, 0xFF, 0x2F, 0x00,
         ]);
+        midi
+    }
+
+    /// The +0x38 music slot queues the tune and the frame loop drains
+    /// audible samples: the full audio path end to end.
+    #[test]
+    fn music_slot_plays_and_the_frontend_drains_samples() {
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        let mut midi = music_fixture();
         let ptr = 0x0060_1000u32;
         m.mem.write(ptr, &midi).unwrap();
 
@@ -4037,5 +4045,31 @@ mod tests {
             m.take_audio_samples(2205).is_empty(),
             "stop silences the engine"
         );
+    }
+
+    #[test]
+    fn save_state_clears_music_when_the_snapshot_is_silent() {
+        let mut machine = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        let quiet = machine.serialize();
+        machine.audio.play_midi(&music_fixture(), true).unwrap();
+        let previous = machine.audio_revision();
+        machine.deserialize(&quiet).unwrap();
+        assert!(machine.take_audio_samples(735).is_empty());
+        assert_ne!(machine.audio_revision(), previous);
+    }
+
+    #[test]
+    fn save_state_resumes_music_at_the_saved_sample() {
+        let mut machine = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        machine.audio.play_midi(&music_fixture(), true).unwrap();
+        machine.take_audio_samples(1000);
+        let state = machine.serialize();
+        let expected = machine.take_audio_samples(44_100);
+        assert!(expected.iter().any(|&sample| sample != 0));
+
+        machine.audio.stop();
+        assert!(machine.take_audio_samples(1000).is_empty());
+        machine.deserialize(&state).unwrap();
+        assert!(machine.take_audio_samples(44_100) == expected);
     }
 }

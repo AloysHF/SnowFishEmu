@@ -164,12 +164,12 @@ the corresponding original bytes when the range has no relocations.
 ## Save states
 
 The payload is a bincode snapshot of the machine's runtime state wrapped in
-a versioned envelope (`save.rs`): the `SFEMSTAT` signature, a little-endian
-format version, and a content fingerprint. States from other packages or
-older builds are rejected before decoding. Diagnostic counters and the
-wrapper table (rebuilt identically from the image at load time) are not
-serialized. Save states work in the libretro core; the standalone frontend
-exposes the machine through the headless harness instead.
+a versioned envelope (`save.rs`) with the `SFEMSTAT` signature, a
+little-endian format version, and a content fingerprint. The core checks
+the version and fingerprint before decoding. Version 2 stores the active
+SMF, loop flag, and sample position so the core can reconstruct the music
+without storing PCM. Version 1 states restore with music initially
+silent. The wrapper table is rebuilt from the image at load time.
 
 ## Headless execution
 

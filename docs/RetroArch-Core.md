@@ -51,9 +51,9 @@ standalone frontend, resolved from the content path (see
 - Keyboard input through `RETRO_DEVICE_KEYBOARD`, mirroring the standalone
   key map one-to-one (enable RetroArch's Game Focus so keys reach the core)
 - `.app` content loading with header validation and code relocation
-- Save states: states carry a version tag and a content fingerprint
-  (`SFEMSTAT` envelope), so states from other packages or older builds are
-  rejected instead of restored
+- Save states require matching content. Version 2 of `SFEMSTAT` restores
+  the active MIDI tune and sample position. Version 1 states restore with
+  music initially silent. Reset restores the music state from fresh boot.
 - Input descriptors for frontend button labeling
 - Audio: the music slot renders MIDI to 44.1 kHz stereo using an 8 kHz
   mono synthesizer. The core sends 735 stereo frames per 60 Hz callback,

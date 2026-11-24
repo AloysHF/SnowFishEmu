@@ -10,7 +10,7 @@
   "short_name": "SnowFish",
   "manufacturer": "Shanghai SnowFish",
   "supported_extensions": ["app"],
-  "save_state_format": 1,
+  "save_state_format": 2,
   "firmware": [],
   "input": {
     "preset": "dpad-ab-lr-select"

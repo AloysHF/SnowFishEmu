@@ -246,9 +246,9 @@ directory, then load a `.app` as content.
 - Audio: the titles' MIDI music renders through the platform's music
   slot into a 44.1 kHz stereo stream; a quiet tune still submits a full
   silent batch so frontends keep pacing on the audio clock.
-- Save states: supported. States carry a version tag and a content
-  fingerprint (`SFEMSTAT` envelope), so states from other packages or
-  older builds are rejected instead of restored.
+- Save states use the versioned `SFEMSTAT` format and require matching
+  content. Version 2 restores MIDI playback and its position. Version 1
+  states load with music initially silent.
 - Core options: CPU/HLE debug logging.
 - Resource file: the core serves the same optional sibling resource file
   as the standalone frontend (see above), resolved from the content path.
