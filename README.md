@@ -214,9 +214,10 @@ snowfishemu <game.app> -S shot.png --screenshot-frames 200 \
   --press 30:10 --press 60:10 --press 90:10 --press 120:10 --press 150:10 --press 180:10
 ```
 
-`scripts/batch-screenshots.ps1` drives the whole corpus into
-`docs/images` with each title's bring-up recipe (see
-[docs/Game-Compatibility.md](docs/Game-Compatibility.md)).
+`scripts/batch-screenshots.ps1 -GameDirectory <corpus-dir>` captures the
+corpus in `docs/images`. The script uses title-specific recipes where
+available and runs the other titles for 200 frames without input by default.
+See [Game Compatibility](docs/Game-Compatibility.md) for the observed results.
 
 ## Browser Mode (EmulatorJS)
 

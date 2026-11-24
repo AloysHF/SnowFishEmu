@@ -145,7 +145,7 @@ $recipes = @{
 # script only names the packages to capture.
 
 $games = @(Get-ChildItem -LiteralPath $GameDirectory -Recurse -File |
-    Where-Object { $_.Extension -ieq ".app" -and $_.Name -inotmatch "Res" } |
+    Where-Object { $_.Extension -ieq ".app" -and $_.BaseName -inotmatch "Res\d*(_[^.]+)?$" } |
     Sort-Object FullName)
 
 if ($games.Count -eq 0) {
@@ -163,42 +163,36 @@ Write-Host ""
 $success = 0
 $warned = 0
 $failed = 0
-$usedNames = [System.Collections.Generic.Dictionary[string, int]]::new(
+$usedNames = [System.Collections.Generic.HashSet[string]]::new(
     [System.StringComparer]::OrdinalIgnoreCase
 )
 
+$corpusRoot = (Resolve-Path -LiteralPath $GameDirectory).Path.TrimEnd([char[]]"\/")
 foreach ($game in $games) {
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($game.Name)
-    $recipe = $recipes[$baseName]
-    if (-not $recipe) {
-        Write-Host "  $baseName ... Skip (no recipe)" -ForegroundColor DarkGray
-        continue
-    }
+    $recipe = if ($recipes.ContainsKey($baseName)) { $recipes[$baseName] } else { @{} }
     $captureFrames = if ($recipe.ContainsKey("Frames")) { $recipe["Frames"] } else { $Frames }
     $frameLabel = if ($captureFrames -eq 1) { "1 frame" } else { "$captureFrames frames" }
     $imageDirectory = $OutputDirectory
-    $corpusRoot = (Resolve-Path -LiteralPath $GameDirectory).Path.TrimEnd([char[]]"\/")
-    $group = ""
-    if ($game.FullName.StartsWith($corpusRoot + "\", [StringComparison]::OrdinalIgnoreCase)) {
-        $relativeGamePath = $game.FullName.Substring($corpusRoot.Length + 1)
-        $group = ($relativeGamePath -split '[/\\]')[0]
+    $relativeGamePath = $game.FullName.Substring($corpusRoot.Length + 1)
+    $group, $relativePath = $relativeGamePath -split '[/\\]', 2
+    if (-not $relativePath) {
+        $group = ""
     }
     if ($group -in @("A", "B", "C")) {
         $imageDirectory = Join-Path $OutputDirectory $group
         New-Item -ItemType Directory -Force -Path $imageDirectory | Out-Null
     }
-    $imageKey = Join-Path $imageDirectory $baseName
-    if ($usedNames.ContainsKey($imageKey)) {
-        $usedNames[$imageKey]++
-        $baseName = "$baseName-$($usedNames[$imageKey])"
-    } else {
-        $usedNames[$imageKey] = 1
-    }
-
-    # The compatibility doc and the site gallery name the captures by
-    # display title rather than the package file name.
-    $imageName = if ($recipe["Image"]) { "$($recipe["Image"]).png" } else { "$baseName.png" }
+    $imageStem = if ($recipe["Image"]) { $recipe["Image"] } else { $baseName }
+    $imageName = "$imageStem.png"
     $outPath = Join-Path $imageDirectory $imageName
+    $suffix = 2
+    while ($usedNames.Contains($outPath)) {
+        $imageName = "$imageStem-$suffix.png"
+        $outPath = Join-Path $imageDirectory $imageName
+        $suffix++
+    }
+    [void]$usedNames.Add($outPath)
     Write-Host -NoNewline "  $imageName ($frameLabel) ... "
 
     # Prevent a previous capture from being reported as the current result.
@@ -216,7 +210,10 @@ foreach ($game in $games) {
     try {
         $captureArgs = @($game.FullName, "--screenshot", $outPath,
             "--screenshot-frames", $captureFrames,
-            "--instruction-limit", $InstructionLimit) + $recipe["Flags"]
+            "--instruction-limit", $InstructionLimit)
+        if ($recipe["Flags"]) {
+            $captureArgs += $recipe["Flags"]
+        }
         foreach ($press in $recipe["Press"]) {
             $captureArgs += @("--press", $press)
         }

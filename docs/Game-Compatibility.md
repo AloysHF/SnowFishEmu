@@ -1,8 +1,8 @@
 # Game Compatibility
 
 Status of the SnowFish application corpus against the current build.
-All titles boot and execute without faults; the notes describe where
-each title stands and the input recipe that reaches its play state.
+The tables report the screen or behavior observed in scripted headless
+runs and identify titles with verified gameplay.
 
 The billing service reports "present" by default (the +0x4C slot
 returns 1): the platform is a handset with a SIM, so the SDK's pay
@@ -23,8 +23,17 @@ the repeated event for diagnostics.
 
 ## Corpus status
 
-The screenshots are emulator-rendered frame captures at each title's
-documented play state; regenerate them with `scripts/batch-screenshots.ps1`.
+Regenerate the captures with the standalone emulator and the batch script.
+
+```powershell
+./scripts/batch-screenshots.ps1 -GameDirectory <corpus-dir>
+```
+
+Keep each companion resource container beside its executable package.
+The script uses the title-specific input and frame count where available.
+For other packages it captures after 200 frames without input by default.
+
+### Verified gameplay
 
 | Title | Screenshot | Status | Notes |
 |---|---|---|---|
@@ -39,10 +48,66 @@ documented play state; regenerate them with `scripts/batch-screenshots.ps1`.
 | 黄金矿工 (hjkg) | <img src="images/黄金矿工.png" width="120" alt="黄金矿工"> | **playable** | M on the title screen or Options → Start Game opens the original New Game / Level Select menu. |
 | 宇宙风暴 (yzfb) | <img src="images/宇宙风暴.png" width="120" alt="宇宙风暴"> | **playable** | New Game opens the scrolling first level. Confirming the revive and acknowledging its result resumes the level. |
 
-Every title now paints through the platform's UI timer: all ten arm
-`+0xAC` during create and drive their screens from the callback's
-selector-10 re-entry. The frame loop runs them on a millisecond clock
-(`FRAME_MS`), without which no title painted past its background colour.
+These ten titles arm the platform's `+0xAC` UI timer and use its
+selector-10 re-entry to update the display.
+
+### Startup and input checks
+
+These screens show how far each package ran during capture. A title screen,
+menu, or prompt records the observed result. Gameplay verification is
+listed separately above. The initial input check uses six key presses at
+frames 30, 60, 90, 120, 150 and 180, with keys 10, 10, 5, 5, 10 and 5.
+
+| Title | Package prefix | Screenshot | Observed state |
+|---|---|---|---|
+
+| 09武侠巨作龙狼传 | `llz` | <img src="images/llz_QVGA_SNOWFISHV2.png" width="120" alt="09武侠巨作龙狼传"> | Resource prompt |
+| 爆笑军旗-荣誉勋章 | `Armychess` | <img src="images/Armychess_QVGA_SNOWFISHV2.png" width="120" alt="爆笑军旗-荣誉勋章"> | Title |
+| 病毒危机(新收费模式) | `VirusTD` | <img src="images/VirusTD_QVGA_SNOWFISHV2.png" width="120" alt="病毒危机(新收费模式)"> | Menu |
+| 超级大富翁 | `cjdfw` | <img src="images/cjdfw_QVGA_SNOWFISHV2.png" width="120" alt="超级大富翁"> | **Crash on input.** The title renders, then the input check faults at guest PC `0x00000008`. |
+| 超级女生梦工场 | `cjns` | <img src="images/cjns_QVGA_SNOWFISHV2.png" width="120" alt="超级女生梦工场"> | Audio prompt |
+| 虫蛊奇侠1 | `cgqx` | <img src="images/cgqx_QVGA_SNOWFISHV2.png" width="120" alt="虫蛊奇侠1"> | Title |
+| 虫蛊奇侠2 | `cgqx2` | <img src="images/cgqx2_QVGA_SNOWFISHV2.png" width="120" alt="虫蛊奇侠2"> | Audio prompt |
+| 打击者1945 | `djz1945` | <img src="images/djz1945_QVGA_SNOWFISHV2.png" width="120" alt="打击者1945"> | Audio prompt |
+| 地狱熔岩 | `diyurongyan` | <img src="images/diyurongyan_QVGA_SNOWFISHV2.png" width="120" alt="地狱熔岩"> | Menu |
+| 斗地主2009 | `newLander` | <img src="images/newLander_QVGA_SNOWFISHV2.png" width="120" alt="斗地主2009"> | Title |
+| 斗地主3人 | `LanderPoker3` | <img src="images/LanderPoker3_QVGA_SNOWFISHV2.png" width="120" alt="斗地主3人"> | Audio prompt |
+| 夺宝奇兵 | `dbqb` | <img src="images/dbqb_QVGA_SNOWFISHV2.png" width="120" alt="夺宝奇兵"> | Title |
+| 俄罗斯方块 | `FangKuai` | <img src="images/FangKuai_QVGA_SNOWFISHV2.png" width="120" alt="俄罗斯方块"> | Title |
+| 反恐精英 | `cs` | <img src="images/cs_QVGA_SNOWFISHV2.png" width="120" alt="反恐精英"> | Audio prompt |
+| 公主台球2008 | `pool2008` | <img src="images/pool2008_QVGA_SNOWFISHV2.png" width="120" alt="公主台球2008"> | Trial prompt |
+| 观音求签 | `gyqq` | <img src="images/gyqq_QVGA_SNOWFISHV2.png" width="120" alt="观音求签"> | Audio prompt |
+| 黑白棋 | `trunk2` | <img src="images/trunk2_QVGA_SNOWFISHV2.png" width="120" alt="黑白棋"> | Trial prompt |
+| 欢天喜地斗地主 | `htxdddz` | <img src="images/htxdddz_QVGA_SNOWFISHV2.png" width="120" alt="欢天喜地斗地主"> | Trial prompt |
+| 角色幻想都市 | `sexycity` | <img src="images/sexycity_QVGA_SNOWFISHV2.png" width="120" alt="角色幻想都市"> | Menu |
+| 金庸群侠七书篇 | `jyqx` | <img src="images/jyqx_QVGA_SNOWFISHV2.png" width="120" alt="金庸群侠七书篇"> | Audio prompt |
+| 劲乐派对 | `jypd` | <img src="images/jypd_QVGA_SNOWFISHV2.png" width="120" alt="劲乐派对"> | Menu |
+| 经典艺术百宝盒 | `Artist` | <img src="images/Artist_QVGA_SNOWFISHV2.png" width="120" alt="经典艺术百宝盒"> | Title |
+| 经典音乐百宝盒 | `musician` | <img src="images/musician_QVGA_SNOWFISHV2.png" width="120" alt="经典音乐百宝盒"> | Title |
+| 绝代双娇 | `jdsj` | <img src="images/jdsj_QVGA_SNOWFISHV2.png" width="120" alt="绝代双娇"> | Resource prompt |
+| 狂刀伏魔录 | `kdfml` | <img src="images/kdfml_QVGA_SNOWFISHV2.png" width="120" alt="狂刀伏魔录"> | Audio prompt |
+| 雷电战机 | `ldzj` | <img src="images/ldzj_QVGA_SNOWFISHV2.png" width="120" alt="雷电战机"> | Audio prompt |
+| 灵翼战机2上 | `MagicWingIIEp1` | <img src="images/MagicWingIIEp1_QVGA_SNOWFISHV2.png" width="120" alt="灵翼战机2上"> | Title |
+| 灵翼战机2下 | `MagicWingIIEp2` | <img src="images/MagicWingIIEp2_QVGA_SNOWFISHV2.png" width="120" alt="灵翼战机2下"> | Title |
+| 灵翼战机II外传 | `MagicWings2L` | <img src="images/MagicWings2L_QVGA_SNOWFISHV2.png" width="120" alt="灵翼战机II外传"> | Title |
+| 乱世群英-三国麻将 | `SanguoMJ` | <img src="images/SanguoMJ_QVGA_SNOWFISHV2.png" width="120" alt="乱世群英-三国麻将"> | Splash |
+| 麻将天后 | `Majiang` | <img src="images/Majiang_QVGA_SNOWFISHV2.png" width="120" alt="麻将天后"> | Menu |
+| 明星模仿秀-超级斗地主 | `ddz` | <img src="images/ddz_QVGA_SNOWFISHV2.png" width="120" alt="明星模仿秀-超级斗地主"> | Save notice |
+| 魔塔2(宝莲灯) | `mota2` | <img src="images/mota2_QVGA_SNOWFISHV2.png" width="120" alt="魔塔2(宝莲灯)"> | Audio prompt |
+| 南帝北丐双龙会 | `ndbgslh` | <img src="images/ndbgslh_QVGA_SNOWFISHV2.png" width="120" alt="南帝北丐双龙会"> | Resource prompt |
+| 热舞旋风 | `dance` | — | **Blank frame.** No visible output after 200 frames with or without the input check. |
+| 忍者传说 | `huoying` | <img src="images/huoying_QVGA_SNOWFISHV2.png" width="120" alt="忍者传说"> | Audio prompt |
+| 三国赵云传 | `JLXJ` | <img src="images/JLXJ_QVGA_SNOWFISHV2.png" width="120" alt="三国赵云传"> | Audio prompt |
+| 射雕传奇 | `sdcq` | <img src="images/sdcq_QVGA_SNOWFISHV2.png" width="120" alt="射雕传奇"> | Resource prompt |
+| 生化突袭 | `shtx` | <img src="images/shtx_QVGA_SNOWFISHV2.png" width="120" alt="生化突袭"> | Menu |
+| 是男人就上100层 | `men` | <img src="images/men_QVGA_SNOWFISHV2.png" width="120" alt="是男人就上100层"> | Audio prompt |
+| 暑期巨作完美情人 | `sexycity2` | <img src="images/sexycity2_QVGA_SNOWFISHV2.png" width="120" alt="暑期巨作完美情人"> | Menu |
+| 水浒秘史 | `shms` | <img src="images/shms_QVGA_SNOWFISHV2.png" width="120" alt="水浒秘史"> | Resource prompt |
+| 水晶迷情 | `sjmq` | <img src="images/sjmq_QVGA_SNOWFISHV2.png" width="120" alt="水晶迷情"> | Menu |
+| 塔防之乱舞三国-危城无双续 | `sanguotd2` | <img src="images/sanguotd2_QVGA_SNOWFISHV2.png" width="120" alt="塔防之乱舞三国-危城无双续"> | Audio prompt |
+| 天使方块 | `AngelCube` | <img src="images/AngelCube_QVGA_SNOWFISHV2.png" width="120" alt="天使方块"> | Menu |
+| 愚人大师 | `YRDS2` | <img src="images/YRDS2_QVGA_SNOWFISHV2.png" width="120" alt="愚人大师"> | Trial prompt |
+| CS反恐特警 | `fktj` | <img src="images/fktj_QVGA_SNOWFISHV2.png" width="120" alt="CS反恐特警"> | Menu |
 
 ## Reaching the play state
 
