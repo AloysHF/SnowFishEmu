@@ -85,7 +85,7 @@ frames 30, 60, 90, 120, 150 and 180, with keys 10, 10, 5, 5, 10 and 5.
 | 劲乐派对 | `jypd` | <img src="images/劲乐派对.png" width="120" alt="劲乐派对"> | Menu |
 | 经典艺术百宝盒 | `Artist` | <img src="images/经典艺术百宝盒.png" width="120" alt="经典艺术百宝盒"> | Title |
 | 经典音乐百宝盒 | `musician` | <img src="images/经典音乐百宝盒.png" width="120" alt="经典音乐百宝盒"> | Title |
-| 绝代双娇 | `jdsj` | <img src="images/绝代双娇.png" width="120" alt="绝代双娇"> | Resource prompt |
+| 绝代双娇 | `jdsj` | <img src="images/绝代双娇.png" width="120" alt="绝代双娇"> | Title. The sibling indexed pack supplies the title art and Start Game button. |
 | 狂刀伏魔录 | `kdfml` | <img src="images/狂刀伏魔录.png" width="120" alt="狂刀伏魔录"> | Audio prompt |
 | 雷电战机 | `ldzj` | <img src="images/雷电战机.png" width="120" alt="雷电战机"> | Audio prompt |
 | 灵翼战机2上 | `MagicWingIIEp1` | <img src="images/灵翼战机2上.png" width="120" alt="灵翼战机2上"> | Title |

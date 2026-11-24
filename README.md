@@ -168,7 +168,8 @@ to respawn and continue the current level.
 Optional resource file: a companion container is discovered next to the
 `.app` automatically — an exact `<stem>.pak`/`<stem>.res` sibling wins,
 otherwise every sibling whose name mentions `.pak` or `res` is served
-(the rule the libretro core follows; see the compatibility notes).
+(the rule the libretro core follows). Both legacy and indexed resource
+packs can be read from companion containers.
 
 Headless bring-up harness (used by the test tooling; per-frame
 framebuffer dumps for offline analysis):

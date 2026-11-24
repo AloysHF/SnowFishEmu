@@ -795,7 +795,7 @@ impl SnowFishMachine {
         }
         match w.slot {
             0x014 | 0x018 | 0x01C | 0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68
-            | 0x108 | 0x4E8 | 0x4EC | 0x524 | 0xAC | 0xE4 => Some(w.ret),
+            | 0x6C | 0x108 | 0x4E8 | 0x4EC | 0x524 | 0xAC | 0xE4 => Some(w.ret),
             0x12C | 0x130 | 0x134 | 0x140 | 0x14C | 0x154 | 0x158 | 0x180 | 0x198 | 0x194
             | 0x184 | 0x15C | 0x010 => Some(w.ret),
             // The guest's music engine hands tunes to the platform through
@@ -1268,6 +1268,22 @@ impl SnowFishMachine {
                     debug!("[plat] +0x68 fclose h={h} -> -1 (bad handle)");
                 }
                 Some(u32::MAX) // fclose always returns -1
+            }
+            0x6C => {
+                let handle = r(0);
+                let out = r(1);
+                let slot = self.file_slots.get(handle.wrapping_sub(1) as usize);
+                let size = slot.filter(|slot| slot.in_use).map(|slot| slot.size as u32);
+                match size {
+                    Some(size) if out >= 0x1000 && self.mem.write_u32(out, size).is_ok() => {
+                        debug!("[plat] +0x6C file size h={handle} -> {size}");
+                        Some(0)
+                    }
+                    _ => {
+                        debug!("[plat] +0x6C file size h={handle} -> -1");
+                        Some(u32::MAX)
+                    }
+                }
             }
             0x108 => Some(self.hook_lz(r(0), r(1), r(2), r(3))?),
             0x038 => {
@@ -3558,6 +3574,18 @@ mod tests {
         let mut head = [0u8; 8];
         m.mem.read(read_at, &mut head).unwrap();
         assert_eq!(&head, &[1, 0, 1, 0, 6, 0, 9, 0], "the pack header");
+
+        m.cpu.reg_set(0, handle);
+        m.cpu.reg_set(1, read_at);
+        m.exec_slot(0x6C, CODE_BASE).unwrap();
+        assert_eq!(m.cpu.reg_get(0), 0);
+        assert_eq!(m.mem.read_u32(read_at).unwrap(), 68);
+        assert_eq!(m.file_slots[(handle - 1) as usize].offset, 8);
+
+        m.cpu.reg_set(0, 0);
+        m.exec_slot(0x6C, CODE_BASE).unwrap();
+        assert_eq!(m.cpu.reg_get(0), u32::MAX);
+        assert_eq!(m.mem.read_u32(read_at).unwrap(), 68);
     }
 
     /// A guest path the platform does not know is the guest's own save
