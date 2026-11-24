@@ -79,61 +79,59 @@ if (-not (Test-Path -LiteralPath $Binary -PathType Leaf)) {
 # state. Titles not listed run the default frame count with no presses.
 $recipes = @{
     "SanguoTD8_QVGA_SNOWFISHV2" = @{
-        Image  = "三国危城无双"
-        Frames = 200
+        Frames = 455
         Flags  = @()
-        Press  = @("30:10", "60:10", "90:10", "120:10", "150:10", "180:10")
+        Press  = @("120:10", "300:10", "350:10", "400:10", "450:10")
+    }
+    "cjdfw_QVGA_SNOWFISHV2" = @{
+        Frames = 200
+        Press  = @("30:10", "60:10", "90:5", "120:5", "150:10", "180:5")
+    }
+    "ddz_QVGA_SNOWFISHV2" = @{
+        Frames = 200
+        Press  = @("30:10")
     }
     "trunk_QVGA_SNOWFISHV2" = @{
-        Image  = "五子棋"
         Frames = 200
         Flags  = @()
         Press  = @("30:10", "60:10", "90:10", "120:10", "150:10", "180:10")
     }
     "Mengde_QVGA_SNOWFISHV2" = @{
-        Image  = "巨作RPG曹操冢"
         Frames = 200
         Flags  = @()
         Press  = @("30:10", "60:10", "90:10", "120:10", "150:10", "180:10")
     }
     "Mengde_i_QVGA_SNOWFISHV2" = @{
-        Image  = "曹操冢超豪华版"
         Frames = 200
         Flags  = @()
         Press  = @("30:10", "60:10", "90:10", "120:10", "150:10", "180:10")
     }
     "yonghengmota_QVGA_SNOWFISHV2" = @{
-        Image  = "永恒魔塔"
         Frames = 200
         Flags  = @()
         Press  = @("30:10", "60:10", "90:10", "120:10", "150:10", "180:10")
     }
     "yzxyl_QVGA_SNOWFISHV2" = @{
-        Image  = "胭脂戏游龙"
         Frames = 200
         Flags  = @()
         Press  = @("30:10", "60:10", "90:10", "120:10", "150:10", "180:10")
     }
     "StarBall_QVGA_SNOWFISHV2" = @{
-        Image  = "新星际撞球"
         Frames = 247
         Flags  = @()
         Press  = @("30:5", "60:5", "90:5", "120:5", "150:5", "213:6", "240:5")
     }
     "Mengde_pe_QVGA_SNOWFISHV2" = @{
-        Image  = "新鬼吹灯"
         Frames = 300
         Flags  = @()
         Press  = @("30:5", "60:5", "90:5", "120:5")
     }
     "hjkg_QVGA_SNOWFISHV2" = @{
-        Image  = "黄金矿工"
         Frames = 90
         Flags  = @()
         Press  = @("30:11", "65:5", "82:5")
     }
     "yzfb_QVGA_SNOWFISHV2" = @{
-        Image  = "宇宙风暴"
         Frames = 132
         Flags  = @()
         Press  = @("30:10", "60:5", "98:5", "130:6")
@@ -145,7 +143,7 @@ $recipes = @{
 # script only names the packages to capture.
 
 $games = @(Get-ChildItem -LiteralPath $GameDirectory -Recurse -File |
-    Where-Object { $_.Extension -ieq ".app" -and $_.Name -inotmatch "Res" } |
+    Where-Object { $_.Extension -ieq ".app" -and $_.BaseName -inotmatch "Res\d*(_[^.]+)?$" } |
     Sort-Object FullName)
 
 if ($games.Count -eq 0) {
@@ -163,42 +161,36 @@ Write-Host ""
 $success = 0
 $warned = 0
 $failed = 0
-$usedNames = [System.Collections.Generic.Dictionary[string, int]]::new(
+$usedNames = [System.Collections.Generic.HashSet[string]]::new(
     [System.StringComparer]::OrdinalIgnoreCase
 )
 
+$corpusRoot = (Resolve-Path -LiteralPath $GameDirectory).Path.TrimEnd([char[]]"\/")
 foreach ($game in $games) {
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($game.Name)
-    $recipe = $recipes[$baseName]
-    if (-not $recipe) {
-        Write-Host "  $baseName ... Skip (no recipe)" -ForegroundColor DarkGray
-        continue
-    }
+    $recipe = if ($recipes.ContainsKey($baseName)) { $recipes[$baseName] } else { @{} }
     $captureFrames = if ($recipe.ContainsKey("Frames")) { $recipe["Frames"] } else { $Frames }
     $frameLabel = if ($captureFrames -eq 1) { "1 frame" } else { "$captureFrames frames" }
     $imageDirectory = $OutputDirectory
-    $corpusRoot = (Resolve-Path -LiteralPath $GameDirectory).Path.TrimEnd([char[]]"\/")
-    $group = ""
-    if ($game.FullName.StartsWith($corpusRoot + "\", [StringComparison]::OrdinalIgnoreCase)) {
-        $relativeGamePath = $game.FullName.Substring($corpusRoot.Length + 1)
-        $group = ($relativeGamePath -split '[/\\]')[0]
+    $relativeGamePath = $game.FullName.Substring($corpusRoot.Length + 1)
+    $group, $relativePath = $relativeGamePath -split '[/\\]', 2
+    if (-not $relativePath) {
+        $group = ""
     }
     if ($group -in @("A", "B", "C")) {
         $imageDirectory = Join-Path $OutputDirectory $group
         New-Item -ItemType Directory -Force -Path $imageDirectory | Out-Null
     }
-    $imageKey = Join-Path $imageDirectory $baseName
-    if ($usedNames.ContainsKey($imageKey)) {
-        $usedNames[$imageKey]++
-        $baseName = "$baseName-$($usedNames[$imageKey])"
-    } else {
-        $usedNames[$imageKey] = 1
-    }
-
-    # The compatibility doc and the site gallery name the captures by
-    # display title rather than the package file name.
-    $imageName = if ($recipe["Image"]) { "$($recipe["Image"]).png" } else { "$baseName.png" }
+    $imageStem = $game.Directory.Name
+    $imageName = "$imageStem.png"
     $outPath = Join-Path $imageDirectory $imageName
+    $suffix = 2
+    while ($usedNames.Contains($outPath)) {
+        $imageName = "$imageStem-$suffix.png"
+        $outPath = Join-Path $imageDirectory $imageName
+        $suffix++
+    }
+    [void]$usedNames.Add($outPath)
     Write-Host -NoNewline "  $imageName ($frameLabel) ... "
 
     # Prevent a previous capture from being reported as the current result.
@@ -216,7 +208,10 @@ foreach ($game in $games) {
     try {
         $captureArgs = @($game.FullName, "--screenshot", $outPath,
             "--screenshot-frames", $captureFrames,
-            "--instruction-limit", $InstructionLimit) + $recipe["Flags"]
+            "--instruction-limit", $InstructionLimit)
+        if ($recipe["Flags"]) {
+            $captureArgs += $recipe["Flags"]
+        }
         foreach ($press in $recipe["Press"]) {
             $captureArgs += @("--press", $press)
         }

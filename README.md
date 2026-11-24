@@ -168,7 +168,8 @@ to respawn and continue the current level.
 Optional resource file: a companion container is discovered next to the
 `.app` automatically — an exact `<stem>.pak`/`<stem>.res` sibling wins,
 otherwise every sibling whose name mentions `.pak` or `res` is served
-(the rule the libretro core follows; see the compatibility notes).
+(the rule the libretro core follows). Both legacy and indexed resource
+packs can be read from companion containers.
 
 Headless bring-up harness (used by the test tooling; per-frame
 framebuffer dumps for offline analysis):
@@ -214,11 +215,19 @@ snowfishemu <game.app> -S shot.png --screenshot-frames 200 \
   --press 30:10 --press 60:10 --press 90:10 --press 120:10 --press 150:10 --press 180:10
 ```
 
-`scripts/batch-screenshots.ps1` drives the whole corpus into
-`docs/images` with each title's bring-up recipe (see
-[docs/Game-Compatibility.md](docs/Game-Compatibility.md)).
+`scripts/batch-screenshots.ps1 -GameDirectory <corpus-dir>` captures the
+corpus in `docs/images`, naming each PNG after its game's directory.
+The script uses title-specific recipes where available and runs the other
+titles for 200 frames without input by default.
+See [Game Compatibility](docs/Game-Compatibility.md) for the observed results,
+including the Super Monopoly (超级大富翁) board, the Dance (热舞旋风) menu,
+and the title of 明星模仿秀-超级斗地主 after the first-launch audio prompt.
 
 ## Browser Mode (EmulatorJS)
+
+The [application gallery](https://AloysHF.github.io/SnowFishEmu/#gallery)
+shows the screenshots from the compatibility guide in a horizontal strip.
+Swipe or use the arrows to browse them.
 
 The project site hosts a browser player at
 <https://AloysHF.github.io/SnowFishEmu/play.html>: pick a local `.app`

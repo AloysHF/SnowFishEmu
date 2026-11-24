@@ -1,8 +1,8 @@
 # Game Compatibility
 
 Status of the SnowFish application corpus against the current build.
-All titles boot and execute without faults; the notes describe where
-each title stands and the input recipe that reaches its play state.
+The tables report the screen or behavior observed in scripted headless
+runs and identify titles with verified gameplay.
 
 The billing service reports "present" by default (the +0x4C slot
 returns 1): the platform is a handset with a SIM, so the SDK's pay
@@ -23,15 +23,26 @@ the repeated event for diagnostics.
 
 ## Corpus status
 
-The screenshots are emulator-rendered frame captures at each title's
-documented play state; regenerate them with `scripts/batch-screenshots.ps1`.
+Regenerate the captures with the standalone emulator and the batch script.
+
+```powershell
+./scripts/batch-screenshots.ps1 -GameDirectory <corpus-dir>
+```
+
+Keep each companion resource container beside its executable package.
+The script uses the title-specific input and frame count where available.
+For other packages it captures after 200 frames without input by default.
+Each PNG is named after the directory containing the executable package.
+The website gallery uses the screenshot links and captions in these tables.
+
+### Verified gameplay
 
 | Title | Screenshot | Status | Notes |
 |---|---|---|---|
 | 五子棋 (trunk) | <img src="images/五子棋.png" width="120" alt="五子棋"> | **playable** | The wooden gobang board with a working cursor; directional keys move it and OK places a stone |
-| (终身)三国危城无双 | <img src="images/三国危城无双.png" width="120" alt="三国危城无双"> | **playable** | The country selection screen shows individual map markers, a transparent portrait overlay and the 确定 / 取消 softkeys. The tower-defence tutorial follows. |
+| (终身)三国危城无双 | <img src="images/(终身)三国危城无双.png" width="120" alt="三国危城无双"> | **playable** | The country selection screen shows individual map markers, a transparent portrait overlay and the 确定 / 取消 softkeys. The tower-defence tutorial follows. |
 | 巨作RPG曹操冢 (Mengde) | <img src="images/巨作RPG曹操冢.png" width="120" alt="巨作RPG曹操冢"> | **playable** | Gameplay with the help dialog text readable (如当前武器为铲子时，可长按确定/5号键挖地) |
-| 曹操冢超豪华版 (Mengde i) | <img src="images/曹操冢超豪华版.png" width="120" alt="曹操冢超豪华版"> | **playable** | Gameplay; the help bar renders (按数字键3可以查看大地图显示) and the sprite pages load |
+| 曹操冢超豪华版 (Mengde i) | <img src="images/曹操冢超豪华版（增BOSS，剧情）.png" width="120" alt="曹操冢超豪华版"> | **playable** | Gameplay; the help bar renders (按数字键3可以查看大地图显示) and the sprite pages load |
 | 永恒魔塔 (yonghengmota) | <img src="images/永恒魔塔.png" width="120" alt="永恒魔塔"> | **playable** | The music prompt and title artwork are centered. Dialogue and movement continue past the original trial deadline in the default offline configuration. |
 | 胭脂戏游龙 (yzxyl) | <img src="images/胭脂戏游龙.png" width="120" alt="胭脂戏游龙"> | **playable** | The opening story wraps across three lines. 西门庆居 shows the dialogue cue and movement tutorial inside their center panel. |
 | 新星际撞球 (StarBall) | <img src="images/新星际撞球.png" width="120" alt="新星际撞球"> | **playable** | Arrow keys navigate the main menu and level selection. Losing the last ball offline replenishes the three paddles and resumes the round. |
@@ -39,10 +50,66 @@ documented play state; regenerate them with `scripts/batch-screenshots.ps1`.
 | 黄金矿工 (hjkg) | <img src="images/黄金矿工.png" width="120" alt="黄金矿工"> | **playable** | M on the title screen or Options → Start Game opens the original New Game / Level Select menu. |
 | 宇宙风暴 (yzfb) | <img src="images/宇宙风暴.png" width="120" alt="宇宙风暴"> | **playable** | New Game opens the scrolling first level. Confirming the revive and acknowledging its result resumes the level. |
 
-Every title now paints through the platform's UI timer: all ten arm
-`+0xAC` during create and drive their screens from the callback's
-selector-10 re-entry. The frame loop runs them on a millisecond clock
-(`FRAME_MS`), without which no title painted past its background colour.
+These ten titles arm the platform's `+0xAC` UI timer and use its
+selector-10 re-entry to update the display.
+
+### Startup and input checks
+
+These screens show how far each package ran during capture. A title screen,
+menu, or prompt records the observed result. Gameplay verification is
+listed separately above. The initial input check uses six key presses at
+frames 30, 60, 90, 120, 150 and 180, with keys 10, 10, 5, 5, 10 and 5.
+
+| Title | Package prefix | Screenshot | Observed state |
+|---|---|---|---|
+
+| 09武侠巨作龙狼传 | `llz` | <img src="images/09武侠巨作龙狼传.png" width="120" alt="09武侠巨作龙狼传"> | Resource prompt |
+| 爆笑军旗-荣誉勋章 | `Armychess` | <img src="images/爆笑军旗-荣誉勋章.png" width="120" alt="爆笑军旗-荣誉勋章"> | Title |
+| 病毒危机(新收费模式) | `VirusTD` | <img src="images/病毒危机(新收费模式).png" width="120" alt="病毒危机(新收费模式)"> | Menu |
+| 超级大富翁 | `cjdfw` | <img src="images/超级大富翁.png" width="120" alt="超级大富翁"> | **Board reached.** The scripted start sequence enters a new game and renders the board and player sprites. |
+| 超级女生梦工场 | `cjns` | <img src="images/超级女生梦工场.png" width="120" alt="超级女生梦工场"> | Audio prompt |
+| 虫蛊奇侠1 | `cgqx` | <img src="images/虫蛊奇侠1.png" width="120" alt="虫蛊奇侠1"> | Title |
+| 虫蛊奇侠2 | `cgqx2` | <img src="images/虫蛊奇侠2.png" width="120" alt="虫蛊奇侠2"> | Audio prompt |
+| 打击者1945 | `djz1945` | <img src="images/打击者1945.png" width="120" alt="打击者1945"> | Audio prompt |
+| 地狱熔岩 | `diyurongyan` | <img src="images/地狱熔岩.png" width="120" alt="地狱熔岩"> | Menu |
+| 斗地主2009 | `newLander` | <img src="images/斗地主2009.png" width="120" alt="斗地主2009"> | Title |
+| 斗地主3人 | `LanderPoker3` | <img src="images/斗地主3人.png" width="120" alt="斗地主3人"> | Audio prompt |
+| 夺宝奇兵 | `dbqb` | <img src="images/夺宝奇兵.png" width="120" alt="夺宝奇兵"> | Title |
+| 俄罗斯方块 | `FangKuai` | <img src="images/俄罗斯方块.png" width="120" alt="俄罗斯方块"> | Title |
+| 反恐精英 | `cs` | <img src="images/反恐精英.png" width="120" alt="反恐精英"> | Audio prompt |
+| 公主台球2008 | `pool2008` | <img src="images/公主台球2008.png" width="120" alt="公主台球2008"> | Trial prompt |
+| 观音求签 | `gyqq` | <img src="images/观音求签.png" width="120" alt="观音求签"> | Audio prompt |
+| 黑白棋 | `trunk2` | <img src="images/黑白棋.png" width="120" alt="黑白棋"> | Trial prompt |
+| 欢天喜地斗地主 | `htxdddz` | <img src="images/欢天喜地斗地主.png" width="120" alt="欢天喜地斗地主"> | Trial prompt |
+| 角色幻想都市 | `sexycity` | <img src="images/角色幻想都市.png" width="120" alt="角色幻想都市"> | Menu |
+| 金庸群侠七书篇 | `jyqx` | <img src="images/金庸群侠七书篇.png" width="120" alt="金庸群侠七书篇"> | Audio prompt |
+| 劲乐派对 | `jypd` | <img src="images/劲乐派对.png" width="120" alt="劲乐派对"> | Menu |
+| 经典艺术百宝盒 | `Artist` | <img src="images/经典艺术百宝盒.png" width="120" alt="经典艺术百宝盒"> | Title |
+| 经典音乐百宝盒 | `musician` | <img src="images/经典音乐百宝盒.png" width="120" alt="经典音乐百宝盒"> | Title |
+| 绝代双娇 | `jdsj` | <img src="images/绝代双娇.png" width="120" alt="绝代双娇"> | Title. The sibling indexed pack supplies the title art and Start Game button. |
+| 狂刀伏魔录 | `kdfml` | <img src="images/狂刀伏魔录.png" width="120" alt="狂刀伏魔录"> | Audio prompt |
+| 雷电战机 | `ldzj` | <img src="images/雷电战机.png" width="120" alt="雷电战机"> | Audio prompt |
+| 灵翼战机2上 | `MagicWingIIEp1` | <img src="images/灵翼战机2上.png" width="120" alt="灵翼战机2上"> | Title |
+| 灵翼战机2下 | `MagicWingIIEp2` | <img src="images/灵翼战机2下.png" width="120" alt="灵翼战机2下"> | Title |
+| 灵翼战机II外传 | `MagicWings2L` | <img src="images/灵翼战机II外传.png" width="120" alt="灵翼战机II外传"> | Title |
+| 乱世群英-三国麻将 | `SanguoMJ` | <img src="images/乱世群英-三国麻将.png" width="120" alt="乱世群英-三国麻将"> | Splash |
+| 麻将天后 | `Majiang` | <img src="images/麻将天后.png" width="120" alt="麻将天后"> | Menu |
+| 明星模仿秀-超级斗地主 | `ddz` | <img src="images/明星模仿秀-超级斗地主.png" width="120" alt="明星模仿秀-超级斗地主"> | Title. A fresh boot opens the audio prompt. Either soft key advances to the title screen. |
+| 魔塔2(宝莲灯) | `mota2` | <img src="images/魔塔2(宝莲灯).png" width="120" alt="魔塔2(宝莲灯)"> | Audio prompt |
+| 南帝北丐双龙会 | `ndbgslh` | <img src="images/南帝北丐双龙会.png" width="120" alt="南帝北丐双龙会"> | Title. Title art and Start Game load from the sibling indexed pack. |
+| 热舞旋风 | `dance` | <img src="images/热舞旋风.png" width="120" alt="热舞旋风"> | **Menu.** The title and main menu render on startup. The left soft key opens difficulty selection. |
+| 忍者传说 | `huoying` | <img src="images/忍者传说.png" width="120" alt="忍者传说"> | Audio prompt |
+| 三国赵云传 | `JLXJ` | <img src="images/三国赵云传.png" width="120" alt="三国赵云传"> | Audio prompt |
+| 射雕传奇 | `sdcq` | <img src="images/射雕传奇.png" width="120" alt="射雕传奇"> | Title. The Part One title and Start Game button load from the sibling indexed pack. |
+| 生化突袭 | `shtx` | <img src="images/生化突袭.png" width="120" alt="生化突袭"> | Menu |
+| 是男人就上100层 | `men` | <img src="images/是男人就上100层.png" width="120" alt="是男人就上100层"> | Audio prompt |
+| 暑期巨作完美情人 | `sexycity2` | <img src="images/暑期巨作完美情人.png" width="120" alt="暑期巨作完美情人"> | Menu |
+| 水浒秘史 | `shms` | <img src="images/水浒秘史.png" width="120" alt="水浒秘史"> | Title. The sibling indexed pack supplies the title art and Start Game button. |
+| 水晶迷情 | `sjmq` | <img src="images/水晶迷情.png" width="120" alt="水晶迷情"> | Menu |
+| 塔防之乱舞三国-危城无双续 | `sanguotd2` | <img src="images/塔防之乱舞三国-危城无双续.png" width="120" alt="塔防之乱舞三国-危城无双续"> | Audio prompt |
+| 天使方块 | `AngelCube` | <img src="images/天使方块.png" width="120" alt="天使方块"> | Menu |
+| 愚人大师 | `YRDS2` | <img src="images/愚人大师.png" width="120" alt="愚人大师"> | Trial prompt |
+| CS反恐特警 | `fktj` | <img src="images/CS反恐特警.png" width="120" alt="CS反恐特警"> | Menu |
 
 ## Reaching the play state
 
@@ -58,8 +125,8 @@ sfa_headless <game.app> --frames 200 --no-keys \
 ```
 
 That recipe (six left-soft-key presses over 200 frames) lands 五子棋 on
-its board, 三国危城无双 on its splash/tutorial, both 曹操冢 builds and
-永恒魔塔 in gameplay, and 胭脂戏游龙 in 西门庆居.
+its board, both 曹操冢 builds and 永恒魔塔 in gameplay, and 胭脂戏游龙 in
+西门庆居. The Three Kingdoms capture uses the country-selection replay below.
 
 ### 永恒魔塔
 

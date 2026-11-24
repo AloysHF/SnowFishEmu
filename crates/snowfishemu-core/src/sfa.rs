@@ -146,10 +146,9 @@ impl SfaImage {
 /// The resource containers (`*Res*.app`) are the publisher's resource-pack
 /// generators. Their code segment stores the pack they produce as a
 /// length-prefixed blob: a little-endian `u32` byte count followed by that
-/// many bytes of pack data. The pack itself opens with the fixed header
-/// `u16 1, u16 1, u16 6, u16 count` — the guest's reader checks exactly
-/// that shape, so the header doubles as the marker that identifies the
-/// blob without naming any particular title.
+/// many bytes of pack data. Older packs start with
+/// `u16 1, u16 1, u16 6, u16 count`. Indexed packs have an `ED` tag
+/// before the length and a big-endian offset to their index in the payload.
 ///
 /// The generator also embeds the file name it writes the pack under as a
 /// UTF-16 string ending in `.pak`, and the blob follows that name in the
@@ -161,7 +160,7 @@ pub struct ResourcePack {
     pub name: String,
     /// The pack bytes, without the length prefix.
     pub bytes: Vec<u8>,
-    /// The fourth header word: the number of entries the pack declares.
+    /// Number of entries declared by the pack.
     pub entries: u16,
 }
 
@@ -243,28 +242,49 @@ fn find_pack_names(code: &[u8]) -> Vec<(usize, String)> {
 
 /// Finds the length-prefixed pack blobs a code segment carries.
 ///
-/// Each blob is a little-endian `u32` byte count followed by that many
-/// bytes of pack data whose first three words are the fixed pack header.
+/// Either pack layout uses a little-endian byte count outside the payload.
 fn pack_blobs(code: &[u8]) -> Vec<(usize, Vec<u8>, u16)> {
     let mut out = Vec::new();
     for i in 0..code.len().saturating_sub(12) {
         let len = u32::from_le_bytes([code[i], code[i + 1], code[i + 2], code[i + 3]]) as usize;
-        if len < 16 || i + 4 + len > code.len() {
+        if len < 16 {
             continue;
         }
-        let payload = &code[i + 4..i + 4 + len];
+        let Some(payload) = code[i + 4..].get(..len) else {
+            continue;
+        };
         let head = [
             u16::from_le_bytes([payload[0], payload[1]]),
             u16::from_le_bytes([payload[2], payload[3]]),
             u16::from_le_bytes([payload[4], payload[5]]),
         ];
-        if head != ResourcePack::HEADER {
-            continue;
+        let entries = if head == ResourcePack::HEADER {
+            Some(u16::from_le_bytes([payload[6], payload[7]]))
+        } else if i >= 4 && &code[i - 4..i] == b"ED\0\0" {
+            indexed_pack_entries(payload)
+        } else {
+            None
+        };
+        if let Some(entries) = entries {
+            out.push((i, payload.to_vec(), entries));
         }
-        let entries = u16::from_le_bytes([payload[6], payload[7]]);
-        out.push((i, payload.to_vec(), entries));
     }
     out
+}
+
+/// Indexed packs address their big-endian directory relative to byte four.
+fn indexed_pack_entries(payload: &[u8]) -> Option<u16> {
+    let offset = u32::from_be_bytes(*payload.first_chunk()?) as usize;
+    let mut directory = payload.get(offset.checked_add(4)?..)?;
+    let groups = u16::from_be_bytes(*directory.first_chunk()?);
+    directory = &directory[2..];
+    let mut entries = 0;
+    for _ in 0..groups {
+        entries = u16::from_be_bytes(*directory.first_chunk()?);
+        // Each resource has two 32-bit fields in the group table.
+        directory = directory.get(2 + usize::from(entries) * 8..)?;
+    }
+    (entries != 0).then_some(entries)
 }
 
 // Mirrors the reference loader's validation order: length, magic, version,
@@ -451,6 +471,40 @@ mod tests {
             "the pack keeps its payload without the length prefix"
         );
         assert_eq!(&packs[0].bytes[0..8], &[1, 0, 1, 0, 6, 0, 7, 0]);
+    }
+
+    #[test]
+    fn indexed_pack_preserves_its_payload_and_declared_name() {
+        let name = "IndexedRes.pak";
+        let mut code: Vec<_> = name
+            .encode_utf16()
+            .chain([0])
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let mut payload = 8u32.to_be_bytes().to_vec();
+        payload.extend_from_slice(&[0x5a; 8]);
+        payload.extend_from_slice(&[0, 1, 0, 1]);
+        payload.extend_from_slice(&[0; 8]);
+        code.extend_from_slice(b"ED\0\0");
+        code.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        let payload_offset = code.len();
+        code.extend_from_slice(&payload);
+
+        let image = SfaImage::parse(&build(MAGIC_SFA, 0, &code, &[])).unwrap();
+        let packs = ResourcePack::find_all_in(&image);
+        assert_eq!(
+            packs,
+            [ResourcePack {
+                name: name.into(),
+                bytes: payload,
+                entries: 1,
+            }]
+        );
+
+        // A group table truncated at the end of the payload is rejected.
+        code[payload_offset + 15] = 2;
+        let image = SfaImage::parse(&build(MAGIC_SFA, 0, &code, &[])).unwrap();
+        assert!(ResourcePack::find_all_in(&image).is_empty());
     }
 
     /// A container that carries several packs resolves them in the order

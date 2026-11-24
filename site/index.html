@@ -206,11 +206,21 @@
 
   <section class="section" id="gallery">
     <div class="container">
-      <div class="section-head reveal">
-        <h2 class="section-title" data-i18n="gallery-title">应用画廊</h2>
-        <p class="section-desc" data-i18n="gallery-desc">本地验证语料中的全部十款应用。用自己持有的 .app 文件即可在线试玩。</p>
+      <div class="section-head">
+        <h2 class="section-title" id="gallery-heading" data-i18n="gallery-title">应用画廊</h2>
+        <p class="section-desc" data-i18n="gallery-desc">左右滑动或使用箭头浏览应用截图。</p>
       </div>
-      <div class="gallery-grid reveal" id="gallery-grid"></div>
+      <div id="gallery-view" hidden>
+        <div class="gallery-toolbar">
+          <span class="gallery-count" id="gallery-count"></span>
+          <div class="gallery-buttons">
+            <button class="gallery-button" id="gallery-prev" type="button" aria-label="上一屏" aria-controls="gallery-track">‹</button>
+            <button class="gallery-button" id="gallery-next" type="button" aria-label="下一屏" aria-controls="gallery-track">›</button>
+          </div>
+        </div>
+        <div class="gallery-track" id="gallery-track" role="region" aria-labelledby="gallery-heading" tabindex="0"></div>
+      </div>
+      <p class="gallery-note" id="gallery-unavailable" data-i18n="gallery-unavailable" hidden>暂时无法加载截图，可在兼容性表中查看。</p>
       <p class="gallery-note"><span data-i18n="gallery-note">每款的状态与逐标题操作说明见</span> <a href="https://github.com/AloysHF/SnowFishEmu/blob/master/docs/Game-Compatibility.md" target="_blank" rel="noopener">Game-Compatibility 文档</a>。</p>
     </div>
   </section>

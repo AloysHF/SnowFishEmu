@@ -37,9 +37,17 @@ relocation adds the code base (`0x101000`) to the word at
 `code_base + offset` — the image is position-independent and links
 itself to the code base at load time.
 
-Some packages carry an extra sibling resource file (matched by stem);
-the guest's file service serves both the container and the resource
-file.
+### Companion resource packs
+
+A companion resource container declares the guest's `.pak` filename in
+UTF-16LE and stores the payload after a little-endian 32-bit byte count.
+Legacy payloads start with little-endian words `1, 1, 6, entry_count`.
+For indexed payloads, the container stores `ED\0\0` before the byte
+count. The payload begins with a big-endian 32-bit directory offset
+relative to byte four. The directory begins with a big-endian 16-bit
+group count. Each group stores a 16-bit resource count followed by
+two 32-bit fields per resource. The guest reads and decodes the
+original payload through the file service.
 
 ## Guest memory map
 
@@ -69,7 +77,7 @@ Platform region layout:
 
 Loader-planted words around the image:
 `*(code_base-8) = reg`, `*(code_base-4) = root`,
-`*(code_base+0xC0) = root`, `*(image_end-8) = root`,
+`*(code_base+0xC0) = root`,
 `*(code_base+0xBC) = memdesc`.
 
 ### Service dispatch
@@ -102,8 +110,9 @@ executes through the root-table stubs unchanged.
 | `+0x05C` | File read |
 | `+0x064` | File seek |
 | `+0x068` | File close |
+| `+0x06C` | Write the open file length to the guest output pointer without moving its cursor |
 | `+0x07C` | Log (format string at r0) |
-| `+0x0AC` | UI timer arm(owner, period ms, callback) |
+| `+0x0AC` | SDK clock in milliseconds and UI timer interception |
 | `+0x108` | LZ decompression |
 | `+0x12C` | GDI set_clip(obj, x, y, w, h) |
 | `+0x130` | GDI line(obj, x0, y0, x1, y1) with the canvas pen |
@@ -185,6 +194,12 @@ own active flag and its screen state machine stops accepting keys. The
 platform therefore plants a dedicated stublet whose first two words are a
 return-0 trampoline and whose remaining words all point back at that
 trampoline, so both shapes land on real code.
+
+### Guest save files
+
+A read-only open of an unwritten numbered `_SAV<n>` record returns
+file-not-found. Opening it for writing lets the guest create its record.
+Later opens read the bytes the guest wrote during the session.
 
 ### Account record files
 
@@ -294,7 +309,9 @@ on the stack. Its transform values 1, 2 and 3 mirror the selected region
 horizontally, vertically and along both axes, respectively. `+0x134`
 uses the entire source bitmap. Both calls honor the destination clip.
 
-`+0x0AC` returns a handle and arms a repeating callback. The callback is
+For the UI timer interception, a word-aligned callback must be within the
+file-backed image segment. Other `+0x0AC` calls read the emulated
+millisecond clock. The repeating callback is
 a trampoline that treats r0 as the SDK's delayed-message record
 `(app block, message id, delay, flag)` and re-enters the app handler with
 selector 10; the platform therefore passes the record it finds in the

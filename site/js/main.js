@@ -49,7 +49,10 @@
       'feat-6-title': '三种前端',
       'feat-6-desc': '桌面窗口、<code>snowfishemu_libretro</code> 核心（含 SFEMSTAT 存档状态）与浏览器 WebAssembly 核心。',
       'gallery-title': '应用画廊',
-      'gallery-desc': '本地验证语料中的全部十款应用。用自己持有的 .app 文件即可在线试玩。',
+      'gallery-desc': '左右滑动或使用箭头浏览应用截图。',
+      'gallery-prev': '上一屏',
+      'gallery-next': '下一屏',
+      'gallery-unavailable': '暂时无法加载截图，可在兼容性表中查看。',
       'gallery-note': '每款的状态与逐标题操作说明见',
       'chip-sfa': 'sfa 包载入',
       'chip-plat': 'plat 服务桥',
@@ -83,8 +86,7 @@
       'footer-online': '在线体验',
       'footer-play': '在线试玩（EmulatorJS）',
       'footer-license': 'BSD 3-Clause License © 2026 Aloys. Built with 🦀 Rust.',
-      'footer-era': '向 2000 年代的功能机小游戏时代致敬',
-      'gallery-playable': '可运行'
+      'footer-era': '向 2000 年代的功能机小游戏时代致敬'
     },
     en: {
       'meta-title': 'SnowFishEmu — Bring SnowFish apps back on desktop & browser',
@@ -127,7 +129,10 @@
       'feat-6-title': 'Three frontends',
       'feat-6-desc': 'The desktop window, the <code>snowfishemu_libretro</code> core (with SFEMSTAT save states) and the browser WebAssembly core.',
       'gallery-title': 'Application gallery',
-      'gallery-desc': 'All ten applications of the local validation corpus. Use your own .app files to play online.',
+      'gallery-desc': 'Swipe or use the arrows to browse application screenshots.',
+      'gallery-prev': 'Previous screen',
+      'gallery-next': 'Next screen',
+      'gallery-unavailable': 'Screenshots are temporarily unavailable. View them in the compatibility guide.',
       'gallery-note': 'Per-title status and the key recipes are in the',
       'chip-sfa': 'sfa loader',
       'chip-plat': 'plat service bridge',
@@ -161,83 +166,132 @@
       'footer-online': 'Online',
       'footer-play': 'Play online (EmulatorJS)',
       'footer-license': 'BSD 3-Clause License © 2026 Aloys. Built with 🦀 Rust.',
-      'footer-era': 'A tribute to the feature-phone mini-game era of the 2000s',
-      'gallery-playable': 'Playable'
+      'footer-era': 'A tribute to the feature-phone mini-game era of the 2000s'
     }
   };
 
   /* --------------------------------------------------------- gallery */
 
-  // The local validation corpus (docs/Game-Compatibility.md). The
-  // screenshots are emulator-rendered frame captures committed under
-  // docs/images/ (regenerate with scripts/corpus_screenshots.py) and
-  // hot-linked from the repository, so the site itself ships no game data.
-  var REPO = 'https://raw.githubusercontent.com/AloysHF/SnowFishEmu/master';
-  var GAMES = [
-    { name: '五子棋', en: 'Gobang', img: '五子棋',
-      noteZh: '木纹棋盘与光标可用：方向键移动、OK 落子',
-      noteEn: 'The wooden board with a working cursor; arrows move, OK places a stone' },
-    { name: '(终身)三国危城无双', en: 'Sanguo: Besieged City', img: '三国危城无双',
-      noteZh: '危城龙纹开场，随后进入塔防教程菜单',
-      noteEn: 'The dragon-art splash and the tower-defence tutorial menu' },
-    { name: '巨作RPG曹操冢', en: 'Caocao Tomb (RPG)', img: '巨作RPG曹操冢',
-      noteZh: '游戏进行中，帮助对话框文本可读',
-      noteEn: 'Gameplay with the help dialog text readable' },
-    { name: '曹操冢超豪华版', en: 'Caocao Tomb Deluxe', img: '曹操冢超豪华版',
-      noteZh: '游戏进行中，帮助栏与精灵图页正常',
-      noteEn: 'Gameplay; the help bar and sprite pages render' },
-    { name: '永恒魔塔', en: 'Eternal Magic Tower', img: '永恒魔塔',
-      noteZh: '魔塔楼层渲染，剧情对话完整可读',
-      noteEn: 'The magic-tower floor with fully readable story dialog' },
-    { name: '胭脂戏游龙', en: 'Rouge Dragon', img: '胭脂戏游龙',
-      noteZh: '西门庆居场景、对话框与移动教程正常',
-      noteEn: 'The first scene, the dialog box and the movement tutorial' },
-    { name: '新星际撞球', en: 'Star Ball', img: '新星际撞球',
-      noteZh: '砖块棋盘、球与挡板可玩（计分区有已知的显示小问题）',
-      noteEn: 'The board, ball and paddle run; a cosmetic score-strip gap' },
-    { name: '新鬼吹灯', en: 'Ghost Blowing Lantern', img: '新鬼吹灯',
-      noteZh: '完整标题、剧情过场、菜单与战斗',
-      noteEn: 'The full title, story intro, menu and battle' },
-    { name: '黄金矿工', en: 'Gold Miner', img: '黄金矿工',
-      noteZh: '标题即可开始第一关（离线）',
-      noteEn: 'The title starts the first level directly, offline' },
-    { name: '宇宙风暴', en: 'Universe Storm', img: '宇宙风暴',
-      noteZh: '菜单与第一关可玩，内嵌音乐与位图正常加载',
-      noteEn: 'Menu and first level; embedded music and bitmaps load' }
-  ];
+  var galleryTrack = document.getElementById('gallery-track');
+  var galleryPrevious = document.getElementById('gallery-prev');
+  var galleryNext = document.getElementById('gallery-next');
+  var galleryEnglishTitles = {
+    '五子棋': 'Gobang',
+    '三国危城无双': 'Sanguo: Besieged City',
+    '巨作RPG曹操冢': 'Caocao Tomb (RPG)',
+    '曹操冢超豪华版': 'Caocao Tomb Deluxe',
+    '永恒魔塔': 'Eternal Magic Tower',
+    '胭脂戏游龙': 'Rouge Dragon',
+    '新星际撞球': 'Star Ball',
+    '新鬼吹灯': 'Ghost Blowing Lantern',
+    '黄金矿工': 'Gold Miner',
+    '宇宙风暴': 'Universe Storm'
+  };
 
-  function buildGallery(lang) {
-    var grid = document.getElementById('gallery-grid');
-    if (!grid || grid.childElementCount > 0) return;
-    GAMES.forEach(function (game) {
-      var card = document.createElement('figure');
-      card.className = 'gallery-card';
+  // Pages publishes the site at the repository root. A local checkout
+  // can also serve the source page directly from site/.
+  var siteRoot = new URL('../', document.currentScript.src);
+  var repoRoot = siteRoot.pathname.endsWith('/site/') ? new URL('../', siteRoot) : siteRoot;
+  var compatibilityUrl = new URL('docs/Game-Compatibility.md', repoRoot);
 
-      var tile = document.createElement('div');
-      tile.className = 'gallery-tile';
-      var shot = document.createElement('img');
-      shot.className = 'gallery-shot';
-      shot.loading = 'lazy';
-      shot.src = REPO + '/docs/images/' + encodeURIComponent(game.img) + '.png';
-      shot.alt = lang === 'en' ? game.en : game.name;
-      tile.appendChild(shot);
+  function updateGalleryLanguage(lang) {
+    if (!galleryTrack) return;
+    galleryPrevious.setAttribute('aria-label', translations[lang]['gallery-prev']);
+    galleryNext.setAttribute('aria-label', translations[lang]['gallery-next']);
+    galleryTrack.querySelectorAll('.gallery-card').forEach(function (card) {
+      var original = card.dataset.title;
+      var title = lang === 'en' ? (galleryEnglishTitles[original] || original) : original;
+      card.querySelector('.gallery-shot').alt = title;
+      card.querySelector('.gallery-name').textContent = title;
+    });
+  }
 
-      var name = document.createElement('figcaption');
-      name.className = 'gallery-name';
-      name.textContent = lang === 'en' ? game.en : game.name;
+  function setupGalleryNavigation(cards) {
+    var counter = document.getElementById('gallery-count');
+    var reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
-      var meta = document.createElement('div');
-      meta.className = 'gallery-meta';
-      var chip = document.createElement('span');
-      chip.className = 'status-chip';
-      chip.innerHTML = '<span class="chip-dot"></span>' + (translations[lang] && translations[lang]['gallery-playable']);
-      meta.appendChild(chip);
+    function updateControls() {
+      var left = galleryTrack.scrollLeft;
+      var right = left + galleryTrack.clientWidth;
+      var visible = cards.filter(function (card) {
+        var center = card.offsetLeft + card.offsetWidth / 2;
+        return center >= left && center < right;
+      });
+      if (visible.length) {
+        var first = cards.indexOf(visible[0]) + 1;
+        var last = first + visible.length - 1;
+        var range = first === last ? String(first) : first + '–' + last;
+        counter.textContent = range + ' / ' + cards.length;
+      }
+      galleryPrevious.disabled = left <= 1;
+      galleryNext.disabled = right >= galleryTrack.scrollWidth - 1;
+    }
 
-      card.appendChild(tile);
-      card.appendChild(name);
-      card.appendChild(meta);
-      card.title = lang === 'en' ? game.noteEn : game.noteZh;
-      grid.appendChild(card);
+    function browse(direction) {
+      galleryTrack.scrollBy({
+        left: direction * galleryTrack.clientWidth,
+        behavior: reducedMotion.matches ? 'instant' : 'smooth'
+      });
+    }
+
+    galleryPrevious.addEventListener('click', function () { browse(-1); });
+    galleryNext.addEventListener('click', function () { browse(1); });
+    galleryTrack.addEventListener('keydown', function (event) {
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+        event.preventDefault();
+        browse(event.key === 'ArrowLeft' ? -1 : 1);
+      } else if (event.key === 'Home' || event.key === 'End') {
+        event.preventDefault();
+        galleryTrack.scrollTo({
+          left: event.key === 'Home' ? 0 : galleryTrack.scrollWidth,
+          behavior: 'instant'
+        });
+      }
+    });
+    galleryTrack.addEventListener('scroll', updateControls, { passive: true });
+    window.addEventListener('resize', updateControls);
+    updateControls();
+  }
+
+  function loadGallery() {
+    if (!galleryTrack) return;
+    fetch(compatibilityUrl).then(function (response) {
+      if (!response.ok) throw new Error('Compatibility guide unavailable');
+      return response.text();
+    }).then(function (markdown) {
+      var source = document.createElement('template');
+      source.innerHTML = markdown;
+      var screenshots = source.content.querySelectorAll('img[src^="images/"][src$=".png"]');
+      if (!screenshots.length) throw new Error('Compatibility guide contains no screenshots');
+
+      var fragment = document.createDocumentFragment();
+      var cards = Array.from(screenshots, function (entry) {
+        var card = document.createElement('figure');
+        card.className = 'gallery-card';
+        card.dataset.title = entry.alt;
+
+        var shot = document.createElement('img');
+        shot.className = 'gallery-shot';
+        shot.loading = 'lazy';
+        shot.draggable = false;
+        shot.width = 240;
+        shot.height = 320;
+        shot.src = new URL(entry.getAttribute('src'), compatibilityUrl).href;
+
+        var caption = document.createElement('figcaption');
+        caption.className = 'gallery-name';
+
+        card.append(shot, caption);
+        fragment.appendChild(card);
+        return card;
+      });
+
+      galleryTrack.appendChild(fragment);
+      updateGalleryLanguage(currentLang);
+      document.getElementById('gallery-view').hidden = false;
+      setupGalleryNavigation(cards);
+    }).catch(function () {
+      document.getElementById('gallery-unavailable').hidden = false;
     });
   }
 
@@ -421,13 +475,7 @@
       if (t[key] !== undefined) el.innerHTML = t[key];
     });
 
-    // The gallery is built once per language switch so the card names
-    // follow the dictionary.
-    var grid = document.getElementById('gallery-grid');
-    if (grid) {
-      grid.innerHTML = '';
-      buildGallery(lang);
-    }
+    updateGalleryLanguage(lang);
 
     document.title = t['meta-title'];
     if (description) description.setAttribute('content', t['meta-desc']);
@@ -454,4 +502,5 @@
   setupCounters();
   setupHeroCanvas();
   applyLang(currentLang);
+  loadGallery();
 })();

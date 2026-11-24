@@ -429,7 +429,6 @@ pub fn layout(mem: &mut crate::mem::GuestMem, code_base: u32, image_size: u32) {
     // --- loader info block around the code image ---------------------------
     w(mem, code_base - 8, REG_ADDR);
     w(mem, code_base - 4, ROOT_ADDR);
-    w(mem, code_base + image_size - 8, ROOT_ADDR);
     w(mem, code_base + 0xC0, ROOT_ADDR);
     // Global cell in the guest image pointing at the memory descriptor.
     w(mem, code_base + 0xBC, MEMDESC_ADDR);
@@ -485,7 +484,7 @@ mod tests {
         // Loader info block around the image.
         assert_eq!(mem.read_u32(CODE_BASE - 8).unwrap(), REG_ADDR);
         assert_eq!(mem.read_u32(CODE_BASE - 4).unwrap(), ROOT_ADDR);
-        assert_eq!(mem.read_u32(CODE_BASE + image_size - 8).unwrap(), ROOT_ADDR);
+        assert_eq!(mem.read_u32(CODE_BASE + image_size - 8).unwrap(), 0);
         assert_eq!(mem.read_u32(CODE_BASE + 0xC0).unwrap(), ROOT_ADDR);
         assert_eq!(mem.read_u32(CODE_BASE + 0xBC).unwrap(), MEMDESC_ADDR);
     }

@@ -81,7 +81,7 @@ stack-argument layout:
   adjustments, so the argument offset derives from the caller.
 
 Implemented platform slots cover logging (`+0x7C`), guest file I/O over the
-package container and sibling resources (`+0x58`/`+0x5C`/`+0x64`/`+0x68`,
+package container and sibling resources (including file length at `+0x6C`,
 with the `__`-prefixed service files backed by an in-memory store), the LZ
 stream decompressor (`+0x108`), the UI timer arms (`+0x0AC`, `+0x500`),
 carrier-billing capability (`+0x4C`), the subscriber-identity lookup shape

@@ -363,6 +363,7 @@ pub struct SnowFishMachine {
     legacy_check: Option<LegacyCheck>,
     tariff_check: Option<TariffCheck>,
     default_font_width_entry: Option<u32>,
+    code_end: u32,
     image_end: u32,
     wrappers: Vec<Wrapper>,
     handler: u32,
@@ -572,6 +573,7 @@ impl SnowFishMachine {
             legacy_check,
             tariff_check,
             default_font_width_entry,
+            code_end: CODE_BASE + image.header.code_size,
             image_end: CODE_BASE + image_size,
             wrappers,
             handler: 0,
@@ -793,7 +795,7 @@ impl SnowFishMachine {
         }
         match w.slot {
             0x014 | 0x018 | 0x01C | 0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68
-            | 0x108 | 0x4E8 | 0x4EC | 0x524 | 0xAC | 0xE4 => Some(w.ret),
+            | 0x6C | 0x108 | 0x4E8 | 0x4EC | 0x524 | 0xAC | 0xE4 => Some(w.ret),
             0x12C | 0x130 | 0x134 | 0x140 | 0x14C | 0x154 | 0x158 | 0x180 | 0x198 | 0x194
             | 0x184 | 0x15C | 0x010 => Some(w.ret),
             // The guest's music engine hands tunes to the platform through
@@ -1267,6 +1269,22 @@ impl SnowFishMachine {
                 }
                 Some(u32::MAX) // fclose always returns -1
             }
+            0x6C => {
+                let handle = r(0);
+                let out = r(1);
+                let slot = self.file_slots.get(handle.wrapping_sub(1) as usize);
+                let size = slot.filter(|slot| slot.in_use).map(|slot| slot.size as u32);
+                match size {
+                    Some(size) if out >= 0x1000 && self.mem.write_u32(out, size).is_ok() => {
+                        debug!("[plat] +0x6C file size h={handle} -> {size}");
+                        Some(0)
+                    }
+                    _ => {
+                        debug!("[plat] +0x6C file size h={handle} -> -1");
+                        Some(u32::MAX)
+                    }
+                }
+            }
             0x108 => Some(self.hook_lz(r(0), r(1), r(2), r(3))?),
             0x038 => {
                 // The guest's music engine hands a tune to the platform:
@@ -1308,16 +1326,11 @@ impl SnowFishMachine {
                 // slot unanswered keeps the app's screen stack empty, so
                 // the titles paint a bare background and stop.
                 //
-                // Not every call is a callback arm — some guests pass a
-                // message id instead of a code pointer — so anything that
-                // does not land in the mapped code range is answered with a
-                // handle but never pumped.
+                // The SDK also reads the millisecond clock here, leaving
+                // unrelated argument registers live. A BSS pointer is data.
                 let (ctx, period, cb) = (r(0), r(1).max(1), r(2));
-                if cb < self.code_base || cb >= self.image_end {
-                    debug!(
-                        "[plat] +0xAC arm ctx={ctx:#010x} period={period}ms target={cb:#010x} (not code, not pumped)"
-                    );
-                    Some(0)
+                if !cb.is_multiple_of(4) || !(self.code_base..self.code_end).contains(&cb) {
+                    Some(self.frame_count.wrapping_mul(FRAME_MS) as u32)
                 } else {
                     if self.ui_timers.len() >= 8 {
                         self.ui_timers.remove(0);
@@ -1830,11 +1843,14 @@ impl SnowFishMachine {
         // records, __dcsmsinfo_ the response inbox, __sfgpsav saves): back
         // them all with in-memory data so the guest reads back what it
         // wrote instead of the container bytes.
-        let base_lower = basename(&path).to_ascii_lowercase();
-        let writable = basename(&path).starts_with("__")
-            || account
-            || base_lower.ends_with(".sav")
-            || (base_lower.ends_with(".dat") && base_lower != "game.dat");
+        let base_lower = base.to_ascii_lowercase();
+        let numbered_save = base_lower.rsplit_once("_sav").is_some_and(|(_, slot)| {
+            !slot.is_empty() && slot.bytes().all(|byte| byte.is_ascii_digit())
+        });
+        let is_save_record = base_lower.ends_with(".sav")
+            || (base_lower.ends_with(".dat") && base_lower != "game.dat")
+            || numbered_save;
+        let writable = base.starts_with("__") || account || is_save_record;
         // A write-intent open (flags 5 = read/write) must land in memory,
         // whatever the path looks like. The guest downloads a resource
         // package, writes it out and then re-opens it to check the size;
@@ -1884,20 +1900,9 @@ impl SnowFishMachine {
         // SDK's boot creates the default record through an empty-handle
         // read (the probe reads 0 bytes → "load fail" → the SDK writes
         // the default), so refusing them breaks account creation.
-        let is_save_record = base_lower.ends_with(".sav")
-            || (base_lower.ends_with(".dat") && base_lower != "game.dat");
-        if writable
-            && !write_intent
-            && !written
-            && !dcsms_present
-            && !netinfo_present
-            && is_save_record
-        {
-            let known = self.named_files.get(&path).is_some_and(|d| !d.is_empty());
-            if !known {
-                debug!("[plat] +0x58 fopen \"{path}\" flags={flags} -> 0 (no record yet)");
-                return Ok(0);
-            }
+        if is_save_record && !write_intent && !written && !dcsms_present && !netinfo_present {
+            debug!("[plat] +0x58 fopen \"{path}\" flags={flags} -> 0 (no record yet)");
+            return Ok(0);
         }
         if writable || write_intent || written {
             let stored = self.named_files.get(&path).cloned().unwrap_or_default();
@@ -2830,37 +2835,16 @@ mod tests {
     /// (written to the args slot) and returns to the sentinel, then an
     /// event handler that returns immediately.
     fn build_test_image() -> Vec<u8> {
-        // entry (at CODE_BASE):
-        //   ldr r0, [r1]          ; keep slot semantics visible
-        //   ldr r2, =handler      ; relocated literal
-        //   str r2, [r1]          ; register handler at args slot
-        //   bx lr
-        // handler:
-        //   bx lr
-        let entry: [u32; 4] = [
-            0xE591_0000, // ldr r0, [r1]
-            0xE59F_2004, // ldr r2, [pc, #4]  -> literal at +0x10
-            0xE581_2000, // str r2, [r1]
-            0xE12F_FF1E, // bx lr
+        let words: [u32; 7] = [
+            0xE591_0000, // 0x00: ldr r0, [r1]
+            0xE59F_2004, // 0x04: ldr r2, [pc, #4]
+            0xE581_2000, // 0x08: str r2, [r1]
+            0xE12F_FF1E, // 0x0C: bx lr
+            0x0000_0014, // 0x10: app block pointer (relocated)
+            0x0000_0018, // 0x14: handler entry pointer (relocated)
+            0xE12F_FF1E, // 0x18: handler: bx lr
         ];
-        let handler: [u32; 1] = [0xE12F_FF1E]; // bx lr
-        let mut code = Vec::new();
-        for w in entry {
-            code.extend_from_slice(&w.to_le_bytes());
-        }
-        // pad to 0x10 so the literal lands right after `bx lr`
-        while code.len() < 0x10 {
-            code.push(0xEE); // invalid-ish filler never executed
-        }
-        let handler_off = code.len() as u32;
-        for w in handler {
-            code.extend_from_slice(&w.to_le_bytes());
-        }
-        // literal: handler address relative to code_base (relocated)
-        code.extend_from_slice(&handler_off.to_le_bytes());
-        // relocation entry for the literal at offset 0x10
-        let reloc = 0x10u32;
-
+        let code: Vec<_> = words.into_iter().flat_map(u32::to_le_bytes).collect();
         let mut v = Vec::new();
         v.extend_from_slice(&0x1941_4653u32.to_le_bytes()); // magic
         v.extend_from_slice(&0u32.to_le_bytes()); // ver
@@ -2869,9 +2853,10 @@ mod tests {
         v.extend_from_slice(&0x20u32.to_le_bytes()); // hdr_len
         v.extend_from_slice(&(code.len() as u32).to_le_bytes()); // c0
         v.extend_from_slice(&0u32.to_le_bytes()); // c1
-        v.extend_from_slice(&1u32.to_le_bytes()); // reloc count
+        v.extend_from_slice(&2u32.to_le_bytes()); // reloc count
         v.extend_from_slice(&code);
-        v.extend_from_slice(&reloc.to_le_bytes());
+        v.extend_from_slice(&0x10u32.to_le_bytes());
+        v.extend_from_slice(&0x14u32.to_le_bytes());
         v
     }
 
@@ -2880,7 +2865,7 @@ mod tests {
         let container = build_test_image();
         let mut m = SnowFishMachine::load(container, &[]).unwrap();
         m.boot(1000).unwrap();
-        assert_ne!(m.handler, 0, "handler registered");
+        assert_eq!(m.handler, CODE_BASE + 0x14, "handler registered");
         assert_eq!(m.state().unwrap(), 3);
         // Dispatch an event through the handler; the handler returns at once.
         m.app_call(6, 0x08, 1000).unwrap();
@@ -3185,8 +3170,6 @@ mod tests {
     /// code at +0x18 is a callback that pushes r0 onto the guest stack and
     /// returns — enough to observe a platform timer delivery.
     fn build_ui_timer_image() -> Vec<u8> {
-        // The loader plants the platform root pointer at image end - 8, so
-        // the last two words are padding rather than code.
         let words: [u32; 13] = [
             0xE59F_2008, // 0x00: ldr r2, [pc, #8]  -> literal at 0x10
             0xE581_2000, // 0x04: str r2, [r1]      ; register the app block
@@ -3199,7 +3182,7 @@ mod tests {
             0xE1A0_0000, // 0x20: nop
             0x0000_0014, // 0x24: app block word 0 -> handler entry (relocated)
             0xE1A0_0000, // 0x28: nop
-            0xE1A0_0000, // 0x2C: padding (root pointer planted at end - 8)
+            0xE1A0_0000, // 0x2C: padding
             0xE1A0_0000, // 0x30: padding
         ];
         let mut code = Vec::new();
@@ -3583,6 +3566,18 @@ mod tests {
         let mut head = [0u8; 8];
         m.mem.read(read_at, &mut head).unwrap();
         assert_eq!(&head, &[1, 0, 1, 0, 6, 0, 9, 0], "the pack header");
+
+        m.cpu.reg_set(0, handle);
+        m.cpu.reg_set(1, read_at);
+        m.exec_slot(0x6C, CODE_BASE).unwrap();
+        assert_eq!(m.cpu.reg_get(0), 0);
+        assert_eq!(m.mem.read_u32(read_at).unwrap(), 68);
+        assert_eq!(m.file_slots[(handle - 1) as usize].offset, 8);
+
+        m.cpu.reg_set(0, 0);
+        m.exec_slot(0x6C, CODE_BASE).unwrap();
+        assert_eq!(m.cpu.reg_get(0), u32::MAX);
+        assert_eq!(m.mem.read_u32(read_at).unwrap(), 68);
     }
 
     /// A guest path the platform does not know is the guest's own save
@@ -3652,6 +3647,35 @@ mod tests {
         let mut back = [0u8; 5];
         m.mem.read(read_at, &mut back).unwrap();
         assert_eq!(back, payload, "the guest reloads what it saved");
+    }
+
+    #[test]
+    fn numbered_save_reads_as_missing_until_the_guest_writes_it() {
+        let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        let path_at = plat::ROOT_ADDR + 0x3000;
+        let path: Vec<_> = "E:\\Application\\Cards_SAV12"
+            .encode_utf16()
+            .chain([0])
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        m.mem.write(path_at, &path).unwrap();
+        assert_eq!(m.hook_fopen(path_at, 2).unwrap(), 0);
+
+        let handle = m.hook_fopen(path_at, 5).unwrap();
+        assert_ne!(handle, 0);
+        let payload_at = path_at + 0x80;
+        m.mem.write(payload_at, b"save").unwrap();
+        assert_eq!(m.hook_fwrite(handle, payload_at, 4).unwrap(), 4);
+        m.cpu.reg_set(0, handle);
+        m.exec_slot(0x68, CODE_BASE).unwrap();
+
+        let handle = m.hook_fopen(path_at, 2).unwrap();
+        assert_ne!(handle, 0);
+        let read_at = payload_at + 4;
+        assert_eq!(m.hook_fread(handle, read_at, 4).unwrap(), 4);
+        let mut bytes = [0; 4];
+        m.mem.read(read_at, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"save");
     }
 
     /// Save states round-trip the observable runtime state: frame count,
@@ -3774,7 +3798,7 @@ mod tests {
             0x0000_0014, // 0x34: app block word 0 -> handler (relocated)
             0xE1A0_0000, // 0x38: nop
             0xE1A0_0000, // 0x3C: nop
-            0xE1A0_0000, // 0x40: padding (root pointer planted at end - 8)
+            0xE1A0_0000, // 0x40: padding
             0xE1A0_0000, // 0x44: padding
         ];
         let mut code = Vec::new();
