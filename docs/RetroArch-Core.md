@@ -55,10 +55,9 @@ standalone frontend, resolved from the content path (see
   (`SFEMSTAT` envelope), so states from other packages or older builds are
   rejected instead of restored
 - Input descriptors for frontend button labeling
-- Audio: the titles' MIDI music renders through the platform's music slot
-  into a 44.1 kHz stereo stream (8 kHz mono synth resampled); a quiet tune
-  still submits a full silent batch so frontends keep pacing on the audio
-  clock
+- Audio: the music slot renders MIDI to 44.1 kHz stereo using an 8 kHz
+  mono synthesizer. The core sends 735 stereo frames per 60 Hz callback,
+  including across loop boundaries. It supplies silence when music ends.
 - Core options for CPU/HLE debug logging
 
 ## Keyboard Input
@@ -123,8 +122,7 @@ Open **Settings > Core Options** in RetroArch to configure the core.
 
 ## Known Limitations
 
-- Audio is not emulated (the platform exposes no audio service); the core
-  submits silence so frontends pace on a steady clock
+- Audio synthesis uses a shared instrument sound for MIDI notes.
 - Compatibility is limited to the titles in
   [Game Compatibility](Game-Compatibility.md)
 - On Windows, RetroArch's d3d11 video driver has a first-present race when

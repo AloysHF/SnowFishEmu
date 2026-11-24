@@ -7,7 +7,7 @@ use super::callbacks;
 use super::constants::*;
 use super::options;
 use super::types::*;
-use snowfishemu_core::SnowFishMachine;
+use snowfishemu_core::{audio::AUDIO_SAMPLE_RATE, SnowFishMachine};
 use std::ffi::{c_char, c_void, CStr};
 use std::path::{Path, PathBuf};
 use std::ptr;
@@ -26,17 +26,12 @@ const MAX_DISPLAY_HEIGHT: u32 = DISPLAY_HEIGHT;
 /// interval from this value and caps it at 4, so reporting the 20 Hz
 /// guest rate made the game run at the display refresh rate. 60 Hz matches
 /// the common display refresh rates exactly, and the audio stream always
-/// flows at this rate (silence-padded — this platform exposes no audio
-/// service), so audio-sync pacing keeps the speed exact everywhere else.
+/// supplies a full batch per call, with silence when no tune is playing.
 const PACING_FPS: u32 = 60;
 /// Guest screen tick rate: the platform's ~50 ms frame tick.
 const GUEST_TICK_RATE: u32 = 20;
-/// Stereo frames submitted to the frontend per `retro_run` call. The
-/// constant silent flow keeps the frontend pacing on its audio clock even
-/// though this platform has no audio service.
+/// Stereo frames submitted to the frontend per `retro_run` call.
 const PACING_SAMPLES_PER_RUN: usize = (AUDIO_SAMPLE_RATE / PACING_FPS) as usize;
-/// Reported audio sample rate (no guest audio exists; silence only).
-const AUDIO_SAMPLE_RATE: u32 = 44_100;
 const PERFORMANCE_LEVEL: u32 = 3;
 /// Instruction budget per guest call (boot, event dispatch, frame tick).
 /// Guest calls normally return at the stop sentinel long before this; the
@@ -954,8 +949,6 @@ mod tests {
     }
 
     unsafe extern "C" fn test_audio_batch(data: *const i16, frames: usize) -> usize {
-        // The guest produces no audio; the core must still submit the
-        // constant silence flow for pacing.
         assert!(!data.is_null());
         *AUDIO_FRAMES.lock().unwrap() += frames;
         frames

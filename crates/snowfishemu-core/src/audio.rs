@@ -68,20 +68,28 @@ impl AudioEngine {
         self.playback.is_some()
     }
 
-    /// Pull up to `max_frames` stereo frames, restarting a looping tune
-    /// when the queue drains.
+    /// Pull stereo frames, filling the request across loop boundaries.
     pub fn pull_samples(&mut self, max_frames: usize) -> Vec<i16> {
         let Some(tune) = self.playback.as_mut() else {
             return Vec::new();
         };
-        if tune.position == tune.samples.len() {
-            tune.position = 0;
+        let available = (tune.samples.len() - tune.position) / 2;
+        let frames = if tune.looping {
+            max_frames
+        } else {
+            max_frames.min(available)
+        };
+        let mut output = Vec::with_capacity(frames * 2);
+        while output.len() / 2 < frames {
+            if tune.position == tune.samples.len() {
+                tune.position = 0;
+            }
+            let take = (frames - output.len() / 2).min((tune.samples.len() - tune.position) / 2);
+            let end = tune.position + take * 2;
+            output.extend_from_slice(&tune.samples[tune.position..end]);
+            tune.position = end;
         }
-        let take = max_frames.min((tune.samples.len() - tune.position) / 2) * 2;
-        let end = tune.position + take;
-        let output = tune.samples[tune.position..end].to_vec();
-        tune.position = end;
-        if end == tune.samples.len() && !tune.looping {
+        if tune.position == tune.samples.len() && !tune.looping {
             self.playback = None;
         }
         output
@@ -423,15 +431,17 @@ mod tests {
     }
 
     #[test]
-    fn looping_tune_restarts_when_drained() {
+    fn a_single_pull_crosses_multiple_loop_boundaries() {
         let mut engine = AudioEngine::default();
-        engine.play_midi(&tiny_midi(), true).unwrap();
+        let tune = tiny_midi();
+        let pcm = decode_midi(&tune).unwrap();
+        engine.play_midi(&tune, true).unwrap();
         let frames = engine.buffered_frames();
-        let _ = engine.pull_samples(frames);
-        assert_eq!(engine.buffered_frames(), 0);
-        // The drained looping tune restarts on the next pull.
-        let again = engine.pull_samples(100);
-        assert!(!again.is_empty(), "looping tune must restart");
+        engine.pull_samples(frames - 100);
+        let samples = engine.pull_samples(frames + 200);
+        let expected = [&pcm[pcm.len() - 200..], &pcm, &pcm[..200]].concat();
+        assert_eq!(samples.len(), expected.len());
+        assert!(samples == expected);
     }
 
     #[test]
