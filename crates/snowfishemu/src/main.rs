@@ -6,10 +6,12 @@
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use log::{debug, info};
+use snowfishemu_core::audio::AUDIO_SAMPLE_RATE;
 use snowfishemu_core::plat::{FB_HEIGHT, FB_WIDTH};
 use snowfishemu_core::SnowFishMachine;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// MTK key codes for the frontend's key map, mirroring the platform's
 /// logical indices (see core::machine::KEY_MAP for index → code).
@@ -157,11 +159,17 @@ fn main() -> Result<()> {
 
     // Frame pacing ~20 fps like the platform tick.
     let frame_ms = 50u64;
+    let mut audio_output = StandaloneAudio::try_new();
     let mut frame_start = std::time::Instant::now();
     while window.is_open() && !window.is_key_down(minifb::Key::Escape) {
         pump_keys(&mut window, &mut machine)?;
 
         machine.run_frame(args.instruction_limit)?;
+        if let Some(audio) = &mut audio_output {
+            let revision = machine.audio_revision();
+            let samples = machine.take_audio_samples(AUDIO_SAMPLE_RATE as usize / 20);
+            audio.push(revision, samples);
+        }
         let frame = machine.take_dirty().then(|| machine.frame_pixels());
         present_frame(frame.as_deref(), &mut pixels, scale, |pixels| {
             window.update_with_buffer(pixels, width, height)
@@ -340,6 +348,80 @@ fn pump_keys(window: &mut minifb::Window, machine: &mut SnowFishMachine) -> Resu
         }
     }
     Ok(())
+}
+
+/// Interleaved samples the ring buffer keeps ahead of the device (2 seconds).
+const MAX_RING_SAMPLES: usize = AUDIO_SAMPLE_RATE as usize * 2 * 2;
+
+/// Ring-buffered stereo audio output backed by rodio. The window loop
+/// drains the machine's music engine into the ring each frame; the device
+/// pulls from the ring on its own clock. No device (or a failing one) just
+/// means silence.
+struct StandaloneAudio {
+    _sink: rodio::MixerDeviceSink,
+    _player: rodio::Player,
+    ring: Arc<Mutex<VecDeque<f32>>>,
+    revision: u64,
+}
+
+impl StandaloneAudio {
+    /// Create the output device, or return None when no device is available.
+    fn try_new() -> Option<Self> {
+        let sink = rodio::DeviceSinkBuilder::open_default_sink().ok()?;
+        let ring = Arc::new(Mutex::new(VecDeque::new()));
+        let player = rodio::Player::connect_new(sink.mixer());
+        player.append(RingSource { ring: ring.clone() });
+        Some(Self {
+            _sink: sink,
+            _player: player,
+            ring,
+            revision: 0,
+        })
+    }
+
+    fn push(&mut self, revision: u64, samples: Vec<i16>) {
+        let mut ring = self.ring.lock().unwrap();
+        if self.revision != revision {
+            ring.clear();
+            self.revision = revision;
+        }
+        ring.extend(samples.into_iter().map(|sample| sample as f32 / 32768.0));
+        let overflow = ring.len().saturating_sub(MAX_RING_SAMPLES);
+        if overflow > 0 {
+            ring.drain(..overflow);
+        }
+    }
+}
+
+/// Pull-style source that reads from the shared ring buffer.
+struct RingSource {
+    ring: Arc<Mutex<VecDeque<f32>>>,
+}
+
+impl Iterator for RingSource {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        Some(self.ring.lock().unwrap().pop_front().unwrap_or(0.0))
+    }
+}
+
+impl rodio::Source for RingSource {
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+
+    fn channels(&self) -> rodio::ChannelCount {
+        rodio::ChannelCount::new(2).expect("stereo")
+    }
+
+    fn sample_rate(&self) -> rodio::SampleRate {
+        rodio::SampleRate::new(AUDIO_SAMPLE_RATE).expect("44100")
+    }
+
+    fn total_duration(&self) -> Option<std::time::Duration> {
+        None
+    }
 }
 
 #[cfg(test)]

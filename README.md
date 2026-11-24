@@ -58,6 +58,9 @@ identifiers. Save states use the `SFEMSTAT` signature.
   subscriber identity found, and the `__sfssuid`/`ssu<id>` account record
   backed by the service store. `set_free_play(bool)` is the library
   equivalent, `SF_FREE_PLAY=0` / `--no-free-play` the opt-outs
+- **MIDI music playback** — the titles' music engines hand standard
+  MIDI tunes to the platform through the +0x038 slot; the core renders
+  them into a 44.1 kHz stereo stream the frontends drain per frame
 - **RetroArch core** — the `snowfishemu_libretro` core runs the same
   machine under RetroArch and other libretro frontends
 
@@ -240,11 +243,12 @@ directory, then load a `.app` as content.
 
 - Video: 240x320 XRGB8888. The core reports a 60 Hz pacing rate; each
   presented frame advances the guest's millisecond UI clock by 33 ms.
-- Audio: none (the platform exposes no audio service; the core submits
-  silence so frontends pace on a steady clock).
-- Save states: supported. States carry a version tag and a content
-  fingerprint (`SFEMSTAT` envelope), so states from other packages or
-  older builds are rejected instead of restored.
+- Audio: the titles' MIDI music renders through the platform's music
+  slot into a 44.1 kHz stereo stream; a quiet tune still submits a full
+  silent batch so frontends keep pacing on the audio clock.
+- Save states use the versioned `SFEMSTAT` format and require matching
+  content. Version 2 restores MIDI playback and its position. Version 1
+  states load with music initially silent.
 - Core options: CPU/HLE debug logging.
 - Resource file: the core serves the same optional sibling resource file
   as the standalone frontend (see above), resolved from the content path.

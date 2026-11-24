@@ -59,7 +59,7 @@ Rules the core follows for any Android host:
 - Load failures are reported with `RETRO_ENVIRONMENT_SET_MESSAGE` and the log,
   never as a silent `false`.
 - Panics are caught at the C ABI boundary, so a bad frame cannot kill the host.
-- Save states carry the `SFEMSTAT` magic header plus a format version and a
-  content fingerprint; states from another version or package are rejected
-  instead of being misread.
+- `SFEMSTAT` save states require matching content. Version 2 restores the
+  active MIDI tune and playback position. Version 1 states load with
+  music initially silent.
 - Cores are linked with 16 KB page alignment for Android 15 devices.

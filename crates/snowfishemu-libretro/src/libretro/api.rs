@@ -7,7 +7,7 @@ use super::callbacks;
 use super::constants::*;
 use super::options;
 use super::types::*;
-use snowfishemu_core::SnowFishMachine;
+use snowfishemu_core::{audio::AUDIO_SAMPLE_RATE, SnowFishMachine};
 use std::ffi::{c_char, c_void, CStr};
 use std::path::{Path, PathBuf};
 use std::ptr;
@@ -26,17 +26,12 @@ const MAX_DISPLAY_HEIGHT: u32 = DISPLAY_HEIGHT;
 /// interval from this value and caps it at 4, so reporting the 20 Hz
 /// guest rate made the game run at the display refresh rate. 60 Hz matches
 /// the common display refresh rates exactly, and the audio stream always
-/// flows at this rate (silence-padded — this platform exposes no audio
-/// service), so audio-sync pacing keeps the speed exact everywhere else.
+/// supplies a full batch per call, with silence when no tune is playing.
 const PACING_FPS: u32 = 60;
 /// Guest screen tick rate: the platform's ~50 ms frame tick.
 const GUEST_TICK_RATE: u32 = 20;
-/// Stereo frames submitted to the frontend per `retro_run` call. The
-/// constant silent flow keeps the frontend pacing on its audio clock even
-/// though this platform has no audio service.
+/// Stereo frames submitted to the frontend per `retro_run` call.
 const PACING_SAMPLES_PER_RUN: usize = (AUDIO_SAMPLE_RATE / PACING_FPS) as usize;
-/// Reported audio sample rate (no guest audio exists; silence only).
-const AUDIO_SAMPLE_RATE: u32 = 44_100;
 const PERFORMANCE_LEVEL: u32 = 3;
 /// Instruction budget per guest call (boot, event dispatch, frame tick).
 /// Guest calls normally return at the stop sentinel long before this; the
@@ -119,8 +114,6 @@ struct Emulator {
     key_state: [bool; 32],
     /// Guest tick credit accumulated from the frontend pacing rate.
     tick_pacer: GuestTickPacer,
-    /// Constant silence submitted to keep the sample flow at the pacing rate.
-    silence: Vec<i16>,
 }
 
 /// Global emulator instance.
@@ -296,7 +289,6 @@ pub extern "C" fn retro_load_game(info: *const retro_game_info) -> bool {
                     stopped: false,
                     key_state: [false; 32],
                     tick_pacer: GuestTickPacer::new(),
-                    silence: vec![0; PACING_SAMPLES_PER_RUN * 2],
                 });
                 if let Some(emulator) = EMULATOR.as_mut() {
                     apply_core_options();
@@ -442,10 +434,14 @@ pub extern "C" fn retro_run() {
         );
 
         // Keep the sample flow at exactly the reported pacing rate: the
-        // frontend paces the core by audio sync, so a silent guest must
-        // still submit silence or the frontend would fall back to
-        // display-rate pacing and the game would run too fast.
-        callbacks::audio_sample_batch(emulator.silence.as_ptr(), PACING_SAMPLES_PER_RUN);
+        // frontend paces the core by audio sync, so a quiet guest must
+        // still submit the full pacing batch or the frontend would fall
+        // back to display-rate pacing and the game would run too fast.
+        // The music engine's samples ride on top of that flow; a batch
+        // shorter than the pacing count is silence-padded.
+        let mut samples = emulator.machine.take_audio_samples(PACING_SAMPLES_PER_RUN);
+        samples.resize(PACING_SAMPLES_PER_RUN * 2, 0);
+        callbacks::audio_sample_batch(samples.as_ptr(), PACING_SAMPLES_PER_RUN);
     })
 }
 
@@ -953,8 +949,6 @@ mod tests {
     }
 
     unsafe extern "C" fn test_audio_batch(data: *const i16, frames: usize) -> usize {
-        // The guest produces no audio; the core must still submit the
-        // constant silence flow for pacing.
         assert!(!data.is_null());
         *AUDIO_FRAMES.lock().unwrap() += frames;
         frames
@@ -1386,10 +1380,10 @@ mod tests {
     fn save_state_max_size_bounds_the_snapshot() {
         // Sum of the loader's worst-case region sizes (2 MiB code page,
         // 1 MiB stack, 1 MiB app data, 256 KiB platform table, 1 MiB heap),
-        // with generous room for the codec envelope and bookkeeping.
+        // with room for up to 1 MiB of MIDI and the codec bookkeeping.
         let region_max: usize = (2 + 1 + 1 + 1) * 1024 * 1024 + 256 * 1024;
         assert!(
-            SAVE_STATE_MAX_SIZE >= region_max + 1024 * 1024,
+            SAVE_STATE_MAX_SIZE >= region_max + 2 * 1024 * 1024,
             "SAVE_STATE_MAX_SIZE must exceed the largest possible guest memory map"
         );
     }
