@@ -119,3 +119,21 @@ android-x86:
   extends:
     - .libretro-rust-android-jni-x86
     - .core-defs
+
+# iOS
+libretro-build-ios-arm64:
+  extends:
+    - .libretro-rust-ios-arm64-default
+    - .core-defs
+
+# tvOS
+libretro-build-tvos-arm64:
+  extends:
+    - .libretro-rust-tvos-arm64-default
+    - .core-defs
+
+# webOS
+libretro-build-webos-armv7a:
+  extends:
+    - .libretro-rust-webos-armv7a-default
+    - .core-defs
