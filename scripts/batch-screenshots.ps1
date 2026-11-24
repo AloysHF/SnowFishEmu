@@ -79,7 +79,6 @@ if (-not (Test-Path -LiteralPath $Binary -PathType Leaf)) {
 # state. Titles not listed run the default frame count with no presses.
 $recipes = @{
     "SanguoTD8_QVGA_SNOWFISHV2" = @{
-        Image  = "三国危城无双"
         Frames = 455
         Flags  = @()
         Press  = @("120:10", "300:10", "350:10", "400:10", "450:10")
@@ -89,55 +88,46 @@ $recipes = @{
         Press  = @("30:10", "60:10", "90:5", "120:5", "150:10", "180:5")
     }
     "trunk_QVGA_SNOWFISHV2" = @{
-        Image  = "五子棋"
         Frames = 200
         Flags  = @()
         Press  = @("30:10", "60:10", "90:10", "120:10", "150:10", "180:10")
     }
     "Mengde_QVGA_SNOWFISHV2" = @{
-        Image  = "巨作RPG曹操冢"
         Frames = 200
         Flags  = @()
         Press  = @("30:10", "60:10", "90:10", "120:10", "150:10", "180:10")
     }
     "Mengde_i_QVGA_SNOWFISHV2" = @{
-        Image  = "曹操冢超豪华版"
         Frames = 200
         Flags  = @()
         Press  = @("30:10", "60:10", "90:10", "120:10", "150:10", "180:10")
     }
     "yonghengmota_QVGA_SNOWFISHV2" = @{
-        Image  = "永恒魔塔"
         Frames = 200
         Flags  = @()
         Press  = @("30:10", "60:10", "90:10", "120:10", "150:10", "180:10")
     }
     "yzxyl_QVGA_SNOWFISHV2" = @{
-        Image  = "胭脂戏游龙"
         Frames = 200
         Flags  = @()
         Press  = @("30:10", "60:10", "90:10", "120:10", "150:10", "180:10")
     }
     "StarBall_QVGA_SNOWFISHV2" = @{
-        Image  = "新星际撞球"
         Frames = 247
         Flags  = @()
         Press  = @("30:5", "60:5", "90:5", "120:5", "150:5", "213:6", "240:5")
     }
     "Mengde_pe_QVGA_SNOWFISHV2" = @{
-        Image  = "新鬼吹灯"
         Frames = 300
         Flags  = @()
         Press  = @("30:5", "60:5", "90:5", "120:5")
     }
     "hjkg_QVGA_SNOWFISHV2" = @{
-        Image  = "黄金矿工"
         Frames = 90
         Flags  = @()
         Press  = @("30:11", "65:5", "82:5")
     }
     "yzfb_QVGA_SNOWFISHV2" = @{
-        Image  = "宇宙风暴"
         Frames = 132
         Flags  = @()
         Press  = @("30:10", "60:5", "98:5", "130:6")
@@ -187,7 +177,7 @@ foreach ($game in $games) {
         $imageDirectory = Join-Path $OutputDirectory $group
         New-Item -ItemType Directory -Force -Path $imageDirectory | Out-Null
     }
-    $imageStem = if ($recipe["Image"]) { $recipe["Image"] } else { $baseName }
+    $imageStem = $game.Directory.Name
     $imageName = "$imageStem.png"
     $outPath = Join-Path $imageDirectory $imageName
     $suffix = 2

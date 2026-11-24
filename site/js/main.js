@@ -170,20 +170,20 @@
 
   // The local validation corpus (docs/Game-Compatibility.md). The
   // screenshots are emulator-rendered frame captures committed under
-  // docs/images/ (regenerate with scripts/corpus_screenshots.py) and
+  // docs/images/ (regenerate with scripts/batch-screenshots.ps1) and
   // hot-linked from the repository, so the site itself ships no game data.
   var REPO = 'https://raw.githubusercontent.com/AloysHF/SnowFishEmu/master';
   var GAMES = [
     { name: '五子棋', en: 'Gobang', img: '五子棋',
       noteZh: '木纹棋盘与光标可用：方向键移动、OK 落子',
       noteEn: 'The wooden board with a working cursor; arrows move, OK places a stone' },
-    { name: '(终身)三国危城无双', en: 'Sanguo: Besieged City', img: '三国危城无双',
-      noteZh: '危城龙纹开场，随后进入塔防教程菜单',
-      noteEn: 'The dragon-art splash and the tower-defence tutorial menu' },
+    { name: '(终身)三国危城无双', en: 'Sanguo: Besieged City', img: '(终身)三国危城无双',
+      noteZh: '国家选择界面显示刘备、地图标记和软键',
+      noteEn: 'Country selection shows Liu Bei, map markers and soft keys' },
     { name: '巨作RPG曹操冢', en: 'Caocao Tomb (RPG)', img: '巨作RPG曹操冢',
       noteZh: '游戏进行中，帮助对话框文本可读',
       noteEn: 'Gameplay with the help dialog text readable' },
-    { name: '曹操冢超豪华版', en: 'Caocao Tomb Deluxe', img: '曹操冢超豪华版',
+    { name: '曹操冢超豪华版', en: 'Caocao Tomb Deluxe', img: '曹操冢超豪华版（增BOSS，剧情）',
       noteZh: '游戏进行中，帮助栏与精灵图页正常',
       noteEn: 'Gameplay; the help bar and sprite pages render' },
     { name: '永恒魔塔', en: 'Eternal Magic Tower', img: '永恒魔塔',

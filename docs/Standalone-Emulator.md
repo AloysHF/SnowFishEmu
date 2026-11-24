@@ -210,8 +210,9 @@ The script drives the standalone emulator's headless screenshot mode
 key presses) through each title's documented bring-up recipe from
 [Game Compatibility](Game-Compatibility.md). Packages without a recipe
 use 200 frames without input by default. The emulator discovers the
-sibling resource containers, and the script writes each capture into
-`docs/images`, using the package stem when no display name is configured.
+sibling resource containers, and the script names each PNG after the
+executable package's parent directory. Captures with the same name get
+numeric suffixes in `docs/images`.
 
 ## Examples
 
