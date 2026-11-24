@@ -69,7 +69,7 @@ Platform region layout:
 
 Loader-planted words around the image:
 `*(code_base-8) = reg`, `*(code_base-4) = root`,
-`*(code_base+0xC0) = root`, `*(image_end-8) = root`,
+`*(code_base+0xC0) = root`,
 `*(code_base+0xBC) = memdesc`.
 
 ### Service dispatch

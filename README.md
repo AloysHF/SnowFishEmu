@@ -218,7 +218,7 @@ snowfishemu <game.app> -S shot.png --screenshot-frames 200 \
 corpus in `docs/images`. The script uses title-specific recipes where
 available and runs the other titles for 200 frames without input by default.
 See [Game Compatibility](docs/Game-Compatibility.md) for the observed results,
-including the scripted start of a new game in Super Monopoly (超级大富翁).
+including the Super Monopoly (超级大富翁) board and the Dance (热舞旋风) menu.
 
 ## Browser Mode (EmulatorJS)
 

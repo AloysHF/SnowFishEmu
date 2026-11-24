@@ -2827,37 +2827,16 @@ mod tests {
     /// (written to the args slot) and returns to the sentinel, then an
     /// event handler that returns immediately.
     fn build_test_image() -> Vec<u8> {
-        // entry (at CODE_BASE):
-        //   ldr r0, [r1]          ; keep slot semantics visible
-        //   ldr r2, =handler      ; relocated literal
-        //   str r2, [r1]          ; register handler at args slot
-        //   bx lr
-        // handler:
-        //   bx lr
-        let entry: [u32; 4] = [
-            0xE591_0000, // ldr r0, [r1]
-            0xE59F_2004, // ldr r2, [pc, #4]  -> literal at +0x10
-            0xE581_2000, // str r2, [r1]
-            0xE12F_FF1E, // bx lr
+        let words: [u32; 7] = [
+            0xE591_0000, // 0x00: ldr r0, [r1]
+            0xE59F_2004, // 0x04: ldr r2, [pc, #4]
+            0xE581_2000, // 0x08: str r2, [r1]
+            0xE12F_FF1E, // 0x0C: bx lr
+            0x0000_0014, // 0x10: app block pointer (relocated)
+            0x0000_0018, // 0x14: handler entry pointer (relocated)
+            0xE12F_FF1E, // 0x18: handler: bx lr
         ];
-        let handler: [u32; 1] = [0xE12F_FF1E]; // bx lr
-        let mut code = Vec::new();
-        for w in entry {
-            code.extend_from_slice(&w.to_le_bytes());
-        }
-        // pad to 0x10 so the literal lands right after `bx lr`
-        while code.len() < 0x10 {
-            code.push(0xEE); // invalid-ish filler never executed
-        }
-        let handler_off = code.len() as u32;
-        for w in handler {
-            code.extend_from_slice(&w.to_le_bytes());
-        }
-        // literal: handler address relative to code_base (relocated)
-        code.extend_from_slice(&handler_off.to_le_bytes());
-        // relocation entry for the literal at offset 0x10
-        let reloc = 0x10u32;
-
+        let code: Vec<_> = words.into_iter().flat_map(u32::to_le_bytes).collect();
         let mut v = Vec::new();
         v.extend_from_slice(&0x1941_4653u32.to_le_bytes()); // magic
         v.extend_from_slice(&0u32.to_le_bytes()); // ver
@@ -2866,9 +2845,10 @@ mod tests {
         v.extend_from_slice(&0x20u32.to_le_bytes()); // hdr_len
         v.extend_from_slice(&(code.len() as u32).to_le_bytes()); // c0
         v.extend_from_slice(&0u32.to_le_bytes()); // c1
-        v.extend_from_slice(&1u32.to_le_bytes()); // reloc count
+        v.extend_from_slice(&2u32.to_le_bytes()); // reloc count
         v.extend_from_slice(&code);
-        v.extend_from_slice(&reloc.to_le_bytes());
+        v.extend_from_slice(&0x10u32.to_le_bytes());
+        v.extend_from_slice(&0x14u32.to_le_bytes());
         v
     }
 
@@ -2877,7 +2857,7 @@ mod tests {
         let container = build_test_image();
         let mut m = SnowFishMachine::load(container, &[]).unwrap();
         m.boot(1000).unwrap();
-        assert_ne!(m.handler, 0, "handler registered");
+        assert_eq!(m.handler, CODE_BASE + 0x14, "handler registered");
         assert_eq!(m.state().unwrap(), 3);
         // Dispatch an event through the handler; the handler returns at once.
         m.app_call(6, 0x08, 1000).unwrap();
@@ -3182,8 +3162,6 @@ mod tests {
     /// code at +0x18 is a callback that pushes r0 onto the guest stack and
     /// returns — enough to observe a platform timer delivery.
     fn build_ui_timer_image() -> Vec<u8> {
-        // The loader plants the platform root pointer at image end - 8, so
-        // the last two words are padding rather than code.
         let words: [u32; 13] = [
             0xE59F_2008, // 0x00: ldr r2, [pc, #8]  -> literal at 0x10
             0xE581_2000, // 0x04: str r2, [r1]      ; register the app block
@@ -3196,7 +3174,7 @@ mod tests {
             0xE1A0_0000, // 0x20: nop
             0x0000_0014, // 0x24: app block word 0 -> handler entry (relocated)
             0xE1A0_0000, // 0x28: nop
-            0xE1A0_0000, // 0x2C: padding (root pointer planted at end - 8)
+            0xE1A0_0000, // 0x2C: padding
             0xE1A0_0000, // 0x30: padding
         ];
         let mut code = Vec::new();
@@ -3771,7 +3749,7 @@ mod tests {
             0x0000_0014, // 0x34: app block word 0 -> handler (relocated)
             0xE1A0_0000, // 0x38: nop
             0xE1A0_0000, // 0x3C: nop
-            0xE1A0_0000, // 0x40: padding (root pointer planted at end - 8)
+            0xE1A0_0000, // 0x40: padding
             0xE1A0_0000, // 0x44: padding
         ];
         let mut code = Vec::new();
