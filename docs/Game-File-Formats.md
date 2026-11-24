@@ -103,7 +103,7 @@ executes through the root-table stubs unchanged.
 | `+0x064` | File seek |
 | `+0x068` | File close |
 | `+0x07C` | Log (format string at r0) |
-| `+0x0AC` | UI timer arm(owner, period ms, callback) |
+| `+0x0AC` | SDK clock in milliseconds and UI timer interception |
 | `+0x108` | LZ decompression |
 | `+0x12C` | GDI set_clip(obj, x, y, w, h) |
 | `+0x130` | GDI line(obj, x0, y0, x1, y1) with the canvas pen |
@@ -294,7 +294,9 @@ on the stack. Its transform values 1, 2 and 3 mirror the selected region
 horizontally, vertically and along both axes, respectively. `+0x134`
 uses the entire source bitmap. Both calls honor the destination clip.
 
-`+0x0AC` returns a handle and arms a repeating callback. The callback is
+For the UI timer interception, a word-aligned callback must be within the
+file-backed image segment. Other `+0x0AC` calls read the emulated
+millisecond clock. The repeating callback is
 a trampoline that treats r0 as the SDK's delayed-message record
 `(app block, message id, delay, flag)` and re-enters the app handler with
 selector 10; the platform therefore passes the record it finds in the

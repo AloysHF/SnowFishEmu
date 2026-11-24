@@ -64,7 +64,7 @@ frames 30, 60, 90, 120, 150 and 180, with keys 10, 10, 5, 5, 10 and 5.
 | 09武侠巨作龙狼传 | `llz` | <img src="images/llz_QVGA_SNOWFISHV2.png" width="120" alt="09武侠巨作龙狼传"> | Resource prompt |
 | 爆笑军旗-荣誉勋章 | `Armychess` | <img src="images/Armychess_QVGA_SNOWFISHV2.png" width="120" alt="爆笑军旗-荣誉勋章"> | Title |
 | 病毒危机(新收费模式) | `VirusTD` | <img src="images/VirusTD_QVGA_SNOWFISHV2.png" width="120" alt="病毒危机(新收费模式)"> | Menu |
-| 超级大富翁 | `cjdfw` | <img src="images/cjdfw_QVGA_SNOWFISHV2.png" width="120" alt="超级大富翁"> | **Crash on input.** The title renders, then the input check faults at guest PC `0x00000008`. |
+| 超级大富翁 | `cjdfw` | <img src="images/cjdfw_QVGA_SNOWFISHV2.png" width="120" alt="超级大富翁"> | **Board reached.** The scripted start sequence enters a new game and renders the board and player sprites. |
 | 超级女生梦工场 | `cjns` | <img src="images/cjns_QVGA_SNOWFISHV2.png" width="120" alt="超级女生梦工场"> | Audio prompt |
 | 虫蛊奇侠1 | `cgqx` | <img src="images/cgqx_QVGA_SNOWFISHV2.png" width="120" alt="虫蛊奇侠1"> | Title |
 | 虫蛊奇侠2 | `cgqx2` | <img src="images/cgqx2_QVGA_SNOWFISHV2.png" width="120" alt="虫蛊奇侠2"> | Audio prompt |

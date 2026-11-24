@@ -363,6 +363,7 @@ pub struct SnowFishMachine {
     legacy_check: Option<LegacyCheck>,
     tariff_check: Option<TariffCheck>,
     default_font_width_entry: Option<u32>,
+    code_end: u32,
     image_end: u32,
     wrappers: Vec<Wrapper>,
     handler: u32,
@@ -572,6 +573,7 @@ impl SnowFishMachine {
             legacy_check,
             tariff_check,
             default_font_width_entry,
+            code_end: CODE_BASE + image.header.code_size,
             image_end: CODE_BASE + image_size,
             wrappers,
             handler: 0,
@@ -1308,16 +1310,11 @@ impl SnowFishMachine {
                 // slot unanswered keeps the app's screen stack empty, so
                 // the titles paint a bare background and stop.
                 //
-                // Not every call is a callback arm — some guests pass a
-                // message id instead of a code pointer — so anything that
-                // does not land in the mapped code range is answered with a
-                // handle but never pumped.
+                // The SDK also reads the millisecond clock here, leaving
+                // unrelated argument registers live. A BSS pointer is data.
                 let (ctx, period, cb) = (r(0), r(1).max(1), r(2));
-                if cb < self.code_base || cb >= self.image_end {
-                    debug!(
-                        "[plat] +0xAC arm ctx={ctx:#010x} period={period}ms target={cb:#010x} (not code, not pumped)"
-                    );
-                    Some(0)
+                if !cb.is_multiple_of(4) || !(self.code_base..self.code_end).contains(&cb) {
+                    Some(self.frame_count.wrapping_mul(FRAME_MS) as u32)
                 } else {
                     if self.ui_timers.len() >= 8 {
                         self.ui_timers.remove(0);

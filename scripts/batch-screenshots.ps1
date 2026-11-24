@@ -84,6 +84,10 @@ $recipes = @{
         Flags  = @()
         Press  = @("30:10", "60:10", "90:10", "120:10", "150:10", "180:10")
     }
+    "cjdfw_QVGA_SNOWFISHV2" = @{
+        Frames = 200
+        Press  = @("30:10", "60:10", "90:5", "120:5", "150:10", "180:5")
+    }
     "trunk_QVGA_SNOWFISHV2" = @{
         Image  = "五子棋"
         Frames = 200
