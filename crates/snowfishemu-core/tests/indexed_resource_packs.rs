@@ -49,3 +49,9 @@ fn nandi_beigai_loads_its_indexed_resources() {
 fn shediao_chuanqi_loads_its_indexed_resources() {
     assert_indexed_resource_title("SF_SDCQ_APP");
 }
+
+#[test]
+#[ignore = "requires the QVGA Shuihu Mishi package and its sibling resources (set SF_SHMS_APP)"]
+fn shuihu_mishi_loads_its_indexed_resources() {
+    assert_indexed_resource_title("SF_SHMS_APP");
+}

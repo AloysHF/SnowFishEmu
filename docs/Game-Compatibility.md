@@ -103,7 +103,7 @@ frames 30, 60, 90, 120, 150 and 180, with keys 10, 10, 5, 5, 10 and 5.
 | 生化突袭 | `shtx` | <img src="images/生化突袭.png" width="120" alt="生化突袭"> | Menu |
 | 是男人就上100层 | `men` | <img src="images/是男人就上100层.png" width="120" alt="是男人就上100层"> | Audio prompt |
 | 暑期巨作完美情人 | `sexycity2` | <img src="images/暑期巨作完美情人.png" width="120" alt="暑期巨作完美情人"> | Menu |
-| 水浒秘史 | `shms` | <img src="images/水浒秘史.png" width="120" alt="水浒秘史"> | Resource prompt |
+| 水浒秘史 | `shms` | <img src="images/水浒秘史.png" width="120" alt="水浒秘史"> | Title. The sibling indexed pack supplies the title art and Start Game button. |
 | 水晶迷情 | `sjmq` | <img src="images/水晶迷情.png" width="120" alt="水晶迷情"> | Menu |
 | 塔防之乱舞三国-危城无双续 | `sanguotd2` | <img src="images/塔防之乱舞三国-危城无双续.png" width="120" alt="塔防之乱舞三国-危城无双续"> | Audio prompt |
 | 天使方块 | `AngelCube` | <img src="images/天使方块.png" width="120" alt="天使方块"> | Menu |
