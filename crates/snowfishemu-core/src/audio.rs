@@ -11,100 +11,87 @@
 //! the shared stereo output rate; this keeps headless tests fast and the
 //! whole engine deterministic.
 
-use std::collections::VecDeque;
 use thiserror::Error;
 
 pub const AUDIO_SAMPLE_RATE: u32 = 44_100;
-
-/// Ten seconds of stereo head-room: a play call re-queues the tune and the
-/// frontends drain continuously, so the queue should never hit this.
-const MAX_QUEUED_SAMPLES: usize = AUDIO_SAMPLE_RATE as usize * 2 * 10;
 
 /// MIDI playback engine: parse SMF once, render to PCM, and serve stereo
 /// frames to the frontends.
 #[derive(Default)]
 pub struct AudioEngine {
-    samples: VecDeque<i16>,
-    playing: bool,
-    /// The tune bytes to restart when the queue drains (`loop` plays).
-    loop_source: Option<Vec<u8>>,
-    /// The `(pointer, length)` of the tune currently playing, used to
-    /// collapse the guest's repeated play calls for the same tune.
-    current_key: Option<(u32, u32)>,
+    playback: Option<Playback>,
+    revision: u64,
+}
+
+struct Playback {
+    midi: Vec<u8>,
+    looping: bool,
+    samples: Vec<i16>,
+    position: usize,
 }
 
 impl AudioEngine {
-    /// Decode SMF bytes and queue the resulting stereo PCM.
-    ///
-    /// `loop_forever` arms the tune to restart whenever the queue drains —
-    /// background music plays once on the real handset and the hardware
-    /// loops it until an explicit stop.
-    pub fn play_midi(&mut self, data: &[u8], loop_forever: bool) -> Result<(), AudioError> {
+    /// Replace the current tune and report whether playback changed.
+    pub fn play_midi(&mut self, data: &[u8], looping: bool) -> Result<bool, AudioError> {
+        if self
+            .playback
+            .as_ref()
+            .is_some_and(|tune| tune.looping == looping && tune.midi == data)
+        {
+            return Ok(false);
+        }
         let decoded = decode_midi(data)?;
-        let frames = decoded.len() / 2;
-        if frames == 0 {
+        if decoded.is_empty() {
             return Err(AudioError::Empty);
         }
-        if loop_forever {
-            self.loop_source = Some(data.to_vec());
-        } else {
-            self.loop_source = None;
-        }
-        self.samples.extend(decoded);
-        let overflow = self.samples.len().saturating_sub(MAX_QUEUED_SAMPLES);
-        if overflow > 0 {
-            self.samples.drain(..overflow);
-        }
-        self.playing = true;
-        Ok(())
-    }
-
-    /// Marks `key` as the tune currently playing; a play call for the same
-    /// key is the guest re-issuing its background-music request and is
-    /// answered without restarting the tune.
-    pub fn set_current_key(&mut self, key: Option<(u32, u32)>) {
-        self.current_key = key;
-    }
-
-    pub fn current_key(&self) -> Option<(u32, u32)> {
-        self.current_key
+        self.playback = Some(Playback {
+            midi: data.to_vec(),
+            looping,
+            samples: decoded,
+            position: 0,
+        });
+        self.revision = self.revision.wrapping_add(1);
+        Ok(true)
     }
 
     pub fn stop(&mut self) {
-        self.samples.clear();
-        self.playing = false;
-        self.loop_source = None;
-        self.current_key = None;
+        self.playback = None;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Identifies changes that invalidate pending frontend samples.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn playing(&self) -> bool {
-        self.playing
+        self.playback.is_some()
     }
 
     /// Pull up to `max_frames` stereo frames, restarting a looping tune
     /// when the queue drains.
     pub fn pull_samples(&mut self, max_frames: usize) -> Vec<i16> {
-        if !self.playing {
+        let Some(tune) = self.playback.as_mut() else {
             return Vec::new();
+        };
+        if tune.position == tune.samples.len() {
+            tune.position = 0;
         }
-        if self.samples.is_empty() {
-            // Restart a looping tune; otherwise the cue has finished.
-            if let Some(source) = self.loop_source.clone() {
-                if self.play_midi(&source, true).is_err() {
-                    self.playing = false;
-                }
-            } else {
-                self.playing = false;
-                return Vec::new();
-            }
+        let take = max_frames.min((tune.samples.len() - tune.position) / 2) * 2;
+        let end = tune.position + take;
+        let output = tune.samples[tune.position..end].to_vec();
+        tune.position = end;
+        if end == tune.samples.len() && !tune.looping {
+            self.playback = None;
         }
-        let take = (max_frames * 2).min(self.samples.len());
-        self.samples.drain(..take).collect()
+        output
     }
 
-    /// Number of stereo frames still buffered and ready to pull.
+    /// Number of stereo frames until the end of the current tune.
     pub fn buffered_frames(&self) -> usize {
-        self.samples.len() / 2
+        self.playback
+            .as_ref()
+            .map_or(0, |tune| (tune.samples.len() - tune.position) / 2)
     }
 }
 
@@ -380,18 +367,20 @@ fn resample_to_stereo(
 mod tests {
     use super::*;
 
-    /// A one-note format-0 SMF: quarter note C4 (0x3C) at 120 BPM.
-    fn tiny_midi() -> Vec<u8> {
+    fn midi(track: &[u8]) -> Vec<u8> {
         let mut data = Vec::new();
         data.extend_from_slice(b"MThd");
         data.extend_from_slice(&[0, 0, 0, 6, 0, 0, 0, 1, 0, 96]);
         data.extend_from_slice(b"MTrk");
-        data.extend_from_slice(&[0, 0, 0, 11]);
-        // delta 0, note-on C4 velocity 100; delta 96, note-off C4; end.
-        data.extend_from_slice(&[
-            0x00, 0x90, 0x3C, 0x64, 0x60, 0x80, 0x3C, 0x00, 0xFF, 0x2F, 0x00,
-        ]);
+        data.extend_from_slice(&(track.len() as u32).to_be_bytes());
+        data.extend_from_slice(track);
         data
+    }
+
+    /// A one-note format-0 SMF: quarter note C4 (0x3C) at 120 BPM.
+    fn tiny_midi() -> Vec<u8> {
+        // delta 0, note-on C4 velocity 100; delta 96, note-off C4; end.
+        midi(&[0, 0x90, 60, 100, 96, 0x80, 60, 0, 0, 0xFF, 0x2F, 0])
     }
 
     #[test]
@@ -405,6 +394,32 @@ mod tests {
         // The tune contains a real note, so the pulled audio is not silence.
         let nonzero = pulled.iter().filter(|sample| **sample != 0).count();
         assert!(nonzero > 100, "expected audible samples, got {nonzero}");
+    }
+
+    #[test]
+    fn new_tune_starts_at_its_first_frame() {
+        let mut engine = AudioEngine::default();
+        engine.play_midi(&tiny_midi(), false).unwrap();
+        engine.pull_samples(500);
+        let next = midi(&[0, 0x90, 69, 100, 96, 0x80, 69, 0, 0, 0xFF, 0x2F, 0]);
+        let expected = decode_midi(&next).unwrap();
+        engine.play_midi(&next, false).unwrap();
+        assert!(engine.pull_samples(500) == expected[..1000]);
+    }
+
+    #[test]
+    fn tune_over_ten_seconds_keeps_its_opening_and_later_notes() {
+        let track = midi(&[
+            0, 0x90, 60, 100, 96, 0x80, 60, 0, 0x8F, 0, 0x90, 69, 100, 96, 0x80, 69, 0, 0, 0xFF,
+            0x2F, 0,
+        ]);
+        let mut engine = AudioEngine::default();
+        engine.play_midi(&track, false).unwrap();
+        let rate = AUDIO_SAMPLE_RATE as usize;
+        let pcm = engine.pull_samples(12 * rate);
+        assert!(pcm.len() > 22 * rate);
+        assert!(pcm[..rate].iter().any(|&sample| sample != 0));
+        assert!(pcm[21 * rate..].iter().any(|&sample| sample != 0));
     }
 
     #[test]

@@ -125,12 +125,11 @@ documented per title in [Game Compatibility](Game-Compatibility.md).
 
 ## Audio
 
-The titles' background music is standard MIDI (PsmPlayer-converted tunes
-embedded in the packages or their resource containers). The guest hands a
-tune to the platform through the music slot and the emulator renders it
-into a 44.1 kHz stereo stream; playback needs no flags and works
-everywhere, including headless runs. If no audio device is available the
-emulator continues silently.
+Supported games pass their embedded MIDI tunes to the platform's music
+slot. The windowed emulator plays them as 44.1 kHz stereo audio and
+switches to the new tune when the game changes music. If no audio device
+is available, the emulator continues silently. Headless and screenshot
+runs skip audio output.
 
 ## Logging
 

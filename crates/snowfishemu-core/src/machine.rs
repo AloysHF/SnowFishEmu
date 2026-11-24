@@ -1284,19 +1284,13 @@ impl SnowFishMachine {
                 if mode == 0 {
                     self.audio.stop();
                 } else if len > 0 && len <= 0x10_0000 && ptr > 0x1000 {
-                    // The guest re-issues the background-music request for
-                    // the tune already playing; restarting it every time
-                    // would stutter, so identical keys are answered in
-                    // place.
                     let mut data = vec![0u8; len as usize];
-                    let same_key = self.audio.current_key() == Some((ptr, len));
-                    if self.mem.read(ptr, &mut data).is_ok() && !(same_key && self.audio.playing())
-                    {
+                    if self.mem.read(ptr, &mut data).is_ok() {
                         match self.audio.play_midi(&data, arg == 1) {
-                            Ok(()) => {
-                                self.audio.set_current_key(Some((ptr, len)));
+                            Ok(true) => {
                                 info!("[plat] +0x38 audio play: {len} bytes, loop={}", arg == 1);
                             }
+                            Ok(false) => {}
                             Err(e) => debug!("[plat] +0x38 audio rejected: {e}"),
                         }
                     }
@@ -2493,12 +2487,7 @@ impl SnowFishMachine {
         Ok(())
     }
 
-    /// Advances one frame: pump queued events, deliver the frame tick
-    /// (selector 10, the host paces at ~20 fps), then deliver the guest's
-    /// registered timer callback (the platform's +0x500 service is a
-    /// passthrough on the wire, but a real device fires the callback on the
-    /// frame cadence), and count the frame.
-    /// Pulls up to `max_frames` stereo samples from the music engine.
+    /// Pulls up to `max_frames` stereo frames from the music engine.
     ///
     /// The frontends call this once per presented frame at the pacing rate;
     /// an empty result means no tune is playing (silence).
@@ -2506,6 +2495,16 @@ impl SnowFishMachine {
         self.audio.pull_samples(max_frames)
     }
 
+    /// Changes when the frontend should discard previously queued music.
+    pub fn audio_revision(&self) -> u64 {
+        self.audio.revision()
+    }
+
+    /// Advances one frame: pump queued events, deliver the frame tick
+    /// (selector 10, the host paces at ~20 fps), then deliver the guest's
+    /// registered timer callback (the platform's +0x500 service is a
+    /// passthrough on the wire, but a real device fires the callback on the
+    /// frame cadence), and count the frame.
     pub fn run_frame(&mut self, budget: u64) -> Result<(), MachineError> {
         // Debug seeding: SF_SEED="addr=value;addr=value" (hex) writes guest
         // words once after boot, before the first frame tick. Lets runtime
@@ -4007,18 +4006,27 @@ mod tests {
 
         // A repeated play call for the same tune does not restart it: the
         // queue keeps draining from where it was.
-        let first = m.take_audio_samples(1102);
+        let mut reference = crate::audio::AudioEngine::default();
+        reference.play_midi(&midi, true).unwrap();
+        assert_eq!(samples, reference.pull_samples(2205));
+        let revision = m.audio_revision();
         m.cpu.reg_set(0, ptr);
         m.cpu.reg_set(1, midi.len() as u32);
         m.cpu.reg_set(2, 1);
         m.cpu.reg_set(3, 1);
         m.exec_slot(0x38, 0x10_1004).unwrap();
-        let second = m.take_audio_samples(1103);
-        assert_eq!(
-            first.len() + second.len(),
-            2205 * 2,
-            "the repeated play call must not restart the tune"
-        );
+        assert_eq!(m.audio_revision(), revision);
+        assert!(m.take_audio_samples(2205) == reference.pull_samples(2205));
+
+        // A different tune can occupy the same guest buffer.
+        midi[24] = 69;
+        midi[28] = 69;
+        m.mem.write(ptr, &midi).unwrap();
+        m.cpu.reg_set(0, ptr);
+        m.exec_slot(0x38, 0x10_1004).unwrap();
+        assert_ne!(m.audio_revision(), revision);
+        reference.play_midi(&midi, true).unwrap();
+        assert!(m.take_audio_samples(2205) == reference.pull_samples(2205));
 
         // mode 0 stops the tune and the next drain is silent.
         m.cpu.reg_set(0, ptr);

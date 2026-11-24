@@ -159,16 +159,16 @@ fn main() -> Result<()> {
 
     // Frame pacing ~20 fps like the platform tick.
     let frame_ms = 50u64;
-    let audio_output = StandaloneAudio::try_new();
+    let mut audio_output = StandaloneAudio::try_new();
     let mut frame_start = std::time::Instant::now();
     while window.is_open() && !window.is_key_down(minifb::Key::Escape) {
         pump_keys(&mut window, &mut machine)?;
 
         machine.run_frame(args.instruction_limit)?;
-        if let Some(audio) = &audio_output {
-            // A 50 ms frame is a fifth of a second: drain a fifth of the
-            // output rate in stereo frames.
-            audio.push(machine.take_audio_samples(AUDIO_SAMPLE_RATE as usize / 20));
+        if let Some(audio) = &mut audio_output {
+            let revision = machine.audio_revision();
+            let samples = machine.take_audio_samples(AUDIO_SAMPLE_RATE as usize / 20);
+            audio.push(revision, samples);
         }
         let frame = machine.take_dirty().then(|| machine.frame_pixels());
         present_frame(frame.as_deref(), &mut pixels, scale, |pixels| {
@@ -350,7 +350,7 @@ fn pump_keys(window: &mut minifb::Window, machine: &mut SnowFishMachine) -> Resu
     Ok(())
 }
 
-/// Stereo frames the ring buffer keeps ahead of the device (2 seconds).
+/// Interleaved samples the ring buffer keeps ahead of the device (2 seconds).
 const MAX_RING_SAMPLES: usize = AUDIO_SAMPLE_RATE as usize * 2 * 2;
 
 /// Ring-buffered stereo audio output backed by rodio. The window loop
@@ -361,6 +361,7 @@ struct StandaloneAudio {
     _sink: rodio::MixerDeviceSink,
     _player: rodio::Player,
     ring: Arc<Mutex<VecDeque<f32>>>,
+    revision: u64,
 }
 
 impl StandaloneAudio {
@@ -374,14 +375,16 @@ impl StandaloneAudio {
             _sink: sink,
             _player: player,
             ring,
+            revision: 0,
         })
     }
 
-    fn push(&self, samples: Vec<i16>) {
-        if samples.is_empty() {
-            return;
-        }
+    fn push(&mut self, revision: u64, samples: Vec<i16>) {
         let mut ring = self.ring.lock().unwrap();
+        if self.revision != revision {
+            ring.clear();
+            self.revision = revision;
+        }
         ring.extend(samples.into_iter().map(|sample| sample as f32 / 32768.0));
         let overflow = ring.len().saturating_sub(MAX_RING_SAMPLES);
         if overflow > 0 {
