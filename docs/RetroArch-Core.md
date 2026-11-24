@@ -71,6 +71,7 @@ reachable from a keyboard with the same layout the standalone frontend uses:
 | Confirm | Enter (digit 6 drives the same guest index) |
 | Left soft key | `Z` |
 | Right soft key | `X` |
+| Menu | `M` |
 
 **Enable Game Focus first** (default: Scroll Lock). RetroArch binds the
 keyboard to its own hotkeys and RetroPad by default, which captures keys
@@ -83,8 +84,8 @@ hold a key at any time.
 
 ## RetroPad Button Mapping
 
-The guest keys are the phone keypad: directions, OK (confirm), the two soft
-keys, and the numeric layer.
+The guest keys include directions, OK (confirm), the two soft keys, Menu,
+and the numeric layer.
 
 | RetroPad Button | Guest key | Action |
 |---|---|---|
@@ -92,6 +93,7 @@ keys, and the numeric layer.
 | A (SNES East) / B (SNES South) / Start | OK | Confirm |
 | X (SNES North) / L (left shoulder) | Left soft key | Left soft key |
 | Y (SNES West) / R (right shoulder) | Right soft key | Right soft key |
+| L2 | Menu | Opens the pause menu in 新鬼吹灯 |
 | Select + D-Pad Up / Down / Left / Right | 1 / 2 / 3 / 4 | Number layer (Select held) |
 | Select + A / B / X / Y | 5 / 6 / 7 / 8 | Number layer (Select held) |
 | Select + Start | 9 | Number layer (Select held) |

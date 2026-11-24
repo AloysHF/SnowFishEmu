@@ -23,7 +23,7 @@ crates/
 │       ├── lz.rs             # Bit-exact LZ stream decompressor port
 │       ├── font.rs           # Embedded Unicode bitmap font rasterizer
 │       ├── save.rs           # SFEMSTAT save-state envelope and codec
-│       └── compat.rs         # Content-fingerprint-keyed offline fixes
+│       └── sdk.rs            # Guest SDK service adapters
 ├── snowfishemu/              # Standalone binary (→ snowfishemu)
 ├── snowfishemu-tools/        # sfa_info package inspector, sfa_headless harness
 └── snowfishemu-libretro/     # Libretro core (→ snowfishemu_libretro.{dll,so,dylib})
@@ -35,14 +35,14 @@ crates/
    header length, code/BSS sizes) and applies the relocation table: each
    word at `CODE_BASE + offset` gains the image base `0x101000`.
 2. `SnowFishMachine::load` maps the guest regions (see below), plants the
-   loader words around the image, scans the image for wrapper stublets, and
-   detects the content fingerprint (see [Compatibility fixes](#compatibility-fixes)).
+   loader words around the image, and scans the relocated image for
+   platform wrappers and SDK service entry points.
 3. The guest entry runs with `R0 = 0`, `R1 = app_addr + 0x1C`, `R2 = -1`
    (init selector), `SP = 0x400000`, `LR = 0x541000`. After init the guest
    writes its dispatch-block pointer to `app_addr + 0x1C`.
 4. The boot sequence then posts selector 1 (start), selector 2
    (app activate — titles complete their boot state there), and selector 3
-   (first tick). Event calls enter through the dispatch block: `PC =
+   (app resume). Event calls enter through the dispatch block: `PC =
    *(block)`, `R0 = block`.
 5. Per-frame ticks use selector 10 (~50 ms pacing); key input uses selectors
    6 (press) / 5 (release) with MTK key codes (`KEY_MAP` in `machine.rs`).
@@ -90,7 +90,7 @@ of `+0x524`, and the socket/bearer slots the SDK's HTTP transactions use
 [Game File Formats](Game-File-Formats.md#root-api-table-slots) for the
 authoritative slot table and the per-slot semantics.
 
-The offline services are opt-in per run:
+The offline services are enabled by default.
 
 - `--free-play` (`SF_FREE_PLAY=1`) answers the purchase service as a
   registered handset and backs the `__sfssuid`/`ssu<id>` account record with
@@ -98,8 +98,21 @@ The offline services are opt-in per run:
 - `--offline-http` (`SF_OFFLINE_HTTP=1`) answers the SDK's carrier-facing
   HTTP transactions locally with a payload-free `200 OK`, runs the SDK's own
   result parser, and notifies its registered completion callback.
-- The per-frame app-activate pump (selector 3) is on by default;
-  `SF_NO_APP_PUMP=1` disables it for diagnostics.
+- When both services are enabled, SDK registration routines recognized at
+  load supply the state addresses for local checks and tariff requests.
+  Checks and tariff requests complete locally with success through the
+  registered callback. The boot capability query stays enabled.
+- The older SDK starts its own timer after boot resume and consumes key
+  presses at the timer poll. One press is dispatched per poll so short
+  taps reach the game before their releases. Other SDKs still receive
+  the per-frame resume event.
+
+The frontends send separate device codes for D-pad directions and
+number keys. Headless replay aliases map to the same direction codes.
+
+The platform implements the guest's random and seed calls. The stream is
+deterministic for the same seed and call sequence, and its state is part
+of the platform memory captured in save states.
 
 Unknown slots are not silently ignored: unimplemented slots the corpus
 exercises are recorded, and `SF_TRACE` logs every platform slot and GDI
@@ -109,17 +122,34 @@ operation for compatibility work.
 
 The guest owns a 240x320 RGB565 surface at `0x540720`, managed by the GDI
 bridge (`gdi.rs`). The GDI slots the corpus drives are served natively:
-fills and long-form fill variants, the canvas pen/colour state
+rectangular fills, clipped one-pixel lines (`+0x130`) and outlines (`+0x140`),
+the canvas pen/colour state
 (`+0x180` set-color, `+0x184` clear), text runs in UTF-16 (`+0x154`, the
 `+0x14C` character-range sibling), bitmap register/draw with palette and
-color-key semantics (`+0x194`/`+0x198`/`+0x134`), dirty-rectangle commits
+color-key semantics (`+0x194`/`+0x198`/`+0x134`), canvas clipping
 (`+0x12C`), and flush (`+0x010`). Text rasterizes from an embedded Unicode
-bitmap font (`unifont`), so the core does not depend on host fonts.
+bitmap font (`unifont`), so the core does not depend on host fonts. The font
+height query (`+0x014`) returns the 16-pixel height of the embedded font,
+including for the default font. The glyph-width query (`+0x018`) uses
+the renderer's cell widths and the string-width query (`+0x01C`) sums
+them up to the requested length. The SDK's default-font width wrapper
+uses those same metrics, so its own text anchors can position labels.
+The renderer allocates full-width cells for CJK punctuation and the
+horizontal ellipsis.
+胭脂戏游龙 uses the metrics to split the opening story into lines and
+size its in-game notice panels.
 
 Bitmap descriptors carry width, height, color key, palette pointer/mode and
 a data pointer with a fallback read; palette mode is detected from whether
-the palette word is a pointer. Colors reach the framebuffer in RGB565; the
-canvas keeps the guest's RGB888 pen.
+the palette word is a pointer. The draw slot (`+0x198`) anchors the
+requested source rectangle at the destination using its size and the
+anchor flags. Colors reach the framebuffer in RGB565, and the canvas
+keeps the guest's RGB888 pen.
+
+The clip bounds subsequent fills, lines, text and bitmap draws. Guests can
+position an entire sprite atlas behind a small clip to render one tile. The
+emulator stores the clip in platform scratch memory so it persists across
+save states.
 
 ## LZ decompressor
 
@@ -127,26 +157,9 @@ The `+0x108` service is an exact port of the platform's `lz_decompress`
 state machine (`lz.rs`): two dispatch states, four match-distance bands,
 the trailing-literal rules, and the terminator conditions. It is validated
 bit-exactly against the platform's recorded call sites, so every block the
-guest decompresses produces the reference output length.
-
-## Compatibility fixes
-
-A small set of offline fixes is keyed by the package's content fingerprint
-(FNV-1a over the container bytes), applied to guest memory after load:
-
-- **Gold Miner** (黄金矿工): the title screen's right-soft-key/OK press and
-  the options-menu Start Game action both reach the native level
-  initialization without the legacy carrier check.
-- **Universe Storm** (宇宙风暴): two malformed bitmap headers are repaired as
-  their blocks decompress, and the embedded music/bitmap archives are
-  decoded from the original package bytes (their image carries no relocation
-  entries and SDK state writes can overlap their guest addresses).
-
-The patches are reapplied when a snapshot is restored, so a pre-fix state
-keeps the new behavior. The on-disk package and snapshot formats are
-unchanged. Fixes are never applied by package name — the fingerprint must
-match — and every fix ships with a local-package regression test that fails
-with the original guest code restored.
+guest decompresses produces the reference output length. If an embedded
+stream in guest memory cannot be decoded, the LZ service can retry with
+the corresponding original bytes when the range has no relocations.
 
 ## Save states
 

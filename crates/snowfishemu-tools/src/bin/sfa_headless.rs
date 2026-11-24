@@ -7,19 +7,19 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use snowfishemu_core::SnowFishMachine;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Default per-callback instruction budget, shared with the standalone
+/// frontend's `--instruction-limit`.
+const DEFAULT_INSTRUCTION_LIMIT: u64 = 200_000_000;
 
 #[derive(Parser)]
 struct Args {
     /// Path to a `.app` package.
     path: PathBuf,
-    /// Sibling resource container(s) whose packs back `res`/`.pak` paths.
-    /// Repeat the option to serve more than one container.
-    #[arg(long)]
-    res: Vec<PathBuf>,
-    /// Instruction budget per guest call.
-    #[arg(long, default_value = "200000000")]
-    budget: u64,
+    /// Maximum guest instructions per callback.
+    #[arg(long, default_value_t = DEFAULT_INSTRUCTION_LIMIT)]
+    instruction_limit: u64,
     /// Number of frames to pump after boot.
     #[arg(long, default_value = "5")]
     frames: u32,
@@ -41,14 +41,15 @@ struct Args {
     /// hex len). Repeatable, e.g. `--dump-mem 60d5ec:400:heap.bin`.
     #[arg(long = "dump-mem")]
     dump_mem: Vec<String>,
-    /// Answer the purchase service as a registered, billing-capable handset
-    /// so trial titles reach their own play state (same as `SF_FREE_PLAY=1`).
+    /// Turn the registered-handset purchase answers off for diagnostics
+    /// (they are on by default; `SF_FREE_PLAY=0` is the environment
+    /// opt-out).
     #[arg(long)]
-    free_play: bool,
-    /// Answer the SDK's carrier-facing HTTP request locally instead of
-    /// leaving the transaction pending (same as `SF_OFFLINE_HTTP=1`).
+    no_free_play: bool,
+    /// Turn the local HTTP responder off for diagnostics (it is on by
+    /// default; `SF_OFFLINE_HTTP=0` is the environment opt-out).
     #[arg(long)]
-    offline_http: bool,
+    no_offline_http: bool,
     /// Side-load a local file to answer download requests whose path contains
     /// the `--serve-match` substring (default `.pak`). Same as `SF_SERVE_ASSET`.
     /// The bytes are a real local artifact, not fabricated server data.
@@ -68,16 +69,15 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let container =
         std::fs::read(&args.path).with_context(|| format!("read {}", args.path.display()))?;
-    let mut res = Vec::new();
-    for path in &args.res {
-        res.push(std::fs::read(path).with_context(|| format!("read {}", path.display()))?);
-    }
+    let res = discover_res_containers(&args.path)?;
     let mut m = SnowFishMachine::load(container, &res)?;
-    if args.free_play {
-        m.set_free_play(true);
+    // Both provisioning switches are on by default; `--no-free-play` /
+    // `--no-offline-http` turn one off for diagnostics.
+    if args.no_free_play {
+        m.set_free_play(false);
     }
-    if args.offline_http {
-        m.set_offline_http(true);
+    if args.no_offline_http {
+        m.set_offline_http(false);
     }
     if let Some(path) = &args.serve_asset {
         let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
@@ -90,7 +90,7 @@ fn main() -> Result<()> {
     for (name, len) in m.resource_packs() {
         eprintln!("resource pack: {name} ({len} bytes)");
     }
-    m.boot(args.budget)?;
+    m.boot(args.instruction_limit)?;
     // An explicit `--press frame:key` schedule takes over the frame loop;
     // the bring-up replay below is only a convenience for idle runs.
     let mut script: Vec<(u32, u8)> = Vec::new();
@@ -135,9 +135,9 @@ fn main() -> Result<()> {
             let key = script[next].1;
             next += 1;
             m.set_key(key, true)?;
-            m.run_frame(args.budget)?;
+            m.run_frame(args.instruction_limit)?;
             m.set_key(key, false)?;
-            m.run_frame(args.budget)?;
+            m.run_frame(args.instruction_limit)?;
             eprintln!("frame {i} press={key} state={:?}", m.state());
             dump_frame(&m, i);
             i += 2;
@@ -148,23 +148,23 @@ fn main() -> Result<()> {
             // 10 frames afterwards (menus advance on OK/5).
             if i == 5 {
                 m.set_key(lsk, true)?;
-                m.run_frame(args.budget)?;
+                m.run_frame(args.instruction_limit)?;
                 m.set_key(lsk, false)?;
-                m.run_frame(args.budget)?;
+                m.run_frame(args.instruction_limit)?;
                 m.set_key(ok, true)?;
-                m.run_frame(args.budget)?;
+                m.run_frame(args.instruction_limit)?;
                 m.set_key(ok, false)?;
-                m.run_frame(args.budget)?;
+                m.run_frame(args.instruction_limit)?;
                 i += 4;
                 continue;
             }
             if i > 6 && (i - 6).is_multiple_of(10) {
                 m.set_key(ok, true)?;
-                m.run_frame(args.budget)?;
+                m.run_frame(args.instruction_limit)?;
                 m.set_key(ok, false)?;
             }
         }
-        m.run_frame(args.budget)?;
+        m.run_frame(args.instruction_limit)?;
         eprintln!("frame {i} state={:?}", m.state());
         dump_frame(&m, i);
         i += 1;
@@ -172,9 +172,9 @@ fn main() -> Result<()> {
     let mut key_frame = total;
     for k in &args.keys {
         m.set_key(*k, true)?;
-        m.run_frame(args.budget)?;
+        m.run_frame(args.instruction_limit)?;
         m.set_key(*k, false)?;
-        m.run_frame(args.budget)?;
+        m.run_frame(args.instruction_limit)?;
         if let Some(dir) = &args.dump_fb {
             let px = m.frame_pixels();
             let mut out = Vec::new();
@@ -228,4 +228,32 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Reads the sibling resource containers the shared discovery rule names
+/// (`snowfishemu_core::res`, the same lookup the libretro core performs).
+fn discover_res_containers(content_path: &Path) -> Result<Vec<Vec<u8>>> {
+    let Some(dir) = content_path.parent() else {
+        return Ok(Vec::new());
+    };
+    let entries: Vec<String> = std::fs::read_dir(dir)
+        .with_context(|| format!("read directory {}", dir.display()))?
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    let stem = content_path.file_stem().and_then(|s| s.to_str());
+    let content_name = content_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let candidates = snowfishemu_core::res::sibling_res_candidates(stem, content_name, entries);
+    let mut containers = Vec::new();
+    for name in &candidates {
+        let path = dir.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        containers.push(std::fs::read(&path).with_context(|| format!("read {}", path.display()))?);
+    }
+    Ok(containers)
 }

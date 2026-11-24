@@ -15,11 +15,12 @@ use std::path::{Path, PathBuf};
 /// logical indices (see core::machine::KEY_MAP for index → code).
 mod keys {
     /// Logical key indices into the core's KEY_MAP.
-    pub const UP: u8 = 2;
-    pub const DOWN: u8 = 8;
-    pub const LEFT: u8 = 4;
-    pub const RIGHT: u8 = 6;
+    pub const UP: u8 = 13;
+    pub const DOWN: u8 = 14;
+    pub const LEFT: u8 = 15;
+    pub const RIGHT: u8 = 16;
     pub const SOFT_L: u8 = 10;
+    pub const MENU: u8 = 11;
     pub const SOFT_R: u8 = 25;
     pub const OK: u8 = 5;
 }
@@ -32,18 +33,15 @@ const DEFAULT_INSTRUCTION_LIMIT: u64 = 200_000_000;
 struct Args {
     /// Path to a `.app` package.
     path: PathBuf,
-    /// Sibling resource container(s) whose packs back `res`/`.pak` paths.
-    /// Repeat the option to serve more than one container.
+    /// Turn the registered-handset purchase answers off for diagnostics
+    /// (they are on by default; `SF_FREE_PLAY=0` is the environment
+    /// opt-out).
     #[arg(long)]
-    res: Vec<PathBuf>,
-    /// Answer the purchase service as a registered handset (the same
-    /// switch as sfa_headless `--free-play` / `SF_FREE_PLAY=1`).
+    no_free_play: bool,
+    /// Turn the local HTTP responder off for diagnostics (it is on by
+    /// default; `SF_OFFLINE_HTTP=0` is the environment opt-out).
     #[arg(long)]
-    free_play: bool,
-    /// Answer the SDK's HTTP transactions locally (the same switch as
-    /// sfa_headless `--offline-http` / `SF_OFFLINE_HTTP=1`).
-    #[arg(long)]
-    offline_http: bool,
+    no_offline_http: bool,
     /// Run without opening a window.
     #[arg(long)]
     headless: bool,
@@ -110,19 +108,16 @@ fn main() -> Result<()> {
     let presses = parse_presses(&args.press)?;
     let container =
         std::fs::read(&args.path).with_context(|| format!("read {}", args.path.display()))?;
-    let mut res = Vec::new();
-    for path in &args.res {
-        res.push(std::fs::read(path).with_context(|| format!("read {}", path.display()))?);
-    }
+    let res = discover_res_containers(&args.path)?;
     let mut machine = SnowFishMachine::load(container, &res)?;
-    // The flags only ever turn the switches ON: `SF_FREE_PLAY` /
-    // `SF_OFFLINE_HTTP` are honoured by the core at load, and a flag adds
-    // the switch on top rather than overriding an env var back off.
-    if args.free_play {
-        machine.set_free_play(true);
+    // Both provisioning switches are on by default (the core installs the
+    // registered-handset answers and the HTTP responder at load);
+    // `--no-free-play` / `--no-offline-http` turn one off for diagnostics.
+    if args.no_free_play {
+        machine.set_free_play(false);
     }
-    if args.offline_http {
-        machine.set_offline_http(true);
+    if args.no_offline_http {
+        machine.set_offline_http(false);
     }
     machine.boot(args.instruction_limit)?;
 
@@ -182,6 +177,44 @@ fn main() -> Result<()> {
 
 /// Pump `frames` guest frames, firing the scripted presses at their
 /// scheduled frames (each press consumes two frames: down, then up).
+/// Reads the sibling resource containers the shared discovery rule names.
+///
+/// The rule lives in `snowfishemu_core::res` and matches the libretro
+/// core's lookup: an exact `<stem>.pak`/`<stem>.res` sibling wins, else
+/// every sibling whose name mentions `.pak` or `res` is served. Non-`.app`
+/// files the fuzzy scan picks up are rejected by the package parser when
+/// the machine loads them.
+fn discover_res_containers(content_path: &Path) -> Result<Vec<Vec<u8>>> {
+    let Some(dir) = content_path.parent() else {
+        return Ok(Vec::new());
+    };
+    let entries: Vec<String> = std::fs::read_dir(dir)
+        .with_context(|| format!("read directory {}", dir.display()))?
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    let stem = content_path.file_stem().and_then(|s| s.to_str());
+    let content_name = content_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let candidates = snowfishemu_core::res::sibling_res_candidates(stem, content_name, entries);
+    let mut served = Vec::new();
+    let mut containers = Vec::new();
+    for name in &candidates {
+        let path = dir.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        containers.push(std::fs::read(&path).with_context(|| format!("read {}", path.display()))?);
+        served.push(name.as_str());
+    }
+    if !served.is_empty() {
+        info!("serving sibling resource containers: {}", served.join(", "));
+    }
+    Ok(containers)
+}
+
 fn run_scripted_frames(
     machine: &mut SnowFishMachine,
     presses: &[Press],
@@ -286,6 +319,7 @@ fn pump_keys(window: &mut minifb::Window, machine: &mut SnowFishMachine) -> Resu
         (minifb::Key::Enter, keys::OK),
         (minifb::Key::Z, keys::SOFT_L),
         (minifb::Key::X, keys::SOFT_R),
+        (minifb::Key::M, keys::MENU),
         (minifb::Key::Key1, 0),
         (minifb::Key::Key2, 1),
         (minifb::Key::Key3, 2),
@@ -301,7 +335,7 @@ fn pump_keys(window: &mut minifb::Window, machine: &mut SnowFishMachine) -> Resu
         let down = window.is_key_down(*key);
         let was = KEY_STATE.with(|s| s.borrow().get(key).copied().unwrap_or(false));
         if down != was {
-            machine.set_key(*index, down)?;
+            machine.set_phone_key(*index, down)?;
             KEY_STATE.with(|s| s.borrow_mut().insert(*key, down));
         }
     }

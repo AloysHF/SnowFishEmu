@@ -94,6 +94,9 @@ executes through the root-table stubs unchanged.
 | Slot | Service |
 |---|---|
 | `+0x010` | GDI flush |
+| `+0x014` | Embedded font height in pixels, including the default font |
+| `+0x018` | Glyph width in pixels for the UTF-16 code unit in r0 |
+| `+0x01C` | String width in pixels from the UTF-16 buffer in r0 up to the count in r1 |
 | `+0x058` | File open (UTF-16 path) |
 | `+0x05C` | File read |
 | `+0x064` | File seek |
@@ -101,17 +104,20 @@ executes through the root-table stubs unchanged.
 | `+0x07C` | Log (format string at r0) |
 | `+0x0AC` | UI timer arm(owner, period ms, callback) |
 | `+0x108` | LZ decompression |
-| `+0x12C` | GDI update(obj, x, y, w, h) — commit a rectangle |
-| `+0x130` / `+0x140` | Long-form fill variants (dialog chrome rows) |
+| `+0x12C` | GDI set_clip(obj, x, y, w, h) |
+| `+0x130` | GDI line(obj, x0, y0, x1, y1) with the canvas pen |
 | `+0x134` | GDI blit(obj, bmp, x, y, flags) — bitmap at its own size |
+| `+0x140` | GDI rectangle outline(obj, x, y, w, h) with the canvas pen |
 | `+0x14C` | GDI text run(obj, u16 string, first, count, x, y, flags) |
-| `+0x154` | GDI text(obj, u16 string, x, y, font) |
+| `+0x154` | GDI text(obj, u16 string, x, y, font), using the canvas RGB888 pen |
 | `+0x15C` | GDI fill(obj, x, y, w, h) with the canvas pen |
 | `+0x180` | GDI set-color(obj, rgb888) |
 | `+0x184` | GDI clear / pen color |
 | `+0x194` | GDI bitmap register |
-| `+0x198` | GDI draw(obj, bmp, sx, sy, w, h, _, dx, dy, _) |
+| `+0x198` | GDI draw(obj, bmp, sx, sy, w, h, transform, dx, dy, anchor). Anchor bits 1 and 2 center horizontally and vertically, and bits 8 and 32 align to the right and bottom edges. |
 | `+0x4C` | Carrier-billing capability query (1 = phone can bill) |
+| `+0x4E8` | Advance the platform PRNG and return a 15-bit nonnegative integer |
+| `+0x4EC` | Seed the platform PRNG with a 32-bit value in r0 |
 | `+0x500` | Timer start (id, callback, context) |
 | `+0x524` | Service lookup (see below) |
 | `+0x0C8` | Socket select(host, event record, handler, object) |
@@ -138,18 +144,22 @@ at that origin with the canvas pen; dropping the slot leaves the dialog
 frame painted and the body blank, which is what every notice looked like
 before it was served.
 
-`+0x12C` takes five arguments; the word that follows the height is *not*
-a colour. Titles leave stale caller data there (code pointers, string
-pointers, the residue of an earlier call), so the slot is served as a
-dirty-rectangle commit: the guest has already drawn into the surface and
-is asking the platform to push that rectangle to the display.
+`+0x12C` sets the destination clip for subsequent drawing. The rectangle
+uses a top-left origin and dimensions, intersected with the framebuffer.
+Set it to `(0, 0, 240, 320)` to restore the full screen. A guest can draw an
+individual tile by clipping to its destination and offsetting the atlas
+so the selected tile lines up with the clip.
 
 `+0x4C` is the purchase service's first question: *can this handset bill
 over the carrier channel?* The SDK asks once at boot and every title
 gates its own state machine on the answer. A zero makes
 `SFPaySvc_CheckSms` return before it looks anything up and leaves most of
 the corpus parked on its pay page, so the platform answers 1 — it is a
-phone with a SIM.
+phone with a SIM. With both offline services enabled, a recognized SDK
+tariff registration uses its channel-unavailable branch to avoid a carrier
+request. The frame loop closes the SDK dialog and calls the registered
+callback with result `0` (success). The game then runs its original
+success handler.
 
 `+0x524` is the generic service lookup and takes two shapes:
 
@@ -257,7 +267,7 @@ arrives, which is what historically parked titles on their wait screen.
 
 ### Offline HTTP responder and the app-activate pump
 
-Two optional platform facilities close that loop:
+Two platform facilities close that loop:
 
 - The **offline HTTP responder** (`SF_OFFLINE_HTTP=1`,
   `sfa_headless --offline-http`, `set_offline_http(true)`) hooks only the
@@ -269,18 +279,19 @@ Two optional platform facilities close that loop:
   descriptor done and re-enters the SDK's completion callback, which runs
   its own result parser (`SFPaySvc_OnHttpReault`). An SDK session issues
   more than one request and reuses the same descriptor address, so each
-  fresh registration starts a new transaction. The responder is disabled by
-  default and never synthesises server-side tariff data.
+  fresh registration starts a new transaction. The responder is enabled by
+  default. The request release slot (`+0x56C`) leaves the package image intact.
 - The **app-activate pump** posts selector 3 (`EVT_APP_RESUME`) every
-  frame. That selector re-arms the guest's 120 ms UI timer, refreshes its
-  date/time record and drives the screen state machine; without it some
-  titles stay on their loading screen even after the purchase flow has
-  completed. It is on by default and can be turned off with
-  `SF_NO_APP_PUMP=1`, `--no-app-pump` or `set_app_pump(false)`.
+  frame for SDK builds that use it to drive repaints and refresh state.
+  The supported 新鬼吹灯 build uses selector 3 at boot, then advances
+  from its timer callbacks. `SF_NO_APP_PUMP=1`, `--no-app-pump` and
+  `set_app_pump(false)` disable repeated resume events for diagnostics.
 
 `+0x134` and `+0x198` consume the same bitmap descriptor. `+0x198` takes
 the source origin `(sx, sy)` in r2/r3 and the crop dimensions `(w, h)`
-on the stack. `+0x134` draws the bitmap at its own size.
+on the stack. Its transform values 1, 2 and 3 mirror the selected region
+horizontally, vertically and along both axes, respectively. `+0x134`
+uses the entire source bitmap. Both calls honor the destination clip.
 
 `+0x0AC` returns a handle and arms a repeating callback. The callback is
 a trampoline that treats r0 as the SDK's delayed-message record
@@ -301,9 +312,9 @@ Draw calls take a descriptor at r1:
 | 0x10 | 4 | Pixel data pointer (fallback: `*(desc+0x14)`) |
 
 Palette mode stores one byte per pixel indexing a 256-entry RGB565
-palette. Direct mode stores RGB565 words. Universe Storm's palette
-descriptors use index 0 as a valid color key and `0x7fffffff` for an
-opaque bitmap.
+palette. Palette keys in the range 0–255 select the transparent index,
+including index 0. An out-of-range key such as `0x7fffffff` makes the bitmap
+opaque. Direct mode stores RGB565 words.
 
 ## LZ stream format
 
@@ -334,7 +345,7 @@ advancing `ip`):
 | A2 | `F b0 b1` | `(F&0x1F)` (0 → chain, then `b+0x1F`) + 2 | `(b0>>2) + (b1<<6) + 1` | `b0 & 3` |
 | X | `F ob` | `((F>>5)-1) + 2` | `((F&0x1C)>>2) + (ob<<3) + 1` | `F & 3` |
 | MidA | `F ob` | 2 | `(F>>2) + (ob<<2) + 1` | `F & 3` |
-| MidB | `F ob` | 3 | `(F>>2) + (ob<<2) + 1 + 0x801` | `F & 3` |
+| MidB | `F ob` | 3 | `(F>>2) + (ob<<2) + 0x801` | `F & 3` |
 
 After each match the trailing literal count is re-read from `src[p-2]`
 (the class's first offset byte, or the token byte itself for the

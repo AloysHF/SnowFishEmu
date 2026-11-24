@@ -26,6 +26,7 @@ pub const RETRO_DEVICE_ID_JOYPAD_A: u32 = 8;
 pub const RETRO_DEVICE_ID_JOYPAD_X: u32 = 9;
 pub const RETRO_DEVICE_ID_JOYPAD_L: u32 = 10;
 pub const RETRO_DEVICE_ID_JOYPAD_R: u32 = 11;
+pub const RETRO_DEVICE_ID_JOYPAD_L2: u32 = 12;
 
 /// Keyboard keysyms used by RETRO_DEVICE_KEYBOARD (SDL 1.2-compatible).
 pub const RETROK_RETURN: u32 = 13;
@@ -39,6 +40,7 @@ pub const RETROK_6: u32 = 54;
 pub const RETROK_7: u32 = 55;
 pub const RETROK_8: u32 = 56;
 pub const RETROK_9: u32 = 57;
+pub const RETROK_m: u32 = 109;
 pub const RETROK_x: u32 = 120;
 pub const RETROK_z: u32 = 122;
 pub const RETROK_UP: u32 = 273;
@@ -83,6 +85,7 @@ mod tests {
         assert_eq!(RETROK_RETURN, 13);
         assert_eq!(RETROK_0, 48);
         assert_eq!(RETROK_9, 57);
+        assert_eq!(RETROK_m, 109);
         assert_eq!(RETROK_x, 120);
         assert_eq!(RETROK_z, 122);
         assert_eq!(RETROK_UP, 273);

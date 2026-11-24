@@ -5,7 +5,6 @@
 //! natively here and resume at the wrapper epilogue, everything else
 //! executes through the planted root-table stubs unchanged.
 
-use crate::compat::{self, Compatibility};
 use crate::consts::{
     CODE_BASE, FRAME_MS, HEAP_BASE, STACK_TOP, STOP_ADDRESS, TIMER_JOB_ADDR, TIMER_JOB_SIZE,
 };
@@ -14,6 +13,7 @@ use crate::gdi::Gdi;
 use crate::lz;
 use crate::mem::GuestMem;
 use crate::plat::{self, APP_RECORD_ADDR};
+use crate::sdk::{self, LegacyCheck, TariffCheck};
 use crate::sfa::{ResourcePack, SfaImage};
 use log::{debug, info, warn};
 use thiserror::Error;
@@ -38,7 +38,7 @@ pub enum MachineError {
 pub struct Wrapper {
     /// Root-table slot offset (imm12 of the `ldr pc` word).
     pub slot: u32,
-    /// Address of the `ldr rX,[rX,#-4]` instruction (interception point).
+    /// Interception point in the wrapper, normally the root-table load.
     pub hook: u32,
     /// Address of the epilogue (`pop {pc}` / `add sp` landing).
     pub ret: u32,
@@ -67,6 +67,21 @@ pub fn scan_wrappers(code: &[u8]) -> Vec<Wrapper> {
         let w3 = rd(w * 4 + 12);
         let w4 = rd(w * 4 + 16);
         let loader = w0 == 0xE513_3004 || w0 == 0xE51C_C004;
+        let hook = CODE_BASE + (w * 4) as u32;
+        // The glyph-width wrapper narrows r0 to UTF-16 before dispatch.
+        if w0 == 0xE513_3004
+            && w1 == 0xE1A0_0820
+            && w2 == 0xE1A0_E00F
+            && w3 == 0xE593_F018
+            && w4 == 0xE49D_F004
+        {
+            out.push(Wrapper {
+                slot: 0x18,
+                hook: hook + 8,
+                ret: hook + 16,
+            });
+            continue;
+        }
         if !loader || w1 != 0xE1A0_E00F {
             continue;
         }
@@ -81,7 +96,6 @@ pub fn scan_wrappers(code: &[u8]) -> Vec<Wrapper> {
         if !ret_pop && !ret_add_sp {
             continue;
         }
-        let hook = CODE_BASE + (w * 4) as u32;
         let ret = hook + 0xC;
         out.push(Wrapper { slot, hook, ret });
         // Some call sites jump to the stublet's prologue — a two-word
@@ -165,9 +179,6 @@ fn guest_read_string(mem: &GuestMem, ptr: u32, cap: usize) -> Result<String, Mac
 fn vfile_kind(basename: &str) -> Option<u32> {
     if basename == "__sfssuid" {
         return Some(0);
-    }
-    if basename == "ssu112" {
-        return Some(1);
     }
     if basename == "__sfnetinfo__" {
         return Some(2);
@@ -268,13 +279,15 @@ impl EventQueue {
     }
 }
 
-/// State of the optional offline HTTP responder.
+/// State of the offline HTTP responder.
 ///
 /// The shared SDK opens one socket, writes its request through +0xE4, then
 /// reads the whole response through +0xE0 before its completion callback is
 /// allowed to run. On a real handset the carrier-facing endpoint answers;
-/// here the platform can stand in for that endpoint locally. The responder
-/// is inert unless enabled.
+/// here the platform stands in for that endpoint locally. The responder is
+/// on by default and only acts when the guest actually drives the socket
+/// path, so titles that never reach the network are untouched;
+/// `SF_OFFLINE_HTTP=0` opts out.
 #[derive(Default)]
 struct HttpResponder {
     enabled: bool,
@@ -347,7 +360,9 @@ pub struct SnowFishMachine {
     pub mem: GuestMem,
     pub cpu: ArmCpu,
     code_base: u32,
-    compatibility: Compatibility,
+    legacy_check: Option<LegacyCheck>,
+    tariff_check: Option<TariffCheck>,
+    default_font_width_entry: Option<u32>,
     image_end: u32,
     wrappers: Vec<Wrapper>,
     handler: u32,
@@ -483,13 +498,13 @@ impl SnowFishMachine {
             }
         }
         let image = SfaImage::parse(&container)?;
+        let legacy_check = LegacyCheck::detect(&image);
+        let tariff_check = TariffCheck::detect(&image);
+        let default_font_width_entry = sdk::default_font_width_entry(&image);
+        let app_pump = legacy_check.is_none() && std::env::var_os("SF_NO_APP_PUMP").is_none();
         let mut mem = GuestMem::new(image.header.image_size());
         let image_size = image.header.image_size();
         mem.write(CODE_BASE, &image.code)?;
-        let compatibility = Compatibility::detect(&container);
-        if compatibility == Compatibility::GoldMiner {
-            compat::apply_gold_miner_offline_start(&mut mem)?;
-        }
         // SF_PATCH="addr:insn,addr:insn" (hex): overwrite guest code words
         // after load. Lets an experiment fix a call argument (e.g. the
         // stage value a builder call passes) without editing the binary.
@@ -547,11 +562,13 @@ impl SnowFishMachine {
                 .then_with(|| a.name.cmp(&b.name))
         });
         res_packs.dedup_by(|a, b| a.name == b.name);
-        Ok(Self {
+        let mut machine = Self {
             mem,
             cpu: ArmCpu::new(),
             code_base: CODE_BASE,
-            compatibility,
+            legacy_check,
+            tariff_check,
+            default_font_width_entry,
             image_end: CODE_BASE + image_size,
             wrappers,
             handler: 0,
@@ -572,17 +589,29 @@ impl SnowFishMachine {
             ui_timers: Vec::new(),
             ui_clock_ms: 0,
             named_files: std::collections::HashMap::new(),
-            free_play: std::env::var_os("SF_FREE_PLAY").is_some_and(|v| v != "0"),
+            // Free-play provisioning and the offline HTTP responder are on
+            // by default so every title launches the same way;
+            // SF_FREE_PLAY=0 / SF_OFFLINE_HTTP=0 are the environment
+            // opt-outs.
+            free_play: !std::env::var_os("SF_FREE_PLAY").is_some_and(|v| v == "0"),
             http: HttpResponder {
-                enabled: std::env::var_os("SF_OFFLINE_HTTP").is_some_and(|v| v != "0"),
+                enabled: !std::env::var_os("SF_OFFLINE_HTTP").is_some_and(|v| v == "0"),
                 asset: std::env::var_os("SF_SERVE_ASSET")
                     .and_then(|p| std::fs::read(p).ok())
                     .unwrap_or_default(),
                 asset_match: std::env::var("SF_SERVE_MATCH").unwrap_or_else(|_| ".pak".into()),
                 ..HttpResponder::default()
             },
-            app_pump: std::env::var_os("SF_NO_APP_PUMP").is_none(),
-        })
+            // The older SDK owns the event loop after the first resume.
+            app_pump,
+        };
+        // The registered-handset callables back the default-on answers; a
+        // later `set_free_play(false)` turns the answers off without
+        // rewriting guest memory (the +0x524 handler gates on the flag).
+        if machine.free_play {
+            machine.install_free_play_provisioning();
+        }
+        Ok(machine)
     }
 
     /// Finds the resource pack a request path asks for.
@@ -617,38 +646,45 @@ impl SnowFishMachine {
     /// (`__sfssuid`/`ssu<id>`) on every drive root. A platform that answers
     /// "no" to any of those parks the title on a registration page.
     ///
-    /// Free play answers the way a registered handset would. It does not
-    /// touch the guest's own state machine: the title still has to accept the
-    /// answers and open its own play state.
+    /// Free play is on by default (`SF_FREE_PLAY=0` opts out) and answers
+    /// the way a registered handset would. It does not touch the guest's own
+    /// state machine: the title still has to accept the answers and open its
+    /// own play state.
     pub fn set_free_play(&mut self, on: bool) {
         self.free_play = on;
-        // The identity callable gains a real body: the SDK calls it with
-        // r0 = its ICCID buffer, so the entry copies the SIM serial into
-        // the buffer and returns 0. The method-table words beyond the
-        // stublet (offsets +0x48 and up) still point at the entry.
         if on {
-            let image = crate::plat::iccid_stublet_image();
-            if image.len() <= crate::plat::SERVICE_CALLABLE_LEN as usize * 4 {
-                let _ = self.mem.write(crate::plat::SERVICE_CALLABLE_ADDR, &image);
-                for i in (image.len() / 4)..crate::plat::SERVICE_CALLABLE_LEN as usize {
-                    let _ = self.mem.write_u32(
-                        crate::plat::SERVICE_CALLABLE_ADDR + i as u32 * 4,
-                        crate::plat::SERVICE_CALLABLE_ADDR,
-                    );
-                }
+            self.install_free_play_provisioning();
+        }
+    }
+
+    /// Writes the registered-handset callables into the platform region.
+    ///
+    /// The identity callable gains a real body: the SDK calls it with
+    /// r0 = its ICCID buffer, so the entry copies the SIM serial into
+    /// the buffer and returns 0. The method-table words beyond the
+    /// stublet (offsets +0x48 and up) still point at the entry.
+    fn install_free_play_provisioning(&mut self) {
+        let image = crate::plat::iccid_stublet_image();
+        if image.len() <= crate::plat::SERVICE_CALLABLE_LEN as usize * 4 {
+            let _ = self.mem.write(crate::plat::SERVICE_CALLABLE_ADDR, &image);
+            for i in (image.len() / 4)..crate::plat::SERVICE_CALLABLE_LEN as usize {
+                let _ = self.mem.write_u32(
+                    crate::plat::SERVICE_CALLABLE_ADDR + i as u32 * 4,
+                    crate::plat::SERVICE_CALLABLE_ADDR,
+                );
             }
-            // SF_IDENTITY="field,field,..." carries the plain identity
-            // field list the SDK's record checksum gate wants. The core
-            // encodes it (XOR-0xF5 + the trailing checksum byte) and
-            // installs the record callable behind it; the +0x524 handler
-            // routes the record lookup to it. Without the record the SDK
-            // fails the checksum and parks the session on the invalid-SIM
-            // dialog.
-            if let Ok(fields) = std::env::var("SF_IDENTITY") {
-                let record = crate::plat::identity_record(&fields);
-                let image = crate::plat::identity_record_image(&record);
-                let _ = self.mem.write(crate::plat::SERVICE_CALLABLE2_ADDR, &image);
-            }
+        }
+        // SF_IDENTITY="field,field,..." carries the plain identity
+        // field list the SDK's record checksum gate wants. The core
+        // encodes it (XOR-0xF5 + the trailing checksum byte) and
+        // installs the record callable behind it; the +0x524 handler
+        // routes the record lookup to it. Without the record the SDK
+        // fails the checksum and parks the session on the invalid-SIM
+        // dialog.
+        if let Ok(fields) = std::env::var("SF_IDENTITY") {
+            let record = crate::plat::identity_record(&fields);
+            let image = crate::plat::identity_record_image(&record);
+            let _ = self.mem.write(crate::plat::SERVICE_CALLABLE2_ADDR, &image);
         }
     }
 
@@ -657,9 +693,10 @@ impl SnowFishMachine {
         self.free_play
     }
 
-    /// Enables the local HTTP responder (`SF_OFFLINE_HTTP=1`).
+    /// Turns the local HTTP responder off or back on.
     ///
-    /// The SDK's billing endpoint is long gone. With this switch the
+    /// The responder is on by default (`SF_OFFLINE_HTTP=0` opts out). The
+    /// SDK's billing endpoint is long gone; with the responder active the
     /// platform answers the socket read path itself with a payload-free
     /// `200 OK` and delivers the async completion notification the SDK
     /// registered through +0x570, so the guest's own HTTP result parser
@@ -694,10 +731,8 @@ impl SnowFishMachine {
 
     /// Enables or disables the per-frame app-activate/resume pump.
     ///
-    /// The shared SDK only advances its screen state machine (and repaints)
-    /// on selector 3. A foregrounded handset keeps that event active on the
-    /// frame cadence; disabling the pump is useful when diagnosing guests
-    /// that should not receive repeated activations.
+    /// Repeated selector 3 events drive repaints on SDK builds that rely on
+    /// them. The boot resume event is always sent.
     pub fn set_app_pump(&mut self, on: bool) {
         self.app_pump = on;
     }
@@ -753,9 +788,8 @@ impl SnowFishMachine {
             return Some(self.cpu.reg_get(armv4t_emu::reg::LR));
         }
         match w.slot {
-            0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x108 | 0x524 | 0xAC | 0xE4 => {
-                Some(w.ret)
-            }
+            0x014 | 0x018 | 0x01C | 0x48 | 0x4C | 0x7C | 0x58 | 0x5C | 0x60 | 0x64 | 0x68
+            | 0x108 | 0x4E8 | 0x4EC | 0x524 | 0xAC | 0xE4 => Some(w.ret),
             0x12C | 0x130 | 0x134 | 0x140 | 0x14C | 0x154 | 0x158 | 0x180 | 0x198 | 0x194
             | 0x184 | 0x15C | 0x010 => Some(w.ret),
             _ => None,
@@ -784,6 +818,14 @@ impl SnowFishMachine {
             } else {
                 pc & !3
             };
+            if Some(aligned) == self.default_font_width_entry && self.cpu.reg_get(0) == 0 {
+                let width = self.measure_text(self.cpu.reg_get(1), u32::MAX);
+                let lr = self.cpu.reg_get(armv4t_emu::reg::LR);
+                self.cpu.reg_set(0, width);
+                self.cpu.reg_set(armv4t_emu::reg::PC, lr);
+                executed += 1;
+                continue;
+            }
             if let Some((lo, hi)) = pc_range {
                 if aligned >= lo && aligned <= hi && traced < 300 {
                     traced += 1;
@@ -1022,45 +1064,8 @@ impl SnowFishMachine {
                 debug!("[plat] +0xEC lookup h={:#x} -> {obj:#010x}", r(0));
                 Some(obj)
             }
-            // +0x56C advances the SDK's async HTTP state machine. The SDK
-            // drives the retry timers and the completion callbacks itself;
-            // the platform's part is delivering the response body into the
-            // response cell (0x135018, UTF-16). The completion body is the
-            // one-character status code the SDK's own parser matches (its
-            // grammar lives in the guest image); the offline transaction
-            // completes with the parser's charge-complete code so the flow
-            // takes the same path a carrier acknowledgement would. The
-            // notifier is the SDK's static object (its constructor stores
-            // these two cells when the handle is missing) — planting it
-            // lets the pump's register step find the object.
-            0x56C => {
-                if self.http.enabled {
-                    let body = std::env::var("SF_HTTP_BODY").unwrap_or_else(|_| "c".to_string());
-                    let wide: Vec<u16> = body.encode_utf16().chain([0]).collect();
-                    let mut bytes = Vec::with_capacity(wide.len() * 2);
-                    for u in &wide {
-                        bytes.extend_from_slice(&u.to_le_bytes());
-                    }
-                    let _ = self.mem.write(0x135018, &bytes);
-                    // 0x12CCE0 is the SDK's own notifier record: the file
-                    // shows text there, but the loader's relocations
-                    // overwrite it with the real method table at load, so
-                    // the plant must stay the image's own static. The
-                    // synthetic TX_* wrapper is for the socket-path
-                    // deliveries, where the consumer is the result parser
-                    // (see plat::TX_*).
-                    let _ = self.mem.write_u32(0x1356E4, 0x135100);
-                    let _ = self.mem.write_u32(0x135100, 0x12CCE0);
-                    // Clear the SDK's network state cell: the POST setup
-                    // stores -2 (the give-up pending). Clearing it to 0
-                    // lets the pay service init run (the init gates on the
-                    // state being 0 to initialise the callback registry),
-                    // which the pump's register step needs.
-                    let _ = self.mem.write_u32(0x130C9C, 0);
-                    debug!("[plat] +0x56C r0={:#010x} -> response delivered", r(0));
-                }
-                Some(0)
-            }
+            // Releasing an async request must not write into the guest image.
+            0x56C => Some(0),
             // +0x570 receives a three-word async request descriptor:
             // [status (-1 pending), callback, context]. A real platform's
             // network thread writes the status and calls the callback once
@@ -1115,13 +1120,10 @@ impl SnowFishMachine {
                 // * `service(type, id, *out)` with a small numeric type —
                 //   the guests then call `(*out)->vtable[0x3C]` without
                 //   checking the result, so an unwritten out-pointer becomes
-                //   a jump to 0 (mota's boot). Hand back the synthetic
-                //   object so the call is answered.
-                // * A caller passing register garbage as the type (sanguo
-                //   reaches this slot with hashed leftovers) walks whatever
-                //   lands in `*out` as a long table, so the object is worse
-                //   than nothing there. Keep the historical behaviour —
-                //   record the out-pointer and report success.
+                //   a jump to 0. Hand back the platform service object.
+                // * The other lookup form treats the result as a method
+                //   table or a callable entry, so it needs a different
+                //   return value and object layout.
                 //
                 // The SIM lookup takes a third shape: the type/id pair is
                 // the SDK's own hash of the "subscriber identity" service;
@@ -1198,6 +1200,15 @@ impl SnowFishMachine {
                 // a non-zero one.  SF_4C="lr:val;lr:val;*:val" (hex) overrides
                 // it per call site for experiments.
                 let mut base = 1u32;
+                if self.free_play
+                    && self.http.enabled
+                    && self
+                        .tariff_check
+                        .as_ref()
+                        .is_some_and(|check| check.is_channel_query(lr, &self.mem))
+                {
+                    base = 0;
+                }
                 let mut result = None;
                 if let Ok(policy) = std::env::var("SF_4C") {
                     // "*" sets the base value; a matching `lr:val` entry
@@ -1219,6 +1230,17 @@ impl SnowFishMachine {
                 }
                 debug!("[plat] +0x4C result={:?} base={base:#x}", result);
                 Some(result.unwrap_or(base))
+            }
+            0x4E8 => {
+                let state = self.mem.read_u32(crate::plat::RANDOM_STATE_ADDR)?;
+                // Produce a 15-bit value from the high bits of the LCG.
+                let next = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                self.mem.write_u32(crate::plat::RANDOM_STATE_ADDR, next)?;
+                Some((next >> 16) & 0x7fff)
+            }
+            0x4EC => {
+                self.mem.write_u32(crate::plat::RANDOM_STATE_ADDR, r(0))?;
+                None
             }
             0x5C => Some(self.hook_fread(r(0), r(1), r(2))?),
             0x60 => Some(self.hook_fwrite(r(0), r(1), r(2))?),
@@ -1303,10 +1325,13 @@ impl SnowFishMachine {
             }
             0x12C | 0x130 | 0x134 | 0x140 | 0x14C | 0x154 | 0x158 | 0x180 | 0x198 | 0x194
             | 0x184 | 0x15C | 0x010 => {
-                // GDI slots leave r0 untouched (the reference writes PC only).
+                // GDI drawing slots leave r0 untouched.
                 self.exec_gdi(slot, ret)?;
                 None
             }
+            0x014 => Some(crate::gdi::FONT_HEIGHT as u32),
+            0x018 => Some(Gdi::cell_width(r(0) as u16) as u32),
+            0x01C => Some(self.measure_text(r(0), r(1))),
             _ => {
                 warn!("unhandled hooked slot +0x{slot:X} at ret {ret:#010x}");
                 Some(0)
@@ -1317,6 +1342,26 @@ impl SnowFishMachine {
         }
         self.cpu.reg_set(armv4t_emu::reg::PC, ret); // wrapper epilogue
         Ok(())
+    }
+
+    /// Measures up to the requested number of UTF-16 code units.
+    fn measure_text(&self, text: u32, count: u32) -> u32 {
+        if text == 0 {
+            return 0;
+        }
+        let mut width = 0;
+        let mut address = text;
+        for _ in 0..count {
+            let Ok(ch) = self.mem.read_u16(address) else {
+                break;
+            };
+            if ch == 0 {
+                break;
+            }
+            width += Gdi::cell_width(ch) as u32;
+            address += 2;
+        }
+        width
     }
 
     /// Wrapper stack adjustment (`add sp,#imm` at the epilogue).
@@ -1365,29 +1410,20 @@ impl SnowFishMachine {
         let r = |i: u8| self.cpu.reg_get(i);
         match slot {
             0x12C => {
-                // update(obj, x, y, w, h) — a dirty-rectangle commit, not a
-                // fill. The guest paints into the surface and then asks the
-                // platform to push that rectangle to the display; the second
-                // stack word is *not* a colour (every title in the corpus
-                // leaves stale stack contents there — code pointers, string
-                // pointers, zero), so reading it as RGB565 painted random
-                // colours over the frame. Our surface *is* the display, so
-                // presenting the rectangle costs nothing.
+                // set_clip(obj, x, y, w, h) limits subsequent drawing.
                 let adj = self.sp_adjust(ret);
                 let x = r(1) as i32;
                 let y = r(2) as i32;
                 let w = r(3) as i32;
                 let h = self.stack_arg(sp, adj, 1)? as i32;
-                // A full-screen commit is the guest's frame boundary: the
-                // label cursor is per-frame state (some titles commit with
-                // this slot instead of the flush slot).
+                Gdi::set_clip(&mut self.mem, x, y, w, h)?;
+                // Keep the label cursor reset when the guest restores the full clip.
                 if x == 0 && y == 0 && w == plat::FB_WIDTH as i32 && h == plat::FB_HEIGHT as i32 {
                     self.gdi.reset_text_cursor();
                 }
                 if self.trace {
-                    let stale = self.stack_arg(sp, adj, 2).unwrap_or(0);
                     debug!(
-                        "[gdi]+0x{slot:X} update rect {x},{y} {w}x{h} obj={:#010x} stale={stale:#010x} lr={:#010x}",
+                        "[gdi]+0x{slot:X} clip {x},{y} {w}x{h} obj={:#010x} lr={:#010x}",
                         r(0),
                         self.cpu.reg_get(armv4t_emu::reg::LR)
                     );
@@ -1423,7 +1459,7 @@ impl SnowFishMachine {
                 if r(0) > 0x1000 {
                     let mut b3 = [0u8; 3];
                     if self.mem.read(r(0) + 0x28, &mut b3).is_ok() {
-                        rgb24 = (b3[0] as u32) << 16 | (b3[1] as u32) << 8 | b3[2] as u32;
+                        rgb24 = u32::from_le_bytes([b3[0], b3[1], b3[2], 0]);
                     }
                 }
                 let color = crate::gdi::rgb888_to_565(rgb24);
@@ -1431,10 +1467,7 @@ impl SnowFishMachine {
                 // row sits at `height + n` and the right-hand label at
                 // `width - 5`. The platform slides such a label back inside
                 // instead of clipping it away, which is what makes the last
-                // row and the right-hand label readable. A label wider than
-                // the surface keeps its origin (the run clips at the edge
-                // like the reference) unless the origin itself is past the
-                // edge.
+                // row and the right-hand label readable.
                 let (tw, th) = crate::gdi::Gdi::text_extent(&chars);
                 let x = if x + tw > plat::FB_WIDTH as i32 {
                     (plat::FB_WIDTH as i32 - tw).max(0)
@@ -1452,11 +1485,9 @@ impl SnowFishMachine {
                     Some((ox, oy, next_y)) if ox == x && oy == y => (x, next_y),
                     _ => (x, y),
                 };
-                // One call advances the cursor by one row; the row height is
-                // the tallest cell in the label (8 ASCII / 16 wide).
                 self.gdi
                     .op_text_block(&mut self.mem, &chars, dx, dy, color, None);
-                self.gdi.text_cursor = Some((x, y, dy + th.max(8)));
+                self.gdi.text_cursor = Some((x, y, dy + th));
                 if self.trace {
                     let text: String = chars
                         .iter()
@@ -1522,27 +1553,29 @@ impl SnowFishMachine {
                     .op_text_block(&mut self.mem, &chars, x, y, color, Some(right));
             }
             0x198 => {
-                // draw(obj, bmp, sx, sy, w, h, _, dx, dy, _)
+                // draw(obj, bmp, sx, sy, w, h, transform, dx, dy, anchor)
                 let adj = self.sp_adjust(ret);
                 let bmp_ptr = r(1);
                 let sx = r(2) as i32;
                 let sy = r(3) as i32;
                 let w = self.stack_arg(sp, adj, 1)? as i32;
                 let h = self.stack_arg(sp, adj, 2)? as i32;
+                let transform = self.stack_arg(sp, adj, 3)?;
                 let dx = self.stack_arg(sp, adj, 4)? as i32;
                 let dy = self.stack_arg(sp, adj, 5)? as i32;
-                // A zero clip uses the descriptor's bitmap size.
-                let clip = if w > 0 && h > 0 { Some((w, h)) } else { None };
-                self.draw_bitmap(slot, bmp_ptr, (sx, sy), clip, (dx, dy))?;
+                let anchor = self.stack_arg(sp, adj, 6)?;
+                // A zero source size uses the descriptor's bitmap size.
+                let size = if w > 0 && h > 0 { Some((w, h)) } else { None };
+                self.draw_bitmap(bmp_ptr, (sx, sy), size, (dx, dy), transform, anchor)?;
             }
             0x134 => {
                 // blit(obj, bmp, x, y, flags) — the five-argument form of
                 // +0x198: the bitmap is drawn at its own size, so the
-                // descriptor supplies the clip window.
+                // descriptor supplies the source dimensions.
                 let bmp_ptr = r(1);
                 let dx = r(2) as i32;
                 let dy = r(3) as i32;
-                self.draw_bitmap(slot, bmp_ptr, (0, 0), None, (dx, dy))?;
+                self.draw_bitmap(bmp_ptr, (0, 0), None, (dx, dy), 0, 0)?;
             }
             0x194 => {
                 self.gdi.op_bmp();
@@ -1598,16 +1631,27 @@ impl SnowFishMachine {
                 // dialog re-issues its first line at the block origin.
                 self.gdi.reset_text_cursor();
             }
-            // +0x130/+0x140: the long-form fill variants for the dialog
-            // chrome (r1 = x, r2 = y; the canvas color from the context).
-            0x130 | 0x140 => {
+            0x130 => {
+                let adj = self.sp_adjust(ret);
+                let start = (r(1) as i32, r(2) as i32);
+                let end = (r(3) as i32, self.stack_arg(sp, adj, 1)? as i32);
+                let color = self.pen_color(r(0));
+                if self.trace {
+                    debug!("[gdi]+0x{slot:X} line {start:?} to {end:?} c={color:#06x}");
+                }
+                self.gdi.line(&mut self.mem, start, end, color);
+            }
+            0x140 => {
+                let adj = self.sp_adjust(ret);
                 let x = r(1) as i32;
                 let y = r(2) as i32;
-                let color = self.gdi.fill_color();
+                let w = r(3) as i32;
+                let h = self.stack_arg(sp, adj, 1)? as i32;
+                let color = self.pen_color(r(0));
                 if self.trace {
-                    debug!("[gdi]+0x{slot:X} fill @({x},{y}) c={color:#06x}");
+                    debug!("[gdi]+0x{slot:X} outline @({x},{y}) {w}x{h} c={color:#06x}");
                 }
-                self.gdi.op_fill2(&mut self.mem, x, y, 240, 8, color);
+                self.gdi.rect_outline(&mut self.mem, (x, y), (w, h), color);
             }
             _ => {
                 if self.trace {
@@ -1626,15 +1670,16 @@ impl SnowFishMachine {
     }
 
     /// Blits a bitmap descriptor (`sw, sh, key, pal, data`) onto the canvas.
-    /// `clip` is the `(w, h)` window the caller asked for; `None` keeps the
-    /// bitmap's own size, which is what the five-argument `+0x134` form does.
+    /// `size` is the source region's dimensions. The five-argument
+    /// `+0x134` form uses the bitmap's full dimensions.
     fn draw_bitmap(
         &mut self,
-        slot: u32,
         bmp_ptr: u32,
         source: (i32, i32),
-        clip: Option<(i32, i32)>,
+        size: Option<(i32, i32)>,
         target: (i32, i32),
+        transform: u32,
+        anchor: u32,
     ) -> Result<(), MachineError> {
         if bmp_ptr <= 0x1000 {
             return Ok(());
@@ -1648,16 +1693,17 @@ impl SnowFishMachine {
         let key = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
         let pal = u32::from_le_bytes([hdr[12], hdr[13], hdr[14], hdr[15]]);
         let data = u32::from_le_bytes([hdr[16], hdr[17], hdr[18], hdr[19]]);
-        let (w, h) = clip.unwrap_or((sw, sh));
+        let (w, h) = size.unwrap_or((sw, sh));
         if self.trace {
             debug!(
-                "[gdi]+0x{slot:X} blit obj={:#010x} bmp@{bmp_ptr:#x} sw={sw} sh={sh} key={key:#x} pal={pal:#x} data={data:#x} clip={w}x{h} from {source:?} to {target:?}",
+                "[gdi] blit obj={:#010x} bmp@{bmp_ptr:#x} sw={sw} sh={sh} key={key:#x} pal={pal:#x} data={data:#x} clip={w}x{h} from {source:?} to {target:?} transform={transform} anchor={anchor:#x}",
                 self.cpu.reg_get(0)
             );
         }
         if sw <= 0 || sh <= 0 || w <= 0 || h <= 0 || w > 0x400 || h > 0x400 {
             return Ok(());
         }
+        let target = Gdi::anchored_origin(target, (w, h), anchor);
         let data = if data > 0x1000 && data <= 0x7F_FFFF {
             data
         } else {
@@ -1670,13 +1716,8 @@ impl SnowFishMachine {
             return Ok(());
         }
         let key = if palette.is_some() {
-            // Universe Storm's palette loader emits an explicit index 0
-            // for transparent sprites and a sentinel for opaque bitmaps.
-            let keyed = match self.compatibility {
-                Compatibility::UniverseStorm => key <= u32::from(u8::MAX),
-                _ => key != 0,
-            };
-            keyed.then_some((key & 0xff) as u16)
+            // The loader uses an out-of-range sentinel for opaque bitmaps.
+            u8::try_from(key).ok().map(u16::from)
         } else {
             let key = key as u16;
             (key != 0 && key != u16::MAX).then_some(key)
@@ -1703,6 +1744,7 @@ impl SnowFishMachine {
             source,
             (w, h),
             target,
+            transform,
         );
         Ok(())
     }
@@ -2108,30 +2150,22 @@ impl SnowFishMachine {
             return Ok(u32::MAX - 6); // -7 bad args
         }
         let cap = 0x100000usize;
-        let embedded = if self.compatibility == Compatibility::UniverseStorm {
-            compat::universe_storm_lz_source(&self.container, src, src_len)
-        } else {
-            None
-        };
-        let mut guest_bytes;
-        let srcbuf = match embedded {
-            Some(bytes) => bytes,
-            None => {
-                guest_bytes = vec![0; src_len as usize];
-                self.mem.read(src, &mut guest_bytes)?;
-                &guest_bytes
-            }
-        };
+        let srcbuf = self.mem.slice(src, src_len)?;
         if std::env::var_os("SF_DUMP_BLOCK").is_some() {
             let name = format!("SF_DUMP_BLOCK_{src:08X}_{src_len}.bin");
             let _ = std::fs::write(&name, srcbuf);
             info!("dumped {name}");
         }
-        match lz::decompress(srcbuf, cap) {
-            Ok(mut data) => {
-                if self.compatibility == Compatibility::UniverseStorm {
-                    compat::repair_universe_storm_bitmap_block(src, &mut data);
-                }
+        let decoded = lz::decompress(srcbuf, cap).or_else(|error| {
+            // Snapshots can contain an overwritten embedded stream. Only
+            // fall back to the original bytes when no relocation touches it.
+            let data = self.original_lz_source(src, src_len).ok_or(error)?;
+            lz::decompress(data, cap).inspect(|_| {
+                debug!("[lz] recovered embedded stream at {src:#x} from the package");
+            })
+        });
+        match decoded {
+            Ok(data) => {
                 let out_len = data.len();
                 self.mem.write(dst, &data)?;
                 if out > 0x1000 {
@@ -2159,6 +2193,26 @@ impl SnowFishMachine {
                 })
             }
         }
+    }
+
+    fn original_lz_source(&self, src: u32, len: u32) -> Option<&[u8]> {
+        let header = crate::sfa::parse_header(&self.container).ok()?;
+        let start = src.checked_sub(CODE_BASE)?;
+        let end = start.checked_add(len)?;
+        if end > header.code_size {
+            return None;
+        }
+        let reloc_start = header.reloc_offset() as usize;
+        let reloc_end = reloc_start + header.reloc_count as usize * 4;
+        let relocations = self.container.get(reloc_start..reloc_end)?;
+        if relocations.as_chunks::<4>().0.iter().any(|word| {
+            let offset = u32::from_le_bytes(*word);
+            offset < end && start < offset + 4
+        }) {
+            return None;
+        }
+        self.container
+            .get((header.header_len + start) as usize..(header.header_len + end) as usize)
     }
 
     /// Boots the guest: init (selector -1, registers the handler), then the
@@ -2240,12 +2294,26 @@ impl SnowFishMachine {
         Ok(())
     }
 
-    /// Queues a key event (index 0..31, pressed/released).
+    /// Queues a logical key event, including the historical replay aliases
+    /// 2/8/4/6 for up/down/left/right.
     pub fn set_key(&mut self, index: u8, pressed: bool) -> Result<(), MachineError> {
-        if index > 31 {
-            return Err(MachineError::BadKey(index));
-        }
-        let code = KEY_MAP[index as usize];
+        self.set_phone_key(
+            match index {
+                2 => 13,
+                8 => 14,
+                4 => 15,
+                6 => 16,
+                _ => index,
+            },
+            pressed,
+        )
+    }
+
+    /// Queues a physical phone key by its unaliased index in [`KEY_MAP`].
+    pub fn set_phone_key(&mut self, index: u8, pressed: bool) -> Result<(), MachineError> {
+        let code = *KEY_MAP
+            .get(usize::from(index))
+            .ok_or(MachineError::BadKey(index))?;
         if code != 0 {
             self.events.post(if pressed { 6 } else { 5 }, code as u32);
         }
@@ -2254,8 +2322,15 @@ impl SnowFishMachine {
 
     /// Pumps all queued events into the guest.
     pub fn pump(&mut self, budget: u64) -> Result<(), MachineError> {
+        self.pump_events(budget, false)
+    }
+
+    fn pump_events(&mut self, budget: u64, stop_after_keydown: bool) -> Result<(), MachineError> {
         while let Some(ev) = self.events.pop() {
             self.app_call(ev.selector, ev.param, budget)?;
+            if stop_after_keydown && ev.selector == 6 {
+                break;
+            }
         }
         Ok(())
     }
@@ -2358,6 +2433,24 @@ impl SnowFishMachine {
         Some((cb, arg))
     }
 
+    fn run_guest_callback(
+        &mut self,
+        callback: u32,
+        context: u32,
+        result: u32,
+        budget: u64,
+    ) -> Result<(), MachineError> {
+        self.cpu.reg_set(armv4t_emu::reg::SP, STACK_TOP);
+        self.cpu.reg_set(armv4t_emu::reg::LR, STOP_ADDRESS);
+        self.cpu.reg_set(armv4t_emu::reg::CPSR, 0x10);
+        self.cpu.reg_set(0, context);
+        self.cpu.reg_set(1, result);
+        self.cpu.reg_set(2, 0);
+        self.cpu.reg_set(armv4t_emu::reg::PC, callback);
+        self.run_until_return(budget)?;
+        Ok(())
+    }
+
     /// Advances one frame: pump queued events, deliver the frame tick
     /// (selector 10, the host paces at ~20 fps), then deliver the guest's
     /// registered timer callback (the platform's +0x500 service is a
@@ -2379,14 +2472,12 @@ impl SnowFishMachine {
                 }
             }
         }
-        // The shared SDK gates its UI state machine (and every repaint) on
-        // the app-activate/resume event, selector 3. A foregrounded handset
-        // keeps that state active on the frame cadence. Without it the
-        // titles draw their boot splash once and then freeze.
+        // Some SDK builds rely on repeated app-resume events for repaints.
         // SF_NO_APP_PUMP=1 (or `set_app_pump(false)`) disables it for
         // experiments; SF_RESUME=1 is the historical spelling of the same
         // forced-on switch.
-        if self.app_pump || std::env::var_os("SF_RESUME").is_some() {
+        let resume_each_frame = self.app_pump || std::env::var_os("SF_RESUME").is_some();
+        if resume_each_frame {
             self.events.post(3, 0);
         }
         // A local HTTP transaction that finished during boot has to be
@@ -2395,36 +2486,34 @@ impl SnowFishMachine {
         if let Some((cb, arg)) = self.deliver_http_completion() {
             debug!("[plat] HTTP result callback {cb:#010x} arg={arg:#x}");
             if cb > 0x1000 {
-                self.cpu.reg_set(armv4t_emu::reg::SP, STACK_TOP);
-                self.cpu.reg_set(armv4t_emu::reg::LR, STOP_ADDRESS);
-                self.cpu.reg_set(armv4t_emu::reg::CPSR, 0x10);
-                self.cpu.reg_set(0, arg);
-                self.cpu.reg_set(1, 0);
-                self.cpu.reg_set(2, 0);
-                self.cpu.reg_set(armv4t_emu::reg::PC, cb);
-                self.run_until_return(budget)?;
+                self.run_guest_callback(cb, arg, 0, budget)?;
             }
         }
-        self.pump(budget)?;
-        // SF_FREE_SCREEN=1: suppress all guest writes to the screen
-        // variable so it stays at the SF_FORCE value. The render dispatch
-        // reads the variable and falls through to the game's own code when
-        // the value is >= 18, bypassing the SDK's pay-flow screens.
-        if std::env::var_os("SF_FREE_SCREEN").is_some() {
-            let addr = std::env::var("SF_SCAN_ADDR")
-                .ok()
-                .and_then(|a| u32::from_str_radix(&a, 16).ok())
-                .unwrap_or(0x131744);
-            // The screen variable AND the SDK's stage variable: the stage
-            // machine (0x10fcf8) dispatches on [0x1326E0] and its stages
-            // 99-109 render the SDK's notice/login/pay dialogs on top of
-            // the screen system. Suppressing both keeps the SDK's dialogs
-            // off and the screen at the SF_FORCE value.
-            // [0x1323B3] = the notice-dialog state cell ([0x131A08+0x9AB]):
-            // 0 = the non-dismissible notice, 1 = the dismissible notice.
-            // Suppressing the guest's write lets SF_FORCE set it to 1 so
-            // the LSK dismiss works.
-            self.mem.suppress = vec![addr, 0x1326E0, 0x1323B3];
+        if self.free_play && self.http.enabled {
+            if let Some(legacy_check) = &self.legacy_check {
+                if let Some((callback, context)) = legacy_check.take_completion(&mut self.mem)? {
+                    debug!("[sdk] completing a legacy local check");
+                    self.run_guest_callback(callback, context, 0, budget)?;
+                }
+            }
+            if let Some(tariff_check) = &self.tariff_check {
+                if let Some((callback, context)) = tariff_check.take_completion(&mut self.mem)? {
+                    debug!("[sdk] completing a tariff request with offline success");
+                    self.run_guest_callback(callback, context, 0, budget)?;
+                }
+            }
+        }
+        let poll_keys =
+            self.legacy_check.is_some() && !resume_each_frame && !self.ui_timers.is_empty();
+        // This SDK clears the key on release before its timer can sample it.
+        // Deliver one press per poll and leave its release queued until the next poll.
+        if !poll_keys
+            || self
+                .ui_timers
+                .iter()
+                .any(|timer| timer.due_ms <= self.ui_clock_ms + FRAME_MS)
+        {
+            self.pump_events(budget, poll_keys)?;
         }
         // SF_FORCE="addr:val;..." (hex): write guest words EVERY frame
         // before the tick — for variables the guest's own flow clears but
@@ -2456,8 +2545,7 @@ impl SnowFishMachine {
         }
         for t in self.timers.clone() {
             // The callback receives a platform-allocated result record: the
-            // registration's context word is a guest-internal value (hjkg
-            // passes the just-read flag byte, i.e. zero), while the callback
+            // registration's context word is a guest-internal value, while the callback
             // dereferences r1 as a record with a status byte at +9, a type
             // byte at +4, a payload length halfword at +6, a UTF-16 string
             // at +0xB and a payload buffer at +0x3C. Zeroed = no result.
@@ -2480,69 +2568,6 @@ impl SnowFishMachine {
                     item[..text.len().min(0x20)].copy_from_slice(&text);
                     let _ = self.mem.write(t.item_array, &item);
                     let _ = self.mem.write_u8(t.count_addr, 1);
-                }
-                // Screen survey: cycle the UI screen index (one 0x14-byte
-                // screen-table entry per 20 frames) so every screen renders
-                // into the frame dumps. SF_SCREEN_SCAN=2 sweeps the game's
-                // own screens (>= 18, past the SDK's dialog handlers). The
-                // swept variable is per-binary: SF_SCAN_ADDR overrides.
-                if std::env::var_os("SF_SCREEN_SCAN").is_some() {
-                    let wide = std::env::var("SF_SCREEN_SCAN")
-                        .map(|v| v == "2")
-                        .unwrap_or(false);
-                    let idx = if wide {
-                        (self.frame_count / 20) as u32 % 23 + 18
-                    } else {
-                        (self.frame_count / 20) as u32 % 17 + 1
-                    };
-                    let addr = std::env::var("SF_SCAN_ADDR")
-                        .ok()
-                        .and_then(|a| u32::from_str_radix(&a, 16).ok())
-                        .unwrap_or(0x13532C);
-                    let _ = self.mem.write_u32(addr, idx);
-                }
-                // Binary-specific state synthesis (queue head 5 = the
-                // pay-flow message type, s1 = the dispatcher state, the
-                // pay-flow state 5, the nested-machine trigger, cooldown=1
-                // and the send-pattern receipt) — addresses are sanguo's
-                // decode; other binaries drive these through SF_SEED.
-                if std::env::var_os("SF_PAY_SYNTH").is_some() {
-                    // The callback's second match loop (the send-pattern
-                    // table this binary registers from its payinfo file)
-                    // gates the pay-flow state machine behind a match
-                    // against the same target.
-                    const SEND_ITEMS: u32 = 0x1353CC;
-                    const SEND_COUNT: u32 = 0x1331E0;
-                    let mut item = [0u8; 0x20];
-                    item[..text.len().min(0x20)].copy_from_slice(&text);
-                    let _ = self.mem.write(SEND_ITEMS, &item);
-                    let _ = self.mem.write_u8(SEND_COUNT, 1);
-                    // The network state machine's send-state counters gate
-                    // the menu flow (0x122d68 → the UI setup calls).
-                    let _ = self.mem.write_u32(0x1355F0 + 0x34C, 1);
-                    let _ = self.mem.write_u32(0x1355F0 + 0x348, 1);
-                    // The callback dispatches on the SMS queue head: head=5
-                    // is the pay-flow message type whose handler invokes
-                    // the message builder — the phase loop driver.
-                    let _ = self.mem.write_u32(0x133164, 5);
-                    // Seed once: s1 = 1 (the dispatcher state).
-                    if self.frame_count == 0 {
-                        let _ = self.mem.write_u32(0x1331A0, 1);
-                    }
-                    // The pay-flow state is only ever loaded from the
-                    // payinfo file's tag stream; force state 5 (whose
-                    // handler invokes the message builder each delivery).
-                    let _ = self.mem.write_u32(0x13533C, 5);
-                    // The flag bytes 0x1364B4/0x1364B5 control both the
-                    // phase selection and the 0x117b74 nested machine.
-                    let _ = self.mem.write_u8(0x1364B4, 1);
-                    let _ = self.mem.write_u8(0x1364B5, 1);
-                    // [0x133154] set routes the send handler's tail into
-                    // the 0x117b74 nested machine (the screen-transition
-                    // driver); cooldown=1 makes every 0x118988 gate call
-                    // report "expired" so the advance paths fire.
-                    let _ = self.mem.write_u8(0x133154, 1);
-                    let _ = self.mem.write_u32(0x13498C, 1);
                 }
                 job[9] = 1; // result ready
                             // The callback's phase gate: the record's phase byte (+0xA)
@@ -2597,11 +2622,6 @@ impl SnowFishMachine {
             self.cpu.reg_set(2, 0);
             self.cpu.reg_set(3, 0);
             self.cpu.reg_set(armv4t_emu::reg::PC, t.entry);
-            if std::env::var_os("SF_PAY_WATCH").is_some() {
-                let scr = self.mem.read_u32(0x13532C).unwrap_or(0xFF);
-                let pay = self.mem.read_u32(0x13533C).unwrap_or(0xFF);
-                debug!("[plat] screen state pre-cb: {scr} pay-state: {pay}");
-            }
             // Generic variable watch: SF_VARS="addr,addr" (hex) logged per
             // frame around the timer delivery.
             if let Ok(vars) = std::env::var("SF_VARS") {
@@ -2613,62 +2633,6 @@ impl SnowFishMachine {
                 debug!("[plat] vars pre-cb: {}", vals.join(" "));
             }
             self.run_until_return(budget)?;
-            if std::env::var_os("SF_PAY_WATCH").is_some() {
-                let scr = self.mem.read_u32(0x13532C).unwrap_or(0xFF);
-                let pay = self.mem.read_u32(0x13533C).unwrap_or(0xFF);
-                debug!("[plat] screen state post-cb: {scr} pay-state: {pay}");
-            }
-            if std::env::var_os("SF_PAY_WATCH").is_some() {
-                // The SDK's network state machine struct (pointer variable at
-                // 0x1355F0 in sanguo): counters 0x348/0x34c gate the send.
-                let cooldown = self.mem.read_u32(0x13498C).unwrap_or(0xFFFF);
-                let s1 = self.mem.read_u32(0x1331A0).unwrap_or(0xFFFF);
-                let s2 = self.mem.read_u8(0x133169).unwrap_or(0xFF);
-                let s3 = self.mem.read_u8(0x1364B4).unwrap_or(0xFF);
-                let s4 = self.mem.read_u8(0x1364B5).unwrap_or(0xFF);
-                let phase = self.mem.read_u32(0x134990).unwrap_or(0xFFFF);
-                let gate = self.mem.read_u32(0x133164).unwrap_or(0xFFFF);
-                let disp_obj = self.mem.read_u32(0x137214).unwrap_or(0);
-                let disp_vt = if disp_obj > 0x1000 {
-                    self.mem.read_u32(disp_obj).unwrap_or(0)
-                } else {
-                    0
-                };
-                let cfg = self.mem.read_u8(0x133189).unwrap_or(0xFF);
-                // The 0x115900 config struct at 0x13873E: 5 signed halfwords
-                let hw: Vec<i16> = (0..5)
-                    .filter_map(|k| self.mem.read_u16(0x13873E + k * 2).ok())
-                    .map(|v| v as i16)
-                    .collect();
-                let buf5: Vec<u32> = (0..5)
-                    .filter_map(|k| self.mem.read_u32(0x3FFF9C + k * 4).ok())
-                    .collect();
-                debug!("[plat] cfg hw={hw:?} buf5={buf5:?}");
-                let expected = self
-                    .mem
-                    .read_u32(0x1367B8 + cfg as u32 * 4)
-                    .unwrap_or(0xFFFF);
-                debug!(
-                    "[plat] net state: cooldown={cooldown} s1={s1} s2={s2} s3={s3} s4={s4}                      phase={phase:#010x} gate={gate:#010x} cfg={cfg} expect={expected:#010x}                      disp_obj={disp_obj:#010x} disp_vt={disp_vt:#010x}"
-                );
-                let count = self.mem.read_u8(t.count_addr).unwrap_or(0xFF);
-                let mut tgt = [0u8; 64];
-                let _ = self.mem.read(t.target_addr, &mut tgt);
-                let to_text = |b: &[u8]| -> String {
-                    b.chunks(2)
-                        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                        .take_while(|&c| c != 0)
-                        .map(|c| char::from_u32(c as u32).unwrap_or('?'))
-                        .collect()
-                };
-                debug!(
-                    "[plat] timer cb done: frame={} count={} target={:?} lr={:#010x}",
-                    self.frame_count,
-                    count,
-                    to_text(&tgt),
-                    self.cpu.reg_get(armv4t_emu::reg::LR)
-                );
-            }
         }
         // Generic per-frame variable watch, independent of the timer
         // service so guests that never register one are observable too.
@@ -2783,11 +2747,6 @@ impl SnowFishMachine {
         self.mem
             .copy_regions_from(&state.mem)
             .map_err(|_| crate::save::SaveStateError::ContentMismatch)?;
-        // Older snapshots include the guest instructions from before the fix.
-        if self.compatibility == Compatibility::GoldMiner {
-            compat::apply_gold_miner_offline_start(&mut self.mem)
-                .map_err(|_| crate::save::SaveStateError::ContentMismatch)?;
-        }
         self.cpu = state.cpu;
         self.handler = state.handler;
         self.file_slots = state.file_slots;
@@ -2915,6 +2874,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn font_height_slot_includes_the_default_font() {
+        let mut machine = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        for font in [0, plat::CANVAS_ADDR] {
+            machine.cpu.reg_set(0, font);
+            machine.exec_slot(0x014, CODE_BASE).unwrap();
+            assert_eq!(machine.cpu.reg_get(0), 16);
+        }
+    }
+
+    #[test]
+    fn direction_alias_and_number_emit_distinct_phone_keys() {
+        let mut machine = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        machine.set_key(2, true).unwrap();
+        machine.set_phone_key(2, true).unwrap();
+        machine.set_key(2, false).unwrap();
+        let events: Vec<_> = std::iter::from_fn(|| machine.events.pop())
+            .map(|event| (event.selector, event.param))
+            .collect();
+        assert_eq!(events, [(6, 0x04), (6, 0x0a), (5, 0x04)]);
+    }
+
     /// Text takes its pen colour from the canvas object at +0x28, and zero
     /// there is a real colour — black. Treating it as "unset" and falling
     /// back to white made every softkey label on a white dialog invisible.
@@ -2940,27 +2921,47 @@ mod tests {
         assert!(ink > 0, "'A' should be drawn in black, not white-on-white");
     }
 
-    /// +0x12C commits a rectangle of the surface to the display; it does not
-    /// paint. The second stack word is *not* a colour — every title in the
-    /// corpus leaves stale caller data there (code pointers, string
-    /// pointers, zero) — so treating it as RGB565 scribbled a random colour
-    /// over the frame and erased every sprite drawn before the call.
     #[test]
-    fn update_rect_leaves_the_surface_alone() {
+    fn canvas_clip_limits_an_atlas_blit_and_can_be_reset() {
         let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        let desc = HEAP_BASE;
+        let data = HEAP_BASE + 0x100;
+        m.mem.write_u32(desc, 3).unwrap();
+        m.mem.write_u32(desc + 4, 1).unwrap();
+        m.mem.write_u32(desc + 16, data).unwrap();
+        m.mem.write_u16(data, 0x001F).unwrap();
+        m.mem.write_u16(data + 2, 0xF800).unwrap();
+        m.mem.write_u16(data + 4, 0x001F).unwrap();
+
         let sp = HEAP_BASE + 0x200;
         m.cpu.reg_set(armv4t_emu::reg::SP, sp);
-        m.mem.write_u32(sp + 4, 320).unwrap(); // h (5th argument)
+        m.mem.write_u32(sp + 4, 1).unwrap(); // h (5th argument)
         m.mem.write_u32(sp + 8, 0x4151_7000).unwrap(); // stale word
         m.gdi.fill(&mut m.mem, 0, 0, 240, 320, 0xFFFF);
-        m.cpu.reg_set(0, HEAP_BASE);
+        m.cpu.reg_set(0, HEAP_BASE + 0x300);
+        m.cpu.reg_set(1, 11);
+        m.cpu.reg_set(2, 20);
+        m.cpu.reg_set(3, 1);
+        m.exec_gdi(0x12C, 0).unwrap();
+        let first = 20 * 240 + 10;
+        assert_eq!(&m.frame_pixels()[first..first + 3], &[WHITE; 3]);
+
+        m.cpu.reg_set(1, desc);
+        m.cpu.reg_set(2, 10);
+        m.cpu.reg_set(3, 20);
+        m.exec_gdi(0x134, 0).unwrap();
+        assert_eq!(&m.frame_pixels()[first..first + 3], &[WHITE, RED, WHITE]);
+
         m.cpu.reg_set(1, 0);
         m.cpu.reg_set(2, 0);
         m.cpu.reg_set(3, 240);
+        m.mem.write_u32(sp + 4, 320).unwrap();
         m.exec_gdi(0x12C, 0).unwrap();
-        let px = m.gdi.frame_pixels(&m.mem);
-        let bad = px.iter().filter(|&&p| p != WHITE).count();
-        assert_eq!(bad, 0, "committing a rectangle must not repaint it");
+        m.cpu.reg_set(1, desc);
+        m.cpu.reg_set(2, 10);
+        m.cpu.reg_set(3, 20);
+        m.exec_gdi(0x134, 0).unwrap();
+        assert_eq!(&m.frame_pixels()[first..first + 3], &[BLUE, RED, BLUE]);
     }
 
     /// +0x134 is the five-argument blit — `draw(obj, bmp, x, y, flags)` — and
@@ -3022,34 +3023,41 @@ mod tests {
         assert_eq!(pixels[0], RED);
         assert_eq!(pixels[240], BLUE);
         assert_eq!(pixels[1], WHITE, "destination clip ends at x=0");
+
+        m.mem.write_u32(sp + 12, 3).unwrap(); // reflect both axes
+        m.mem.write_u32(sp + 16, 10).unwrap();
+        m.exec_gdi(0x198, 0).unwrap();
+        let pixels = m.frame_pixels();
+        assert_eq!(pixels[10], BLUE);
+        assert_eq!(pixels[250], RED);
     }
 
-    /// Preserve the default interpretation of a zero palette key.
     #[test]
-    fn palette_blit_keeps_index_zero_when_key_is_unset() {
+    fn palette_blit_distinguishes_index_zero_from_the_opaque_sentinel() {
         let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
         let desc = HEAP_BASE;
         let pal = HEAP_BASE + 0x40;
-        let data = HEAP_BASE + 0x100;
-        m.mem.write_u32(desc, 2).unwrap(); // sw
-        m.mem.write_u32(desc + 4, 2).unwrap(); // sh
-        m.mem.write_u32(desc + 8, 0).unwrap(); // key: none
+        let data = HEAP_BASE + 0x300;
+        m.mem.write_u32(desc, 3).unwrap(); // sw
+        m.mem.write_u32(desc + 4, 1).unwrap(); // sh
+        m.mem.write_u32(desc + 8, 0).unwrap(); // key: index 0
         m.mem.write_u32(desc + 12, pal).unwrap(); // palette pointer
         m.mem.write_u32(desc + 16, data).unwrap(); // indices
         m.mem.write_u16(pal, 0xF800).unwrap(); // index 0: red
         m.mem.write_u16(pal + 2, 0x001F).unwrap(); // index 1: blue
-                                                   // index 0 first (red), index 1 second (blue)
-        m.mem.write_u16(data, 0x0100).unwrap(); // bytes [0, 1]
-        m.mem.write_u16(data + 2, 0x0100).unwrap();
+        m.mem.write_u16(pal + 255 * 2, 0xF800).unwrap();
+        m.mem.write(data, &[0, 1, 255]).unwrap();
         m.gdi.fill(&mut m.mem, 0, 0, 240, 320, 0xFFFF);
-        m.cpu.reg_set(0, HEAP_BASE + 0x300);
+        m.cpu.reg_set(0, HEAP_BASE + 0x400);
         m.cpu.reg_set(1, desc);
         m.cpu.reg_set(2, 0);
         m.cpu.reg_set(3, 0);
         m.exec_gdi(0x134, 0).unwrap();
-        let px = m.gdi.frame_pixels(&m.mem);
-        assert_eq!(px[0], RED, "index-0 pixel must draw when key=0");
-        assert_eq!(px[1], BLUE, "index-1 pixel draws its palette colour");
+        assert_eq!(&m.frame_pixels()[..3], &[WHITE, BLUE, RED]);
+
+        m.mem.write_u32(desc + 8, 0x7fff_ffff).unwrap();
+        m.exec_gdi(0x134, 0).unwrap();
+        assert_eq!(&m.frame_pixels()[..3], &[RED, BLUE, RED]);
     }
 
     /// Dialog bodies are drawn by `+0x14C`, which carries a character range
@@ -3194,7 +3202,7 @@ mod tests {
     /// Root slot +0x524 is the service lookup. The guests call through the
     /// object it hands back without checking the result, so the layout must
     /// contain a callable method table — an unwritten out-pointer used to
-    /// become a jump to 0 at mota's boot.
+    /// become a jump to 0 during boot.
     #[test]
     fn service_slot_hands_out_a_callable_object() {
         let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
@@ -3239,8 +3247,10 @@ mod tests {
         assert_eq!(m.mem.read_u32(out).unwrap(), plat::SERVICE_OBJ_ADDR);
         assert_eq!(m.cpu.reg_get(0), 1);
 
-        // Untargeted call (register garbage as the type): the historical
-        // record-the-pointer behaviour, with the out-pointer left alone.
+        // Untargeted call (register garbage as the type) with free play
+        // off: the historical record-the-pointer behaviour, with the
+        // out-pointer left alone.
+        m.set_free_play(false);
         let junk_out = plat::ROOT_ADDR + 0x2100;
         m.cpu.reg_set(0, 0x120D_E2BD);
         m.cpu.reg_set(1, 0xCF14_D7B7);
@@ -3288,6 +3298,9 @@ mod tests {
     #[test]
     fn sim_lookup_is_answered_under_free_play() {
         let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        // The negative phase pins the off state, which the default-on
+        // load must opt out of explicitly here.
+        m.set_free_play(false);
         let out = plat::ROOT_ADDR + 0x2200;
         // type/id as the pay service passes them, out-pointer to a scratch word.
         m.cpu.reg_set(0, 0x120D_E2BD);
@@ -3364,6 +3377,9 @@ mod tests {
     #[test]
     fn account_record_files_are_served_under_free_play() {
         let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        // The negative phase pins the off state, which the default-on
+        // load must opt out of explicitly here.
+        m.set_free_play(false);
         let path_at = plat::ROOT_ADDR + 0x3000;
         let write_path = |m: &mut SnowFishMachine, s: &str| {
             let mut bytes = Vec::new();
@@ -3610,6 +3626,32 @@ mod tests {
         assert_eq!(machine.state().unwrap(), 3);
     }
 
+    #[test]
+    fn seeded_random_stream_resumes_after_state_restore() {
+        let mut machine = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        let seed = |m: &mut SnowFishMachine| {
+            m.cpu.reg_set(0, 42);
+            m.exec_slot(0x4EC, CODE_BASE).unwrap();
+        };
+        let draw = |m: &mut SnowFishMachine| {
+            m.exec_slot(0x4E8, CODE_BASE).unwrap();
+            m.cpu.reg_get(0)
+        };
+        seed(&mut machine);
+        let first = draw(&mut machine);
+        let state = machine.serialize();
+        let second = draw(&mut machine);
+        assert_ne!(first, second);
+        assert!(first <= 0x7fff && second <= 0x7fff);
+
+        seed(&mut machine);
+        assert_eq!(draw(&mut machine), first);
+        draw(&mut machine);
+        draw(&mut machine);
+        machine.deserialize(&state).unwrap();
+        assert_eq!(draw(&mut machine), second);
+    }
+
     /// A state from other content (different fingerprint) must be rejected
     /// without touching the running machine.
     #[test]
@@ -3727,6 +3769,9 @@ mod tests {
     #[test]
     fn network_slots_stay_generic_when_the_responder_is_off() {
         let mut m = SnowFishMachine::load(build_test_image(), &[]).unwrap();
+        // The negative phase pins the off state, which the default-on
+        // load must opt out of explicitly here.
+        m.set_offline_http(false);
         for slot in [0xC8, 0xE0, 0xEC, 0x570] {
             let w = Wrapper {
                 slot,
@@ -3762,6 +3807,18 @@ mod tests {
         m.cpu.reg_set(0, 8); // a different handle
         m.exec_slot(0xEC, CODE_BASE + 0xC).unwrap();
         assert_eq!(m.cpu.reg_get(0), 0);
+    }
+
+    #[test]
+    fn releasing_an_offline_request_leaves_the_package_image_intact() {
+        let mut package = build_test_image();
+        package[0x18..0x1c].copy_from_slice(&0x40_000u32.to_le_bytes());
+        let mut machine = SnowFishMachine::load(package, &[]).unwrap();
+        machine.set_offline_http(true);
+        let size = machine.image_end - CODE_BASE;
+        let before = machine.dump_memory(CODE_BASE, size).unwrap();
+        machine.exec_slot(0x56C, CODE_BASE).unwrap();
+        assert_eq!(machine.dump_memory(CODE_BASE, size).unwrap(), before);
     }
 
     /// The socket read path must return the full HTTP response and its byte

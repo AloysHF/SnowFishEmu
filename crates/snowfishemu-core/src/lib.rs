@@ -7,7 +7,6 @@
 //! - Display, input, file, and timer services
 //! - Framebuffer and runtime state management
 
-mod compat;
 pub mod consts;
 pub mod cpu;
 pub mod font;
@@ -16,7 +15,9 @@ pub mod lz;
 pub mod machine;
 pub mod mem;
 pub mod plat;
+pub mod res;
 pub mod save;
+mod sdk;
 pub mod sfa;
 
 pub use cpu::ArmCpu;

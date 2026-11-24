@@ -19,7 +19,7 @@ def run_mine(main, res_arg, log):
     with open(log, 'wb') as lf:
         try:
             subprocess.run([str(MINE), str(main), *res_arg,
-                            '--frames', str(FRAMES), '--budget', '100000000'],
+                            '--frames', str(FRAMES), '--instruction-limit', '100000000'],
                            timeout=110, stdout=lf, stderr=lf)
             status = 'ran'
         except subprocess.TimeoutExpired:

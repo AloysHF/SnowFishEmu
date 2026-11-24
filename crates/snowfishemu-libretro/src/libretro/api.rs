@@ -78,18 +78,19 @@ impl GuestTickPacer {
 /// Guest key indices driven by the frontends, mirroring the standalone
 /// frontend's key map (see the core's `KEY_MAP` for index to device code).
 mod keys {
-    pub const UP: u8 = 2;
-    pub const DOWN: u8 = 8;
-    pub const LEFT: u8 = 4;
-    pub const RIGHT: u8 = 6;
+    pub const UP: u8 = 13;
+    pub const DOWN: u8 = 14;
+    pub const LEFT: u8 = 15;
+    pub const RIGHT: u8 = 16;
     pub const OK: u8 = 5;
     pub const SOFT_L: u8 = 10;
+    pub const MENU: u8 = 11;
     pub const SOFT_R: u8 = 25;
 }
 
 /// The guest key indices the libretro input mapping can press, in a fixed
 /// order so the pad and keyboard mappings can be merged per index.
-const MAPPED_KEYS: [u8; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 25];
+const MAPPED_KEYS: [u8; 17] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 25];
 
 /// Maps a digit (0-9) onto its guest key index: digits 1-9 are indices 0-8
 /// and digit 0 is index 9, matching the standalone frontend's keypad.
@@ -358,42 +359,32 @@ fn rebuild_machine(container: &[u8], res_data: &[Vec<u8>]) -> anyhow::Result<Sno
 /// Locates the sibling resource containers that back `res`/`.pak` file
 /// opens.
 ///
-/// The desktop frontend takes the resource file explicitly; a libretro
-/// frontend only provides the content path, so the lookup follows a fixed
-/// rule: `<content-stem>.pak` or `<content-stem>.res` next to the content
-/// file, else every sibling file whose name mentions `.pak` or `res`. A
-/// title may ship more than one container (each carries its own pack), so
-/// every match is served rather than only an unambiguous one.
+/// A libretro frontend only provides the content path, so the lookup
+/// follows the shared discovery rule in `snowfishemu_core::res`: an exact
+/// `<content-stem>.pak`/`<content-stem>.res` sibling wins, else every
+/// sibling whose name mentions `.pak` or `res` is served. A title may ship
+/// more than one container (each carries its own pack), so every match is
+/// served rather than only an unambiguous one.
 fn find_res_files(content_path: &Path) -> Vec<PathBuf> {
     let Some(dir) = content_path.parent() else {
         return Vec::new();
     };
     let stem = content_path.file_stem().and_then(|s| s.to_str());
-    for name in stem
-        .map(|stem| [format!("{stem}.pak"), format!("{stem}.res")])
-        .unwrap_or_default()
-    {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return vec![candidate];
-        }
-    }
-    let mut matches: Vec<PathBuf> = std::fs::read_dir(dir)
+    let content_name = content_path.file_name().and_then(|s| s.to_str());
+    let entries: Vec<PathBuf> = std::fs::read_dir(dir)
         .ok()
-        .map(|entries| entries.flatten().collect::<Vec<_>>())
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|entry| {
-            entry.file_name().to_str().is_some_and(|name| {
-                name.to_ascii_lowercase().contains(".pak")
-                    || name.to_ascii_lowercase().contains("res")
-            })
-        })
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file())
+        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default();
+    let names: Vec<String> = entries
+        .iter()
+        .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+        .map(String::from)
         .collect();
-    matches.sort();
-    matches
+    snowfishemu_core::res::sibling_res_candidates(stem, content_name.unwrap_or_default(), names)
+        .into_iter()
+        .map(|name| dir.join(name))
+        .filter(|path| path.is_file())
+        .collect()
 }
 
 #[no_mangle]
@@ -458,7 +449,7 @@ pub extern "C" fn retro_run() {
     })
 }
 
-fn input_descriptors() -> [retro_input_descriptor; 12] {
+fn input_descriptors() -> [retro_input_descriptor; 14] {
     [
         retro_input_descriptor {
             port: 0,
@@ -541,8 +532,22 @@ fn input_descriptors() -> [retro_input_descriptor; 12] {
             port: 0,
             device: RETRO_DEVICE_JOYPAD,
             index: 0,
+            id: RETRO_DEVICE_ID_JOYPAD_L2,
+            description: c"Menu".as_ptr(),
+        },
+        retro_input_descriptor {
+            port: 0,
+            device: RETRO_DEVICE_JOYPAD,
+            index: 0,
             id: RETRO_DEVICE_ID_JOYPAD_SELECT,
             description: c"Number Layer (hold)".as_ptr(),
+        },
+        retro_input_descriptor {
+            port: 0,
+            device: 0,
+            index: 0,
+            id: 0,
+            description: ptr::null(),
         },
     ]
 }
@@ -691,6 +696,7 @@ fn retro_pad_key_states(
                 keys::OK => confirm,
                 keys::SOFT_L => soft_left,
                 keys::SOFT_R => soft_right,
+                keys::MENU => is_pressed(RETRO_DEVICE_ID_JOYPAD_L2),
                 _ => false,
             };
             (index, pressed)
@@ -702,9 +708,8 @@ fn retro_pad_key_states(
 ///
 /// The layout mirrors the standalone frontend's key map one-to-one so the
 /// same physical keys drive the same guest keys in both frontends: digits
-/// 1-9/0, the arrow keys, Enter, and Z/X for the soft keys. On this phone
-/// the arrow directions share keys with digits 3/5/7/9 and OK with digit 6,
-/// so keyboard digits drive the same guest indices as the arrows.
+/// 1-9/0, the arrow keys, Enter, Z/X for the soft keys and M for the menu.
+/// Direction keys have their own indices. OK shares its index with digit 6.
 fn keyboard_key_states(is_pressed: impl Fn(u32) -> bool) -> Vec<(u8, bool)> {
     let digit = |d: u32| is_pressed(RETROK_0 + d);
     MAPPED_KEYS
@@ -713,16 +718,21 @@ fn keyboard_key_states(is_pressed: impl Fn(u32) -> bool) -> Vec<(u8, bool)> {
             let pressed = match index {
                 0 => digit(1),
                 1 => digit(2),
-                keys::UP => is_pressed(RETROK_UP) || digit(3),
+                2 => digit(3),
                 3 => digit(4),
-                keys::LEFT => is_pressed(RETROK_LEFT) || digit(5),
+                4 => digit(5),
                 keys::OK => is_pressed(RETROK_RETURN) || digit(6),
-                keys::RIGHT => is_pressed(RETROK_RIGHT) || digit(7),
+                6 => digit(7),
                 7 => digit(8),
-                keys::DOWN => is_pressed(RETROK_DOWN) || digit(9),
+                8 => digit(9),
                 9 => digit(0),
                 keys::SOFT_L => is_pressed(RETROK_z),
                 keys::SOFT_R => is_pressed(RETROK_x),
+                keys::MENU => is_pressed(RETROK_m),
+                keys::UP => is_pressed(RETROK_UP),
+                keys::DOWN => is_pressed(RETROK_DOWN),
+                keys::LEFT => is_pressed(RETROK_LEFT),
+                keys::RIGHT => is_pressed(RETROK_RIGHT),
                 _ => false,
             };
             (index, pressed)
@@ -756,7 +766,7 @@ fn update_phone_keys(emulator: &mut Emulator) {
             continue;
         }
         let key = index as u8;
-        if let Err(error) = emulator.machine.set_key(key, pressed_now[index]) {
+        if let Err(error) = emulator.machine.set_phone_key(key, pressed_now[index]) {
             log::warn!("key {key} rejected: {error}");
         }
         emulator.key_state[index] = pressed_now[index];
@@ -1010,7 +1020,7 @@ mod tests {
     #[test]
     fn input_descriptors_cover_retropad_mapping() {
         let descriptors = input_descriptors();
-        let ids: Vec<u32> = descriptors[..11]
+        let ids: Vec<u32> = descriptors[..12]
             .iter()
             .map(|descriptor| descriptor.id)
             .collect();
@@ -1028,14 +1038,16 @@ mod tests {
                 RETRO_DEVICE_ID_JOYPAD_Y,
                 RETRO_DEVICE_ID_JOYPAD_L,
                 RETRO_DEVICE_ID_JOYPAD_R,
+                RETRO_DEVICE_ID_JOYPAD_L2,
             ]
         );
-        assert_eq!(descriptors[11].id, RETRO_DEVICE_ID_JOYPAD_SELECT);
-        assert!(!descriptors[11].description.is_null());
+        assert_eq!(descriptors[12].id, RETRO_DEVICE_ID_JOYPAD_SELECT);
+        assert!(!descriptors[12].description.is_null());
+        assert!(descriptors[13].description.is_null());
     }
 
     /// The shared RetroPad layout must reach every non-digit guest key:
-    /// soft keys 10/25, confirm 5, and the D-pad directions 2/8/4/6.
+    /// soft keys, confirm, menu, and the D-pad.
     #[test]
     fn retro_pad_mapping_reaches_every_non_digit_guest_key() {
         let zero = |_index: u32, _id: u32| 0;
@@ -1052,6 +1064,7 @@ mod tests {
             RETRO_DEVICE_ID_JOYPAD_START,
             RETRO_DEVICE_ID_JOYPAD_L,
             RETRO_DEVICE_ID_JOYPAD_R,
+            RETRO_DEVICE_ID_JOYPAD_L2,
         ] {
             let states = retro_pad_key_states(|id| id == button, zero);
             for (key, pressed) in states {
@@ -1060,7 +1073,21 @@ mod tests {
                 }
             }
         }
-        assert_eq!(reached, [2u8, 4, 5, 6, 8, 10, 25].into_iter().collect());
+        assert_eq!(
+            reached,
+            [
+                keys::UP,
+                keys::DOWN,
+                keys::LEFT,
+                keys::RIGHT,
+                keys::OK,
+                keys::SOFT_L,
+                keys::SOFT_R,
+                keys::MENU,
+            ]
+            .into_iter()
+            .collect()
+        );
     }
 
     #[test]
@@ -1087,6 +1114,7 @@ mod tests {
             (RETRO_DEVICE_ID_JOYPAD_L, keys::SOFT_L),
             (RETRO_DEVICE_ID_JOYPAD_Y, keys::SOFT_R),
             (RETRO_DEVICE_ID_JOYPAD_R, keys::SOFT_R),
+            (RETRO_DEVICE_ID_JOYPAD_L2, keys::MENU),
         ] {
             let states = retro_pad_key_states(|id| id == button, |_index, _id| 0);
             assert_eq!(
@@ -1169,6 +1197,7 @@ mod tests {
             RETROK_RETURN,
             RETROK_z,
             RETROK_x,
+            RETROK_m,
             RETROK_UP,
             RETROK_DOWN,
             RETROK_LEFT,
@@ -1210,6 +1239,7 @@ mod tests {
             (RETROK_RETURN, keys::OK),
             (RETROK_z, keys::SOFT_L),
             (RETROK_x, keys::SOFT_R),
+            (RETROK_m, keys::MENU),
             (RETROK_UP, keys::UP),
             (RETROK_DOWN, keys::DOWN),
             (RETROK_LEFT, keys::LEFT),
@@ -1230,8 +1260,7 @@ mod tests {
     /// merge the standalone frontend applies.
     #[test]
     fn keyboard_and_pad_combine_per_key() {
-        // Digit 3 (guest 2) held on the keyboard while the pad holds up:
-        // both sources drive the same guest key, which stays a single press.
+        // Digit 3 and the D-pad Up have independent states.
         let keyboard = keyboard_key_states(|key| key == RETROK_0 + 3);
         let pad = retro_pad_key_states(|id| id == RETRO_DEVICE_ID_JOYPAD_UP, |_, _| 0);
         let mut merged = std::collections::HashMap::new();
@@ -1239,6 +1268,7 @@ mod tests {
             *merged.entry(key).or_insert(false) |= pressed;
         }
         assert!(merged[&keys::UP]);
+        assert!(merged[&digit_index(3)]);
 
         // Digit 6 and Enter both drive the confirm key.
         let keyboard = keyboard_key_states(|key| key == RETROK_RETURN);

@@ -1,12 +1,13 @@
 //! Display bridge (platform GDI slots).
 //!
-//! All drawing lands in a host-side RGB565 surface; the guest framebuffer
-//! window in the plat region is never written by the bridge (mirroring the
-//! platform contract where the guest reads back through an explicit sync
-//! call it never makes). A single dirty flag drives presentation.
+//! Drawing updates the RGB565 framebuffer in guest memory. A single dirty
+//! flag drives presentation.
 
 use crate::font::FONT_ASCII8X8;
-use crate::plat::{FB_HEIGHT, FB_WIDTH};
+use crate::mem::{GuestMem, MemError};
+use crate::plat::{FB_HEIGHT, FB_WIDTH, GDI_CLIP_ADDR};
+
+pub(crate) const FONT_HEIGHT: usize = 16;
 
 /// Display bridge state. All drawing lands in the guest framebuffer window
 /// (plat region 0x540720) — the same surface the canvas descriptor points
@@ -90,7 +91,45 @@ impl Gdi {
         }
     }
 
-    /// Single pixel with full clipping, written into guest memory.
+    /// Replace the clipping rectangle, intersecting it with the display.
+    pub(crate) fn set_clip(
+        mem: &mut GuestMem,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    ) -> Result<(), MemError> {
+        let left = x.clamp(0, FB_WIDTH as i32);
+        let top = y.clamp(0, FB_HEIGHT as i32);
+        let right = x.saturating_add(w).clamp(left, FB_WIDTH as i32);
+        let bottom = y.saturating_add(h).clamp(top, FB_HEIGHT as i32);
+        // Store insets so zero-initialized memory (including older snapshots)
+        // means the full display.
+        for (i, inset) in [
+            left,
+            top,
+            FB_WIDTH as i32 - right,
+            FB_HEIGHT as i32 - bottom,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            mem.write_u16(GDI_CLIP_ADDR + i as u32 * 2, inset as u16)?;
+        }
+        Ok(())
+    }
+
+    fn clip_bounds(mem: &GuestMem) -> [i32; 4] {
+        let inset = |i| i32::from(mem.read_u16(GDI_CLIP_ADDR + i).unwrap_or_default());
+        [
+            inset(0).min(FB_WIDTH as i32),
+            inset(2).min(FB_HEIGHT as i32),
+            (FB_WIDTH as i32 - inset(4)).max(0),
+            (FB_HEIGHT as i32 - inset(6)).max(0),
+        ]
+    }
+
+    /// Single pixel clipped to the display, written into guest memory.
     fn set_px(&mut self, mem: &mut crate::mem::GuestMem, x: i32, y: i32, c: u16) {
         if x < 0 || x >= FB_WIDTH as i32 || y < 0 || y >= FB_HEIGHT as i32 {
             return;
@@ -111,10 +150,11 @@ impl Gdi {
         color: u16,
     ) {
         self.fill_count += 1;
-        let x0 = x.max(0);
-        let y0 = y.max(0);
-        let x1 = (x + w).min(FB_WIDTH as i32);
-        let y1 = (y + h).min(FB_HEIGHT as i32);
+        let [left, top, right, bottom] = Self::clip_bounds(mem);
+        let x0 = x.max(left);
+        let y0 = y.max(top);
+        let x1 = x.saturating_add(w).min(right);
+        let y1 = y.saturating_add(h).min(bottom);
         if x1 > x0 && y1 > y0 {
             for yy in y0..y1 {
                 let addr = crate::plat::FB_ADDR + (yy as u32 * FB_WIDTH + x0 as u32) * 2;
@@ -137,7 +177,60 @@ impl Gdi {
         self.dirty = true;
     }
 
-    /// `+0x12C fill(obj, x, y, w, h, color)`.
+    /// Draws a one-pixel-wide line between inclusive endpoints.
+    pub(crate) fn line(
+        &mut self,
+        mem: &mut GuestMem,
+        (x0, y0): (i32, i32),
+        (x1, y1): (i32, i32),
+        color: u16,
+    ) {
+        let steep = y0.abs_diff(y1) > x0.abs_diff(x1);
+        let axes = |x, y| if steep { (y, x) } else { (x, y) };
+        let start = axes(x0, y0);
+        let end = axes(x1, y1);
+        let ((x0, y0), (x1, y1)) = if start.0 <= end.0 {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        let [left, top, right, bottom] = Self::clip_bounds(mem);
+        let (clip_start, clip_top) = axes(left, top);
+        let (clip_end, clip_bottom) = axes(right, bottom);
+        // Clip the iteration on the major axis without shifting the line.
+        let width = i128::from(x0.abs_diff(x1).max(1));
+        let height = i128::from(y0.abs_diff(y1));
+        let direction = if y1 >= y0 { 1 } else { -1 };
+        for x in x0.max(clip_start)..=x1.min(clip_end - 1) {
+            let step = i128::from(x) - i128::from(x0);
+            let y = i128::from(y0) + direction * (step * height + width / 2) / width;
+            if (i128::from(clip_top)..i128::from(clip_bottom)).contains(&y) {
+                let (x, y) = axes(x, y as i32);
+                self.point(mem, x, y, color);
+            }
+        }
+    }
+
+    /// Draws a one-pixel border inside the given rectangle.
+    pub(crate) fn rect_outline(
+        &mut self,
+        mem: &mut GuestMem,
+        (x, y): (i32, i32),
+        (width, height): (i32, i32),
+        color: u16,
+    ) {
+        if width <= 0 || height <= 0 {
+            return;
+        }
+        let right = x.saturating_add(width - 1);
+        let bottom = y.saturating_add(height - 1);
+        self.line(mem, (x, y), (right, y), color);
+        self.line(mem, (x, bottom), (right, bottom), color);
+        self.line(mem, (x, y), (x, bottom), color);
+        self.line(mem, (right, y), (right, bottom), color);
+    }
+
+    /// Fill a rectangle with an explicit RGB565 color.
     pub fn op_fill(
         &mut self,
         mem: &mut crate::mem::GuestMem,
@@ -210,6 +303,7 @@ impl Gdi {
         (sx, sy): (i32, i32),
         (w, h): (i32, i32),
         (dx, dy): (i32, i32),
+        transform: u32,
     ) {
         self.draw_count += 1;
         // Pre-read the palette (256 entries max) so pixel writes and palette
@@ -217,18 +311,30 @@ impl Gdi {
         let pal_cache: Option<[u16; 256]> = palette.map(|addr| {
             std::array::from_fn(|i| mem.read_u16(addr.wrapping_add(i as u32 * 2)).unwrap_or(0))
         });
-        let min_x = 0.max(sx.saturating_neg()).max(dx.saturating_neg());
-        let min_y = 0.max(sy.saturating_neg()).max(dy.saturating_neg());
-        let max_x = w
-            .min(sw.saturating_sub(sx))
-            .min((FB_WIDTH as i32).saturating_sub(dx));
-        let max_y = h
-            .min(sh.saturating_sub(sy))
-            .min((FB_HEIGHT as i32).saturating_sub(dy));
+        let [left, top, right, bottom] = Self::clip_bounds(mem);
+        let flip_x = matches!(transform, 1 | 3);
+        let flip_y = matches!(transform, 2 | 3);
+        // Clip in draw order so a reflected source rectangle keeps its origin.
+        let sx = if flip_x {
+            sw.saturating_sub(sx).saturating_sub(w)
+        } else {
+            sx
+        };
+        let sy = if flip_y {
+            sh.saturating_sub(sy).saturating_sub(h)
+        } else {
+            sy
+        };
+        let min_x = 0.max(sx.saturating_neg()).max(left.saturating_sub(dx));
+        let min_y = 0.max(sy.saturating_neg()).max(top.saturating_sub(dy));
+        let max_x = w.min(sw.saturating_sub(sx)).min(right.saturating_sub(dx));
+        let max_y = h.min(sh.saturating_sub(sy)).min(bottom.saturating_sub(dy));
         for j in min_y..max_y {
-            let row = (j + sy) as usize * sw as usize;
+            let y = j + sy;
+            let row = (if flip_y { sh - 1 - y } else { y }) as usize * sw as usize;
             for i in min_x..max_x {
-                let offset = row + (i + sx) as usize;
+                let x = i + sx;
+                let offset = row + (if flip_x { sw - 1 - x } else { x }) as usize;
                 let (value, pixel) = match &pal_cache {
                     Some(colors) => {
                         let index = bmp[offset] as usize;
@@ -246,13 +352,35 @@ impl Gdi {
         }
     }
 
+    pub(crate) fn anchored_origin(
+        (mut x, mut y): (i32, i32),
+        (w, h): (i32, i32),
+        anchor: u32,
+    ) -> (i32, i32) {
+        const HCENTER: u32 = 1;
+        const VCENTER: u32 = 2;
+        const RIGHT: u32 = 8;
+        const BOTTOM: u32 = 32;
+        if anchor & HCENTER != 0 {
+            x = x.saturating_sub(w / 2);
+        } else if anchor & RIGHT != 0 {
+            x = x.saturating_sub(w);
+        }
+        if anchor & VCENTER != 0 {
+            y = y.saturating_sub(h / 2);
+        } else if anchor & BOTTOM != 0 {
+            y = y.saturating_sub(h);
+        }
+        (x, y)
+    }
+
     /// Advance width of one text cell: 8 for ASCII and control cells, 16
-    /// for wide (CJK) code points.
-    fn cell_width(ch: u16) -> i32 {
-        if ch <= 0x4DFF {
-            8
-        } else {
-            16
+    /// for wide CJK code points, CJK punctuation, and the horizontal ellipsis.
+    pub(crate) fn cell_width(ch: u16) -> i32 {
+        match ch {
+            0 => 0,
+            0x2026 | 0x3000..=0x303F | 0x4E00..=u16::MAX => 16,
+            _ => 8,
         }
     }
 
@@ -265,10 +393,9 @@ impl Gdi {
             if ch == 0 {
                 break;
             }
-            w += Self::cell_width(ch);
-            if ch > 0x4DFF {
-                h = 16;
-            }
+            let cell = Self::cell_width(ch);
+            w += cell;
+            h = h.max(cell);
         }
         (w, h)
     }
@@ -291,10 +418,9 @@ impl Gdi {
 
     /// Draw a UTF-16 run, optionally wrapped at `right` (the x coordinate
     /// the next cell must not cross). This is the renderer behind both
-    /// `+0x154` labels (`right = None`) and `+0x14C` paragraph bodies
-    /// (`right = Some(surface edge)`): the body slot hands the platform a
-    /// whole paragraph — the intro screens scroll it by moving y — and the
-    /// firmware breaks the lines itself. A line's height is the tallest
+    /// `+0x154` labels and `+0x14C` paragraph bodies. The guest may hand
+    /// the platform a whole paragraph, so the renderer breaks lines at
+    /// the requested edge. A line's height is the tallest
     /// cell in it (8 for ASCII, 16 for wide cells), matching the advance
     /// metrics the guest lays its origins out with. Returns the total
     /// advance and the y coordinate below the last finished line.
@@ -308,6 +434,8 @@ impl Gdi {
         right: Option<i32>,
     ) -> (i32, i32) {
         self.text_count += 1;
+        let [left, top, clip_right, bottom] = Self::clip_bounds(mem);
+        let visible = |x, y| (left..clip_right).contains(&x) && (top..bottom).contains(&y);
         let mut cx = x;
         let mut cy = y;
         // Height of the tallest cell placed on the line being drawn.
@@ -317,8 +445,7 @@ impl Gdi {
             if ch == 0 {
                 break;
             }
-            let wide = ch > 0x4DFF;
-            let cell = if wide { 16 } else { 8 };
+            let cell = Self::cell_width(ch);
             if let Some(right) = right {
                 // Wrap before a cell that would cross the edge, and skip a
                 // cell wider than the whole line so a pathological run
@@ -337,21 +464,25 @@ impl Gdi {
                     for (row, bits) in glyph.iter().enumerate() {
                         for col in 0..8usize {
                             // font8x8 encodes pixels LSB-first (col 0 = 0x01).
-                            if bits & (1 << col) != 0 {
-                                self.set_px(mem, cx + col as i32, row0 + row as i32, color);
+                            let x = cx + col as i32;
+                            let y = row0 + row as i32;
+                            if bits & (1 << col) != 0 && visible(x, y) {
+                                self.set_px(mem, x, y, color);
                             }
                         }
                     }
                     cx += 8;
                 }
-                0x7F..=0x4DFF => cx += 8,
+                _ if cell == 8 => cx += 8,
                 _ => {
                     if let Some(c) = char::from_u32(ch as u32) {
                         if let Some(glyph) = unifont::get_glyph(c) {
-                            for row in 0..16usize {
+                            for row in 0..FONT_HEIGHT {
                                 for col in 0..glyph.get_width() {
-                                    if glyph.get_pixel(col, row) {
-                                        self.set_px(mem, cx + col as i32, row0 + row as i32, color);
+                                    let x = cx + col as i32;
+                                    let y = row0 + row as i32;
+                                    if glyph.get_pixel(col, row) && visible(x, y) {
+                                        self.set_px(mem, x, y, color);
                                     }
                                 }
                             }
@@ -360,9 +491,7 @@ impl Gdi {
                     cx += 16;
                 }
             }
-            if wide {
-                line_h = 16;
-            }
+            line_h = line_h.max(cell);
             advance += cell;
         }
         self.dirty = true;
@@ -392,6 +521,33 @@ mod tests {
         g.take_dirty();
         g.fill(&mut mem, 500, 500, 10, 10, 0);
         assert!(!g.take_dirty());
+    }
+
+    #[test]
+    fn line_clips_to_canvas_and_keeps_one_pixel_per_step() {
+        let mut g = Gdi::new();
+        let mut mem = GuestMem::new(0x1000);
+        Gdi::set_clip(&mut mem, 0, 0, 4, 5).unwrap();
+        g.take_dirty();
+        g.line(&mut mem, (5, 8), (-1, -4), 0xffff);
+        assert!(g.take_dirty());
+        let pixels = g.frame_pixels(&mem);
+        let positions: Vec<_> = pixels
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &pixel)| (pixel == 0xfff8_fcf8).then_some(i))
+            .collect();
+        let stride = FB_WIDTH as usize;
+        assert_eq!(
+            positions,
+            [
+                1,
+                stride + 2,
+                2 * stride + 2,
+                3 * stride + 3,
+                4 * stride + 3
+            ]
+        );
     }
 
     #[test]
