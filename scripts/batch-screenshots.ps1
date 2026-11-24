@@ -80,9 +80,9 @@ if (-not (Test-Path -LiteralPath $Binary -PathType Leaf)) {
 $recipes = @{
     "SanguoTD8_QVGA_SNOWFISHV2" = @{
         Image  = "三国危城无双"
-        Frames = 200
+        Frames = 455
         Flags  = @()
-        Press  = @("30:10", "60:10", "90:10", "120:10", "150:10", "180:10")
+        Press  = @("120:10", "300:10", "350:10", "400:10", "450:10")
     }
     "cjdfw_QVGA_SNOWFISHV2" = @{
         Frames = 200

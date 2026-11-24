@@ -123,8 +123,8 @@ sfa_headless <game.app> --frames 200 --no-keys \
 ```
 
 That recipe (six left-soft-key presses over 200 frames) lands 五子棋 on
-its board, 三国危城无双 on its splash/tutorial, both 曹操冢 builds and
-永恒魔塔 in gameplay, and 胭脂戏游龙 in 西门庆居.
+its board, both 曹操冢 builds and 永恒魔塔 in gameplay, and 胭脂戏游龙 in
+西门庆居. The Three Kingdoms capture uses the country-selection replay below.
 
 ### 永恒魔塔
 
