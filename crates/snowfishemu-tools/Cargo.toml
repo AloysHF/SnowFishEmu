@@ -11,3 +11,4 @@ log.workspace = true
 snowfishemu-core.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+unarm.workspace = true

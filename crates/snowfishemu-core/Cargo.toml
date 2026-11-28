@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-unarm = "2.3"
+unarm.workspace = true
 thiserror.workspace = true
 log.workspace = true
 serde.workspace = true

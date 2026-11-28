@@ -26,7 +26,8 @@ identifiers. Save states use the `SFEMSTAT` signature.
 ## Features
 
 - **SFA package format support** — header parsing, code relocation,
-  package inspector (`sfa_info`), optional sibling resource file serving
+  package inspector (`sfa_info`), Thumb/ARM disassembler (`sfa_disasm`),
+  optional sibling resource file serving
 - **ARM/Thumb CPU emulation** — ARMv4T core with ARMv5TE completion
   (BLX interworking, DSP multiplies)
 - **Service bridge** — platform API table with wrapper-based dispatch:
@@ -95,7 +96,7 @@ crates/
 │       ├── save.rs           # SFEMSTAT save-state envelope and codec
 │       └── sdk.rs            # Guest SDK service adapters
 ├── snowfishemu/              # Standalone binary (→ snowfishemu)
-├── snowfishemu-tools/        # sfa_info package inspector, sfa_headless harness
+├── snowfishemu-tools/        # sfa_info inspector, sfa_disasm disassembler, sfa_headless harness
 └── snowfishemu-libretro/     # Libretro core (→ snowfishemu_libretro.{dll,so,dylib})
 ```
 
@@ -200,6 +201,13 @@ Package inspector:
 
 ```sh
 sfa_info <path/to/game.app>
+```
+
+Disassembler (relocated code segment, ARM by default, `--thumb` for
+interworking ranges):
+
+```sh
+sfa_disasm <path/to/game.app> --address 0x128D38 --length 0x10
 ```
 
 ### Screenshots

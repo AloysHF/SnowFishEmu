@@ -25,7 +25,7 @@ crates/
 │       ├── save.rs           # SFEMSTAT save-state envelope and codec
 │       └── sdk.rs            # Guest SDK service adapters
 ├── snowfishemu/              # Standalone binary (→ snowfishemu)
-├── snowfishemu-tools/        # sfa_info package inspector, sfa_headless harness
+├── snowfishemu-tools/        # sfa_info inspector, sfa_disasm disassembler, sfa_headless harness
 └── snowfishemu-libretro/     # Libretro core (→ snowfishemu_libretro.{dll,so,dylib})
 ```
 
@@ -184,7 +184,10 @@ standalone frontend's headless screenshot mode (`-S` with `--press` and
 `docs/images/` (`scripts/batch-screenshots.ps1`).
 
 `sfa_info` inspects a package's header fields, segment layout, and
-relocation summary without running anything.
+relocation summary without running anything. `sfa_disasm` disassembles a
+range of the relocated code segment (ARM by default, `--thumb` for
+interworking ranges) so wrapper addresses from the load-time scan can be
+read against the same platform-slot tables.
 
 ## Testing
 

@@ -196,6 +196,27 @@ summary:
 sfa_info <path/to/game.app>
 ```
 
+## Disassembler
+
+`sfa_disasm` disassembles a range of the relocated code segment without
+running anything. It decodes ARM at the code base (`0x101000`) by default;
+`--thumb` selects Thumb for interworking ranges, and `--address`/`--length`
+pick the range (both accept decimal or `0x`-prefixed hex). Literal pools
+show their relocated runtime values. Addresses and instruction words match
+the wrapper scan output (`sfa_headless -v`) and the platform-slot tables in
+[Game File Formats](Game-File-Formats.md):
+
+```bash
+# The slot +0x38 wrapper stublet of a title
+sfa_disasm <path/to/game.app> --address 0x128D38 --length 0xC
+```
+
+```text
+00128D38: E51CC004  ldr r12, [r12, #-0x4]
+00128D3C: E1A0E00F  mov lr, pc
+00128D40: E59CF038  ldr pc, [r12, #0x38]
+```
+
 ## Corpus Screenshots
 
 The compatibility documentation and the site gallery use
@@ -229,4 +250,7 @@ sfa_headless path/to/game.app --frames 200 --no-keys \
 
 # Inspect a package
 sfa_info path/to/game.app
+
+# Disassemble a wrapper stublet
+sfa_disasm path/to/game.app --address 0x128D38 --length 0xC
 ```
